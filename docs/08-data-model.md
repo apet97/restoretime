@@ -20,7 +20,7 @@ before rows are written.
 | `as_user` | TEXT | from INSTALLED payload |
 | `api_url` | TEXT | per-installation API base |
 | `auth_token` | TEXT | encrypted by the SDK codec |
-| `webhooks_json` | TEXT | encrypted per-webhook tokens (event type → token) |
+| `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by webhook path (SDK model has no event field) |
 | `status` | TEXT | `ACTIVE`/`INACTIVE` (STATUS_CHANGED) |
 | `installed_at` | TEXT | generation guard for out-of-order uninstall |
 
@@ -97,7 +97,7 @@ Constraints:
 - Uninstall (`DELETED` lifecycle): hard-delete the installation row and all rows in the three
   domain tables for the workspace, in one transaction. (F17)
 - Dismissal keeps a DISMISSED row (duplicate deliveries must not resurrect it, W10). Undismiss
-  restores IDLE.
+  returns the entry to IDLE.
 - Sensitive content: entry descriptions and custom-field values can hold business data. They exist
   only in `source_json`, never in logs. Backups inherit the database file; document the sensitivity
   in operations (docs/14).

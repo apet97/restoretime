@@ -21,13 +21,14 @@ The product is done when every statement is true and verified.
 - [ ] `npm run typecheck`, `lint`, `test`, `build` green on `main`.
 - [ ] No dependency beyond docs/05's list; no dead code; no TODO/FIXME in `src/`.
 - [ ] Every user-facing string follows docs/10 terminology (recreate, never restore).
-- [ ] No raw webhook payload, token, or description appears in any log line (grep-verified in CI
-      review checklist).
+- [ ] No raw webhook payload, token, or description appears in any log line (verified by the
+      PASS-04 log-audit test that captures logs across the full suite run).
 - [ ] ADRs still match the code; deviations were re-decided, not drifted into.
 
 ## Release gates
 
-- [ ] Live suite LV-01…LV-09 passes on the production build against the sacrificial workspace.
+- [ ] Live suite LV-01…LV-10 passes on the production build against the sacrificial workspace
+      (LV-10 proves the ambiguity protocol live; it is not optional).
 - [ ] Marketplace manifest review package complete (docs/15).
 - [ ] Rollback drill executed and recorded.
 - [ ] GitHub release tagged with notes.

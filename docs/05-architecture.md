@@ -95,9 +95,10 @@ src/
 
 ## Runtime data flow invariants
 
-1. The webhook handler performs exactly one database write: the `INSERT OR IGNORE` into
-   `recoverable_entries`. Dedup and effect are the same statement, so a crash can never ack a
-   delivery that was not persisted (advisor-reviewed).
+1. The webhook handler performs one atomic transaction: the `INSERT OR IGNORE` into
+   `recoverable_entries` plus, only when a row was inserted, the lineage-link
+   `UPDATE parent_recoverable_id`. Dedup and effect commit or roll back together, so a crash can
+   never ack a delivery that was not persisted (advisor-reviewed).
 2. Every `/api/*` route derives `workspaceId` and the viewer from the verified JWT only. Path and
    body parameters never carry workspace or user identity.
 3. Only the recreate path creates Clockify entries. Reconciliation only links existing Clockify

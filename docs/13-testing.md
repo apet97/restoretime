@@ -67,8 +67,8 @@ Small and deterministic; not the whole exploratory campaign.
 | LV-06 | Archived-tag create behavior (closes the UNKNOWN in P-TAG-ARCH) |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
 | LV-08 | New required custom field → create rejection mapping |
-| LV-09 | `listForUser` response field coverage pinned (baseline-delta matcher inputs — R10 closure) |
-| LV-10 | Ambiguous-injection drill if a fault can be induced safely; otherwise documented as untested-with-reason |
+| LV-09 | `listForUser` response field coverage pinned (baseline-delta matcher inputs — R10 closure), including: a running entry inside the query window, and exact fingerprint round-trip (start/end epoch equality, description bytes, tagIds set) |
+| LV-10 | Mandatory ambiguity drill via the chaos hook: the suite runs the app with `RT_CHAOS_FETCH=lose-response` (test-only env flag; the app's fetch wrapper performs the real `createForUser` POST, then reports a transport timeout to the caller). (a) Lose-after-commit → the entry exists in Clockify → AMBIGUOUS → reconcile must adopt it → RECREATED. (b) Fail-before-send → nothing committed → bounded reconcile → user "not created" path → IDLE. The flag is rejected at boot unless `NODE_ENV=test` |
 
 ## E2E (component flow) — `tests/e2e/`
 

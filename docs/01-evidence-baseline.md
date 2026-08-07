@@ -247,7 +247,12 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - FACT: Settings expose `forceProjects`, `forceTasks`, `forceTags`, `forceDescription`,
   `onlyAdminsCanChangeBillableStatus`, `timeApprovalEnabled`, `invoicingEnabled`,
   `lockTimeEntries` (null in the test workspace), `trackTimeDownToSecond`.
-- EVIDENCE: agent-7 §3 (GET workspace/settings).
+  SDK note: the typed `WorkspaceSettingsDtoV1` carries `forceProjects`, `lockTimeEntries`,
+  `automaticLock`, and `onlyAdminsCanChangeBillableStatus`, but not `timeApprovalEnabled` or
+  `invoicingEnabled` (live-observed only). Preflight reads settings through the SDK model and never
+  depends on the two untyped fields; approval/invoice behavior is an always-shown system
+  difference, not a settings branch.
+- EVIDENCE: agent-7 §3 (GET workspace/settings); SDK type inspection 2026-08-08.
 - CONFIDENCE: PROVED_ONCE.
 - CONSEQUENCE: Preflight reads these once per preflight. `onlyAdminsCanChangeBillableStatus:true`
   means a regular user's `billable:true` recreate can be forced to `false` by the server — the

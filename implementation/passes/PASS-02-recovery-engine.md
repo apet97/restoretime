@@ -37,11 +37,10 @@ PASS-01 merged: platform boundaries, installations store, `requireViewer`, compo
   (docs/06 exact shape). Reject malformed bodies (400). No third-party validation library.
 - `src/ingest/webhook.ts`: replace the PASS-01 stub. Verify via
   `withClockifyVerifiedWebhookRequest` with `getExpectedWebhookAuthToken` reading the stored
-  per-installation webhook tokens (keyed by workspace+addon+event). Then: guard → normalize →
+  per-installation webhook tokens (keyed by webhook path from the INSTALLED payload; v1 has exactly
+  one webhook). Then: guard → normalize →
   `INSERT OR IGNORE` → lineage link (`parent_recoverable_id` when the deleted id matches an
-  existing `new_entry_id`) → 204. The insert is the only write (docs/05 invariant 1).
-  Lineage link is part of the same transaction (`INSERT OR IGNORE` then, if inserted,
-  `UPDATE … SET parent_recoverable_id` — same tx).
+  existing `new_entry_id`) → 204. Both writes are one transaction (docs/05 invariant 1).
 
 ### Store
 

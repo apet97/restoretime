@@ -76,7 +76,7 @@ default "—". Clockify does not allow this value to be set through its API.
 | Task gone | Select: current tasks of the effective project, plus "No task" when tasks are optional |
 | Tag gone | Checkbox per missing tag: "Remove tag ‹name›". Multi-select of current tags to add, when wanted |
 | Description required | Text input with the original description prefilled only if it was non-empty; otherwise empty |
-| Running entry | Radio: "Start a running timer (start time 09:00, no end)" / "Set an end time" with a datetime input |
+| Running entry | Radio: "Start a running timer (start time 09:00, no end)" / "Set an end time" with a datetime input. The running option shows: "Clockify allows one running timer per user. Starting this timer stops the timer that is running now." |
 | Blocked (owner gone, period locked) | No widget. Explanation text and what to do next |
 
 Every selection re-runs preflight (`POST /api/entries/{id}/preflight` with `choices`). The confirm

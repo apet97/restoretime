@@ -23,7 +23,6 @@ interface DeletedTimeEntry {
   timeZone: string;           // display only (W5)
   projectId: string | null;
   projectName: string | null; // display only
-  projectArchived: boolean;   // snapshot hint only; preflight re-checks
   clientName: string | null;  // display only
   taskId: string | null;
   taskName: string | null;    // display only

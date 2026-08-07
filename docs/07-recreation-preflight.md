@@ -37,7 +37,7 @@ ACTION_REQUIRED round are validated here, never trusted.
 |---|---|---|
 | P-PERM | viewer is not admin AND `viewer.userId ≠ source.ownerId` | blocker `NOT_PERMITTED` (normally filtered before this point; defense in depth) |
 | P-OWNER | owner membership absent or not `ACTIVE` | blocker `OWNER_UNAVAILABLE` (name shown; admin sees membership status) |
-| P-RUN | `source.wasRunning` and no `choices.runningMode` | ACTION_REQUIRED: choose "Recreate as running timer" or "Set an end time" |
+| P-RUN | `source.wasRunning` and no `choices.runningMode` | ACTION_REQUIRED: choose "Recreate as running timer" or "Set an end time". The running choice must carry the warning: Clockify allows one running timer per user — starting this timer stops any timer the owner currently has running (W12 tie-break evidence) |
 | P-RUN-END | `choices.runningMode="completed"` and (`completedEnd` missing or `completedEnd ≤ start`) | ACTION_REQUIRED: end must be after start (R2) |
 | P-PROJ-REQ | effective projectId is null AND `forceProjects` AND mode is completed | ACTION_REQUIRED: select a project (running mode also resolves it, R4) |
 | P-PROJ-GONE | source projectId set, lookup 404, no `choices.projectId` | ACTION_REQUIRED: select a replacement project (or "no project" if `!forceProjects`) |
@@ -51,7 +51,7 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-DESC | `forceDescription` AND effective description empty | ACTION_REQUIRED: user enters a description |
 | P-CF | a source CF with non-null value: field gone/inactive, or current default ≠ source value | warning `CF_VALUE_DIFFERS` per field (name, original value, current default). Never blocks. Fidelity → PARTIAL contribution |
 | P-BILL | `onlyAdminsCanChangeBillableStatus` AND viewer not admin AND `source.billable=true` | warning `BILLABLE_MAY_CHANGE` — server may force non-billable; post-create diff reports the actual result (R12) |
-| P-LOCK | lock settings present AND `source.start` inside the locked period | blocker `PERIOD_LOCKED` (dates shown). Lock semantics are NOT_TESTABLE; the create-rejection mapping is the backstop (R15) |
+| P-LOCK | any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) | warning `PERIOD_MAY_BE_LOCKED` — lock semantics are NOT_TESTABLE and the setting formats are not verified, so the rule never parses dates and never blocks. Text: "This workspace locks old time entries. If Clockify rejects the recreation, ask an admin to unlock the period." The create-rejection mapping is the enforcement backstop (R15) |
 | P-SYS | always | informational system differences: new ID, new timestamps, `UNSUBMITTED`, no invoice link, current rates (R9) |
 
 Owner substitution is not offered. Changing the owner changes the entry's meaning; no evidence
@@ -105,10 +105,11 @@ On confirm, before any Clockify call:
 
 1. Verify plan status ACTIVE and `sourceHash` equals the current row's source hash.
 2. Re-fetch the mutable set only: owner membership, effective project, effective task, effective
-   tags, workspace settings.
-3. Re-evaluate the rules that can change (P-OWNER, P-PROJ-*, P-TASK-*, P-TAG-*, P-LOCK, P-BILL).
-   Any different outcome → mark plan STALE, run a fresh preflight, return it. Never execute a plan
-   whose assumptions changed (F10).
+   tags, workspace settings, and the workspace custom fields.
+3. Re-evaluate the rules that can change (P-OWNER, P-PROJ-*, P-TASK-*, P-TAG-*, P-LOCK, P-BILL,
+   P-CF). Any different outcome → mark plan STALE, run a fresh preflight, return it. Never execute
+   a plan whose assumptions changed (F10). (CF differences never gate execution, but a stale CF
+   warning on the confirm view would be a lie — so CF drift also refreshes the plan.)
 
 ## 8. Mutation and outcome protocol
 
@@ -177,10 +178,15 @@ IMPOSSIBLE  any blocker present
 PARTIAL     no blockers; a source value cannot be represented:
             a non-default source custom-field value (P-CF), or a dropped value the user did not
             explicitly choose (cannot occur — drops require choice; kept for rule completeness)
-ADJUSTED    no blockers; ≥1 explicit user substitution/drop/input (project, task, tags,
-            description, running-mode end)
-FULL        otherwise
+ADJUSTED    no blockers; ≥1 explicit user substitution/drop/input that changes values (project,
+            task, tags, description, or an end time set on a running source)
+FULL        otherwise — including running→running recreation: the explicit running-mode choice
+            preserves the source state and substitutes nothing
 ```
+
+A custom field that became required after deletion cannot be detected at preflight (P-CF examines
+source values, not new requirements); it surfaces as a create rejection → FAILED with the mapped
+reason (docs/11).
 
 System differences (new ID, timestamps, UNSUBMITTED, invoice, rates, CF auto-attach of matching
 defaults) never downgrade fidelity. They are always listed on the confirm and success views.

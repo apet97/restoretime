@@ -8,7 +8,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Duplicate webhook delivery | At-least-once; same body, new `idempotency-key` per attempt (W10) | Insert-if-absent; second delivery is a no-op, still 204 | — | IT-01 |
 | Webhook for unknown installation | Token lookup finds nothing | SDK verifier rejects (401); no row created | — | IT-02 |
 | Malformed webhook body | — | Guard rejects; 400 (invites retry only if Clockify sent it wrong — logged as contract violation) | — | UT-N01 |
-| Running entry deleted | `currentlyRunning:true`, `end:null` (W12) | Source stores `wasRunning`; preflight asks for mode (P-RUN) | Radio: running timer vs set end time | UT-P01 |
+| Running entry deleted | `currentlyRunning:true`, `end:null` (W12) | Source stores `wasRunning`; preflight asks for mode (P-RUN). Starting the new timer can auto-stop the owner's current timer (single-timer rule) — the choice carries that warning | Radio: running timer vs set end time, with the auto-stop warning | UT-P01 |
 | Entry deleted right after create | Fires always (W9) | Normal ingestion | — | CT-01 (fixture) |
 | Entry updated then deleted | Payload carries final state (W8) | No special handling; the final state is the source | — | CT-02 (fixture) |
 | Project deleted after entry deletion | Create with dead project → 400 (R3) | P-PROJ-GONE: replacement picker | Select project; or "No project" when allowed | UT-P02, IT-05 |
@@ -20,7 +20,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Workspace requires project (`forceProjects`) | 501 without project; running entries bypass (R4) | P-PROJ-REQ | Project picker or running mode | UT-P08 |
 | Workspace requires description | Not directly probed; settings readable (R12) | P-DESC | Text input | UT-P09 |
 | `onlyAdminsCanChangeBillableStatus` | Regular user + `billable:true`: server behavior UNVERIFIED | P-BILL warning; post-create diff reports actual | Warning + success-view diff line | UT-P10, LV-07 |
-| Locked period | NOT_TESTABLE live | P-LOCK from settings; rejection backstop (R15) | Blocked view with dates | UT-P11 |
+| Locked period | NOT_TESTABLE live; setting formats unverified | P-LOCK warning only (never parses dates, never blocks); create rejection is the backstop (R15) | Warning text; failure view explains the unlock path | UT-P11, LV-08 |
 | Description with `<`/`>` | Rejected at original create (W3) — cannot exist in a source | None needed; guard still accepts any stored text | — | CT-03 (fixture) |
 | Emoji/Cyrillic/newline/tab descriptions | Byte-for-byte (W3) | Stored and resent exactly; escaped on render | Rendered as text | UT-N02, UT-X01 |
 | Custom field with user-set value | Values not writable on create; current defaults attach (R5) | P-CF warning; fidelity PARTIAL | Differences line per field | UT-P12 |

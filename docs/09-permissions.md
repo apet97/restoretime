@@ -40,6 +40,7 @@ canAct(entry)   = canRead(entry)
 | `POST /api/entries/{id}/preflight` | same scoping; then `canAct` |
 | `POST /api/entries/{id}/recreate` | same; plus P-PERM re-evaluated inside preflight (defense in depth) |
 | reconcile/dismiss/undismiss/resolve | same scoping and `canAct` |
+| `POST /api/entries/bulk-preflight`, `POST /api/entries/bulk-recreate` | `isClockifyAdminRole` required on the route itself (admin-only), plus per-entry `canAct` and P-PERM inside the engine. A regular user gets 403 before any per-entry data is computed |
 | `GET /api/options` | workspace-scoped current projects/tasks/tags; available to any verified viewer in the workspace (these are current workspace entities, not deleted data) |
 
 ## Rules that prevent the known attacks

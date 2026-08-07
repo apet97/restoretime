@@ -27,9 +27,12 @@ planning).
 
 - Container build: `Dockerfile` (Node 22, non-root, `npm ci --omit=dev`, migrations at boot,
   `/healthz` wired). Document run env (docs/05 variables).
-- Live suite `tests/live/` implementing LV-01…LV-09 per docs/13 with env-gated credentials
-  (`CK_LIVE_*`). LV-04 (admin recreates another user's entry with the addon token) and LV-09
-  (`listForUser` field coverage) close the two load-bearing unknowns (R11, R10).
+- Live suite `tests/live/` implementing LV-01…LV-10 per docs/13 with env-gated credentials
+  (`CK_LIVE_*`). LV-04 (admin recreates another user's entry with the addon token), LV-09
+  (`listForUser` field coverage), and LV-10 (the ambiguity drill through the `RT_CHAOS_FETCH`
+  test hook) close the load-bearing unknowns (R11, R10) and prove the riskiest path live.
+  LV-10 is a hard gate: if the chaos hook cannot run in the deployment shape, the release stops
+  and the reason is recorded in the final report — the ambiguity protocol never ships unverified.
 - Live-suite outcome handling: if an LV row fails because platform behavior differs from the
   baseline, stop. Record the new evidence, update the affected docs/01 row and any design doc,
   and re-run the affected product tests. Never weaken a test to force green.
@@ -56,7 +59,7 @@ record it as a new ADR revision and re-run PASS-04 gates.
 
 ## Tests
 
-LV-01…LV-09 green on the production build; full offline suite green on the release commit.
+LV-01…LV-10 green on the production build; full offline suite green on the release commit.
 
 ## Commands/gates
 

@@ -28,8 +28,8 @@ placeholder.
 4. Run migrations at boot (automatic).
 5. Live suite (`npm run test:live`) against the sacrificial workspace with the production build's
    public URL wired as the webhook/component base:
-   `LV-01…LV-09` must pass. This closes the addon-token success-path question (R11) before any
-   Marketplace submission.
+   `LV-01…LV-10` must pass. This closes the addon-token success-path question (R11) and proves
+   the ambiguity protocol live (LV-10) before any Marketplace submission.
 6. Production smoke: install on the sacrificial workspace, delete one entry, recreate it, confirm
    the success view.
 7. Tag the release on GitHub with release notes.

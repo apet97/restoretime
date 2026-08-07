@@ -7,7 +7,9 @@ Everything the application relies on. Each item names the exact SDK method. Evid
 
 - Declaration: manifest webhook via addon SDK builder `.onTimeEntryDeleted().path("/webhooks/time-entry-deleted")`.
 - Verification: `withClockifyVerifiedWebhookRequest(parser, { expectedEventType: "TIME_ENTRY_DELETED", getExpectedWebhookAuthToken })`.
-  The per-installation webhook token comes from the `INSTALLED` lifecycle payload (`webhooks[]`).
+  The per-installation webhook token comes from the `INSTALLED` lifecycle payload (`webhooks[]`,
+  keyed by webhook `path` — the SDK's `ClockifyLifecycleWebhookToken` is `{path, webhookType,
+  authToken}`, with no event field; v1 declares exactly one webhook).
   The SDK performs the RS256 JWT check and the constant-time token compare (W11).
 - Body: flat time-entry object. Full field-by-field contract: webhook campaign `payload-contract.md`.
   Normalization input rules:
@@ -74,9 +76,10 @@ Notes:
 - `GET /component` via `registerComponent` + `withClockifyVerifiedComponentRequest`. Serves the
   iframe HTML shell with SDK security headers (`createClockifyHtmlResponse`, `frame-ancestors` set
   to the Clockify app origin).
-- App API routes (`/api/*`) verify the same JWT per call (`verifyClockifyToken`), required `exp`.
-  No cookies, no session state; the iframe refreshes the token through the SDK bridge
-  (`refreshAddonToken`) on 401.
+- App API routes (`/api/*`) verify the same JWT per call:
+  `verifyClockifyToken(parser, token, { requireExpiration: true })` — the option matters: the SDK
+  default is `false`, and only the component-request verifier forces it. No cookies, no session
+  state; the iframe refreshes the token through the SDK bridge (`refreshAddonToken`) on 401.
 
 ## 6. Error model consumed from Clockify
 

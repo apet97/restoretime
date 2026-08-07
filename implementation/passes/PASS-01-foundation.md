@@ -56,8 +56,10 @@ Planning blueprint only: `docs/`, `adr/`, `implementation/`, `evidence/`, empty 
   installation row (domain tables arrive in PASS-02; write the cascade hook now as a no-op
   placeholder function with a test that it is called).
 - `src/platform/verify.ts`: one signature-parser singleton; `withClockifyVerifiedComponentRequest`
-  on the component route; an app-API middleware `requireViewer` built on `verifyClockifyToken`
-  (401 on failure) that attaches `{userId, workspaceId, workspaceRole}` to the handler context.
+  on the component route; an app-API middleware `requireViewer` built on
+  `verifyClockifyToken(parser, token, { requireExpiration: true })` (401 on failure) that attaches
+  `{userId, workspaceId, workspaceRole}` to the handler context. The option is mandatory: the SDK
+  default is `false`, and only the component-request verifier forces expiration.
 - Component route: serve a minimal HTML shell via `createClockifyHtmlResponse` with
   `frame-ancestors` set to the Clockify app origin; the shell loads `/static/app.js` (esbuild
   bundle stub that mounts the SDK `createClockifyBridge` and renders "RestoreTime is installed.").

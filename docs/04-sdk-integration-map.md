@@ -5,7 +5,7 @@ Two read-only source SDKs. Pinned commits at planning time:
 | SDK | Package | Version | Commit |
 |---|---|---|---|
 | `~/Downloads/working/addons-me/addon-ts-sdk` (`addon-sdk/` workspace) | `@apet97/clockify-addon-sdk` | 1.2.0 | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` |
-| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 2.0.0 | `b33e5b0227ece3de613adf6071039cc648bc35c8` |
+| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 2.0.0 | `b33e5b0227ece3de613adf6071039cc648bc35c8` (inspected); HEAD later advanced externally to `8cac46e9…` (docs-only commits; zero diff in the load-bearing paths, verified 2026-08-08) |
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work
 around a defect in the app — fix upstream first (AGENTS.md).

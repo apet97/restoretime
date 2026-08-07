@@ -1,0 +1,57 @@
+# 12 — Security
+
+## Boundaries
+
+1. **Webhook boundary** — Clockify → addon. SDK verification: RS256 JWT (pinned platform key,
+   `iss=clockify`, `sub=addonKey`, `type=addon`) + constant-time compare of the per-installation
+   webhook token + event-type match + claims/payload workspace match.
+2. **Viewer boundary** — iframe → addon API. Verified component JWT per call, `exp` required. No
+   cookies (no CSRF surface). Workspace and user identity come only from claims.
+3. **Clockify boundary** — addon → Clockify REST. Installation `authToken` as `X-Addon-Token`
+   (exactly one auth mode, R11). Token is server-side only, stored encrypted (SDK AES-256-GCM
+   codec; key from `TOKEN_ENCRYPTION_KEY`).
+4. **Tenant boundary** — every query is scoped by the claims' `workspaceId`.
+
+## Threat model
+
+| Threat | Boundary | Mitigation | Test |
+|---|---|---|---|
+| Forged webhook | 1 | SDK JWT + per-installation token verify; unknown installation → 401 | IT-02 |
+| Webhook replay | 1 | Natural-key insert-if-absent; replay is a no-op | IT-01 |
+| Tampered component token | 2 | RS256 verify with pinned platform key; `exp` required | SDK tests + IT-07 |
+| User spoofing (`userId` in body) | 2 | Identity never read from body/path | IT-09 |
+| Workspace spoofing | 2 | `workspaceId` from claims only | IT-09 |
+| IDOR (entry id of another user) | 2 | Row scoped by workspace; `canRead/canAct` on owner | IT-07 |
+| Regular user reads another's entry | 2 | `owner_id = viewer` filter; 404 otherwise | IT-07 |
+| Admin demoted between view and POST | 2 | Fresh claims per call; P-PERM re-evaluated at execute | IT-07 |
+| Source id tampering (plan for another entry) | 3 | Plan carries `sourceHash`; execute compares with the row | UT-S01 |
+| Stale plan (deps changed) | 3 | Revalidation before mutation; STALE plan never executes | UT-S02 |
+| TOCTOU (dep deleted after revalidate) | 3 | Create validates atomically; 4xx → mapped FAILED (R3) | IT-05 |
+| Concurrent recreation | 2/3 | Atomic claim CAS + lease + fencing token | IT-03 |
+| Duplicate mutation (blind retry) | 3 | POST never auto-retried (SDK default + app rule) | review + LV-04 |
+| Ambiguous POST | 3 | AMBIGUOUS protocol; baseline-delta; double-adoption unique index | IT-04 |
+| XSS via stored Clockify values | 2 | Escape all interpolated values; CSP `default-src 'none'`; `textContent` only | UT-X01 |
+| SQL injection | 4 | Prepared statements only; no string-built SQL | review |
+| Sensitive log leakage | all | IDs/states/codes only; SDK `onError` redaction; no payload logging | review |
+| Addon token exposure | 3 | Server-only; encrypted at rest; never in responses | review |
+| Uninstall data residue | 1/4 | DELETED lifecycle hard-deletes workspace data in one transaction | IT-11 |
+| Iframe embedding abuse | 2 | `frame-ancestors` restricted to the Clockify app origin | LV-01 |
+| Token replay across addons | 2 | JWT `sub` must equal this addon's key | SDK tests |
+
+## Data protection
+
+- Persisted: the normalized source only (docs/06). Rates embedded in the webhook are discarded at
+  normalization (ADR-009).
+- Logs: structured; fields limited to IDs, states, error codes, durations. Descriptions and
+  custom-field values never logged.
+- Encryption at rest: installation tokens via the SDK codec. The database file holds potentially
+  sensitive entry descriptions; deployments place it on encrypted disks; backups copy the file and
+  inherit its sensitivity (docs/14).
+- Uninstall: full workspace purge (F17). Status INACTIVE keeps data (the addon can be re-enabled).
+
+## What is not defended (explicit)
+
+- A Clockify platform compromise is out of scope; the trust anchor is the pinned platform public key.
+- Rate limiting of inbound requests beyond the 1 MiB body cap: the only public routes are
+  Clockify-called (verified). The app API requires a signed short-lived token. A deployment can add
+  a reverse-proxy limit without app changes.

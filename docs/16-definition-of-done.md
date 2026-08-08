@@ -89,7 +89,10 @@ yet, so an honest gap is visible here rather than buried in a report.
       satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
       (401 without a token). The **authenticated** component render was out of scope for this drill;
       it has since been done separately on the developer environment (evidence "Live run 7").
-- [x] GitHub release tagged with notes — `v1.0.0-rc.6`, a **release candidate**, not `v1.0.0`.
+- [x] GitHub release tagged with notes — `v1.0.0-rc.7`, a **release candidate**, not `v1.0.0`.
+      rc.6 fixed the component CSP defect and rc.7 the false P-LOCK-REG warning; both were found by
+      driving the addon and the workspace through a real browser (evidence "Live run 7" and
+      "Live run 8"), which is why the candidate series moved twice after the passes closed.
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.

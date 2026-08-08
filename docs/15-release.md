@@ -29,7 +29,11 @@ placeholder.
 5. Live suite (`npm run test:live`) against the sacrificial workspace with the production build's
    public URL wired as the webhook/component base:
    `LV-01…LV-10` must pass. This closes the addon-token success-path question (R11) and proves
-   the ambiguity protocol live (LV-10) before any Marketplace submission.
+   the ambiguity protocol live (LV-10) before any Marketplace submission. Environment: `CK_LIVE_API_KEY`,
+   `CK_LIVE_WS` (all rows); `CK_LIVE_ADDON_BASE_URL` additionally for LV-01/LV-02, which need the
+   step-3 deployed host itself, not just credentials (docs/13 "Live suite"). Missing any of these,
+   the affected rows report **blocked** by the exact variable name and the release does not proceed
+   past this step.
 6. Production smoke: install on the sacrificial workspace, delete one entry, recreate it, confirm
    the success view.
 7. Tag the release on GitHub with release notes.

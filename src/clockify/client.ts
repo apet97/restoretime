@@ -11,6 +11,7 @@ import {
   type CreateClockifyClientOptions,
 } from "clockify-sdk-ts-115";
 import { resolveClockifyApiBaseUrl } from "@apet97/clockify-addon-sdk/clockify";
+import { activeChaosMode, wrapChaosFetch } from "./chaos-fetch.js";
 
 export interface InstallationLike {
   readonly apiUrl?: string;
@@ -31,11 +32,17 @@ export function buildClockifyClient(
     installation.apiUrl !== undefined ? { apiUrl: installation.apiUrl } : {},
   );
   const factory = options.factory ?? sdkCreateClockifyClient;
+  // `options.fetch` passes through completely unchanged unless the LV-10 chaos hook is active
+  // (docs/13 LV-10) — outside a `NODE_ENV==="test"` run with `RT_CHAOS_FETCH` set, `resolvedFetch`
+  // is byte-identical to `options.fetch` (including `undefined`), exactly as before this hook
+  // existed.
+  const chaosMode = activeChaosMode();
+  const resolvedFetch = chaosMode === undefined ? options.fetch : wrapChaosFetch(options.fetch ?? globalThis.fetch, chaosMode);
   const clientOptions: CreateClockifyClientOptions = {
     addonToken: installation.authToken,
     timeoutInSeconds: CLOCKIFY_CLIENT_TIMEOUT_SECONDS,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
-    ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
+    ...(resolvedFetch !== undefined ? { fetch: resolvedFetch } : {}),
   };
   return factory(clientOptions);
 }

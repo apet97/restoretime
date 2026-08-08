@@ -109,18 +109,39 @@ Gate: DS-01…DS-03 pass, or the PASS-02 report records "blocked" with the exact
 Runs only with env credentials (`CK_LIVE_API_KEY`, `CK_LIVE_WS`) and only in the release workflow.
 Small and deterministic; not the whole exploratory campaign.
 
+LV-03…LV-10 boot the app's own `createServer()` in-process with a **test-signed platform key**
+(`@apet97/clockify-addon-sdk/testing`, the same helper every offline integration test already uses
+— `generateTestKeys`/`signTestToken`) so the JWT-verification boundary (installation, component
+auth) is exercised through the real SDK verification code path without needing Clockify's private
+signing key. The one thing that is NOT faked in those rows is the Clockify REST boundary: the
+installation row's `authToken` is set to `CK_LIVE_API_KEY` and `apiUrl` to the real production
+Clockify API host, so every `timeEntries`/`users`/`projects`/… call the app makes goes out over the
+real network to the real sacrificial workspace — this is what proves R11 (API-key/addon-token REST
+equivalence) and R10 (`listForUser` field coverage) live. **This substitution is legitimate, not a
+weaker local substitute**: it is the identical test-key pattern PASS-01…04's own offline suite
+established for the platform-JWT boundary (which those passes already prove correct); the only
+thing this pass adds is a real network on the other side.
+
+LV-01 and LV-02 are different in kind: they are about the *deployed artifact* and *Clockify-issued*
+signatures — a component "loading with verified claims" and a webhook "arriving at the deployed
+addon" cannot be produced by a test-signed key, only by a real Clockify installation talking to a
+real, publicly reachable host. They require one more variable, `CK_LIVE_ADDON_BASE_URL` (the public
+base URL of a RestoreTime instance already deployed and already installed on the sacrificial
+workspace) and report **blocked** by name when it is absent, exactly like the other two variables —
+the local in-process harness is never substituted for them.
+
 | ID | Scenario |
 |---|---|
-| LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct and the sidebar icon (`iconPath`) renders |
-| LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears (addon-mode delivery already proved on the developer environment 2026-08-08 — evidence/install-capture-2026-08-08.md; re-confirm on production) |
+| LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct and the sidebar icon (`iconPath`) renders. Requires `CK_LIVE_ADDON_BASE_URL` (a real deployed+installed instance) — not achievable via a test-signed local harness |
+| LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears (addon-mode delivery already proved on the developer environment 2026-08-08 — evidence/install-capture-2026-08-08.md; re-confirm on production). Requires `CK_LIVE_ADDON_BASE_URL` for the same reason as LV-01 |
 | LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
 | LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) (the same scenario passed on the developer environment 2026-08-08 with the addon token — users.list, projects.list, createForUser for another user → 201, get, delete; re-confirm on production) |
 | LV-05 | Missing project → ACTION_REQUIRED → substitute → success; archived-tag rejection surfaced correctly (behavior proved by probe A4, R18 — confirmed here on the addon-token path) |
-| LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4) |
+| LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4). No `tests/live/` file exists for this row |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
 | LV-08 | Custom-field lifecycle: removed option → P-CF-OPT resolution; new required field without default → P-CF-REQ input → success |
 | LV-09 | Reconcile-read pinning on the real addon path: description-filtered `listForUser` reflects a fresh create immediately (round-2 API-key proof: A1/A2); fingerprint round-trip (start/end epoch, description bytes, tagIds set); running entry visible with `end:null` in the unfiltered list. The windowed query is never used (R10) |
-| LV-10 | Mandatory ambiguity drill via the chaos hook: the suite runs the app with `RT_CHAOS_FETCH=lose-response` (test-only env flag; the app's fetch wrapper performs the real `createForUser` POST, then reports a transport timeout to the caller). (a) Lose-after-commit → the entry exists in Clockify → AMBIGUOUS → reconcile must adopt it → RECREATED. (b) Fail-before-send → nothing committed → bounded reconcile → user "not created" path → IDLE. The flag is rejected at boot unless `NODE_ENV=test` |
+| LV-10 | Mandatory ambiguity drill via the chaos hook (`src/clockify/chaos-fetch.ts`): the suite runs with `RT_CHAOS_FETCH` set (test-only env flag, rejected unless `NODE_ENV=test`, mirroring `RT_TEST_CRASH_MID_ATTEMPT`). Two modes, one per leg: (a) `RT_CHAOS_FETCH=lose-response` — the app's fetch wrapper performs the real `createForUser` POST (Clockify commits it), then reports a `ClockifyApiTimeoutError` to the caller → AMBIGUOUS → reconcile must adopt the committed entry → RECREATED. (b) `RT_CHAOS_FETCH=fail-before-send` — the wrapper throws before the real fetch is ever called → nothing committed → AMBIGUOUS → bounded reconcile finds nothing → user "not created" path → IDLE. The hook mechanics are proved offline against a mocked transport in `tests/integration/chaos-fetch-drill.test.ts`; LV-10 itself repeats both legs against the real sacrificial workspace |
 
 ## E2E (component flow) — `tests/e2e/`
 

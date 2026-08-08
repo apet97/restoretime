@@ -152,7 +152,7 @@ pass brief's "must be written down somewhere in-repo").
   **0** task-list calls. Verified this is load-bearing, not decorative: temporarily reverting the
   fix (dropping the `ProjectTaskCache` argument) made the same assertion fail with `10` calls per
   project (`50` total) — confirmed, then the fix was restored and re-verified green.
-- **p95 budget**: `LOCAL_P95_BUDGET_MS = 150` (test 2, 15 requests). Measured p95 on the hardening
+- **p95**: recorded, not gated — see the correction note at the end of this report. Measured on the hardening
   machine: **~25–49 ms** across multiple runs — several times inside budget. This is a **local,
   stub-backed, in-process** number (no real Clockify network latency), not a production SLA;
   documented as such in both the test file and docs/14. Confirmed this number does NOT by itself
@@ -286,3 +286,27 @@ SDK wraps every transport and parse failure as `ClockifyApiError`.
 
 Final gates after the fixes: typecheck, lint clean; **292 tests in 5.38 s**; build clean; **18 E2E**;
 `git diff --check` clean; `gitleaks detect` reports no leaks.
+
+---
+
+## Correction after merge: the p95 budget was a false gate
+
+Recorded because it changed a gate, and because the evidence is worth keeping.
+
+Immediately after this pass merged, `npm run test` began failing on `main` — consistently, three
+runs in a row — on the p95 assertion, at 1.1 s, 2.2 s and 2.3 s against a 150 ms budget. Nothing in
+the code had changed. What had changed was the machine: a container VM (colima, 2 CPUs) had been
+started alongside the suite in preparation for PASS-05.
+
+So the number was never measuring the code. It measured whatever CPU happened to be spare, and it
+swung by more than 10× on an identical commit. A gate like that fails honest work and passes
+regressions on a fast machine — this pass's own report already noted the second half: reintroducing
+the N+1 left p95 *inside* budget at ~41 ms.
+
+The fix is to stop pretending it is a gate. The p95 is now **recorded** in the test log and checked
+only against a catastrophe ceiling, and the load-independent guard for the behaviour this pass
+actually fixed is the exact-call-count assertion, which fails deterministically when the N+1
+returns. docs/13 IT-17, docs/14 §Performance, and the test header all say so now.
+
+This is a test-design fix, not a weakened assertion: the coverage that mattered was never in the
+wall-clock number, and it is unchanged.

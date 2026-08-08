@@ -84,11 +84,17 @@ export interface PlannedRequest {
   readonly customFields?: { customFieldId: string; sourceType: "WORKSPACE"; value: unknown }[];
 }
 
-/** A single ACTION_REQUIRED item the UI must resolve before the plan can proceed. */
+/** A single ACTION_REQUIRED item the UI must resolve before the plan can proceed.
+ * `refId` names the specific dependency this item is about (a tag id or a custom-field id) —
+ * present only for rules that can fire more than once per plan (one item per missing tag, one per
+ * unresolved custom field). It lets the UI build the right `choices` key (`dropTagIds`,
+ * `customFieldInputs`, `dropCustomFieldIds`) without inferring it from the message text, which
+ * would make the UI reconstruct a rule outcome instead of just rendering one (docs/10). */
 export interface ActionRequiredItem {
   readonly ruleId: string;
   readonly message: string;
   readonly options?: readonly string[];
+  readonly refId?: string;
 }
 
 export interface PlanBlocker {

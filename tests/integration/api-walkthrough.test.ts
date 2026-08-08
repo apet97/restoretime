@@ -566,3 +566,67 @@ describe("POST /api/entries/reconcile — a truncated check is not a check", () 
     expect(entryRow.lifecycle_state).toBe("AMBIGUOUS");
   });
 });
+
+// docs/10 §8 says a disabled addon replaces actions with a notice, and docs/00 says the UI never
+// decides what a user may do — so the server must refuse the actions too. A viewer already on the
+// confirm screen when the addon is disabled must not be able to complete a recreation.
+describe("a disabled installation refuses actions but stays readable", () => {
+  it("blocks recreate and dismiss with 409 while list and detail still work", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+
+    const listBefore = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (listBefore.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const preflightResponse = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const planId = (preflightResponse.body as { plan: { id: string } }).plan.id;
+
+    // The workspace disables the addon while the viewer sits on the confirm screen.
+    const statusToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    const statusResponse = await server.addon.handle(
+      createTestLifecycleRequest(
+        statusToken,
+        { workspaceId: WORKSPACE_ID, addonId: ADDON_ID, status: "INACTIVE" },
+        { path: "/lifecycle/status-changed" },
+      ),
+    );
+    expect(statusResponse.status).toBe(204);
+
+    for (const path of ["/api/entries/recreate", "/api/entries/dismiss"]) {
+      const blocked = await server.addon.handle({
+        method: "POST",
+        path,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: { entryId, planId },
+      });
+      expect(blocked.status).toBe(409);
+      expect((blocked.body as { error: string }).error).toBe("RestoreTime is disabled for this workspace.");
+    }
+
+    // Lists stay readable, and say so.
+    const listAfter = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    expect(listAfter.status).toBe(200);
+    expect((listAfter.body as { disabled: boolean }).disabled).toBe(true);
+    const detail = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entryId }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(detail.status).toBe(200);
+
+    // Nothing was recreated.
+    const row = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as { lifecycle_state: string };
+    expect(row.lifecycle_state).toBe("IDLE");
+  });
+});

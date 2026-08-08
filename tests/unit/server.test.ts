@@ -135,7 +135,7 @@ describe("GET /api/entries", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true });
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false });
   });
 
   it("rejects a request with no Authorization header", async () => {

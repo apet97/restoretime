@@ -298,6 +298,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         ruleId: "P-TAG-GONE",
         message: `The tag "${tag.name}" no longer exists. Confirm removal, or add a current tag.`,
         options: ["remove"],
+        refId: tag.id,
       });
     } else if (current.archived) {
       unresolvedTagIssues += 1;
@@ -305,6 +306,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         ruleId: "P-TAG-ARCH",
         message: `The tag "${tag.name}" is archived. Archived tags block recreation. Confirm removal, or add a current tag.`,
         options: ["remove"],
+        refId: tag.id,
       });
     } else {
       keptTagIds.push(tag.id);
@@ -373,7 +375,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       if (hasUsableValue(field.defaultValue)) {
         effectiveValue = field.defaultValue;
       } else {
-        actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.name}" is required. Enter a value.` });
+        actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.name}" is required. Enter a value.`, refId: field.id });
         continue;
       }
     }
@@ -390,6 +392,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         ruleId: "P-CF-OPT",
         message: `The value for "${field.name}" is no longer a valid option. Pick a current option, keep the original value, or drop it.`,
         options: ["replace", "keep", "drop"],
+        refId: field.id,
       });
       continue;
     }
@@ -402,6 +405,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       actionRequired.push({
         ruleId: "P-CF-REQ",
         message: `"${field.name}" needs a number. Enter a value.`,
+        refId: field.id,
       });
       continue;
     }

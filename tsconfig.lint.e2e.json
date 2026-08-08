@@ -1,0 +1,11 @@
+// The same lint rules applied to the other two projects (tsconfig.lint.json, tsconfig.lint.ui.json),
+// for the E2E suite's DOM-lib project.
+{
+  "extends": "./tsconfig.e2e.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}

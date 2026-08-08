@@ -84,7 +84,7 @@ Custom field "Cost code" — this field no longer exists in the workspace. The d
 | Locked period (regular user) | Warning, not a block: "This entry's date may be in a locked period. An admin can recreate it, or unlock the period." |
 | Blocked (owner gone) | No widget. Explanation text and what to do next |
 
-Every selection re-runs preflight (`POST /api/entries/{id}/preflight` with `choices`). The confirm
+Every selection re-runs preflight (`POST /api/entries/preflight` with `{entryId, choices}`). The confirm
 button activates only when the plan has no blockers and no open ACTION_REQUIRED items.
 
 ## 5. Confirm view
@@ -148,7 +148,8 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
   before insertion into HTML (N5). No `innerHTML` with interpolated values; use `textContent`.
 - Dates display in the viewer's locale via the SDK `formatClockifyDate`; theme and language apply
   via `applyClockifyTheme`/`applyClockifyLanguage` from the verified claims.
+- The iframe bridge is created with `parentOrigin` from `CLOCKIFY_PARENT_ORIGIN` (fact 12).
 - Every failure view answers: what happened, whether anything was created, what to do next (N8).
-- The iframe handles 401 by refreshing the component token (`refreshAddonToken`) and retrying once.
+- Token refresh: the token lives in memory only. `bridge.subscribe("refreshAddonToken", body => ...)` receives the refreshed token as a window message whose title is `refreshAddonToken` and whose body is the token string. The shell dispatches `bridge.refreshAddonToken()` proactively every 25 minutes (tokens live 30 minutes). On API 401 the shell dispatches a refresh, waits up to 5 seconds for the message, retries the call once with the new token, and on timeout shows a session-expired notice ("Reload the component").
 - Disabled addon (STATUS_CHANGED INACTIVE): a notice "RestoreTime is disabled for this workspace"
   replaces actions; lists stay readable.

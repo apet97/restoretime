@@ -20,13 +20,17 @@ before rows are written.
 | `as_user` | TEXT | from INSTALLED payload |
 | `api_url` | TEXT | per-installation API base |
 | `auth_token` | TEXT | encrypted by the SDK codec |
-| `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by webhook path (SDK model has no event field) |
+| `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by **normalized** webhook path (the SDK model has no event field; live INSTALLED payloads can carry `//webhooks/...` — normalize by collapsing repeated slashes before storing/looking up, evidence/install-capture-2026-08-08.md) |
 | `status` | TEXT | `ACTIVE`/`INACTIVE` (STATUS_CHANGED) |
-| `installed_at` | TEXT | generation guard for out-of-order uninstall |
+| `installed_at` | INTEGER | epoch **milliseconds** (the SDK `ClockifyInstallationContext.installedAt` type is `number`); the app sets it to `Date.now()` at INSTALLED receipt (`{...payload, installedAt: Date.now()}` — the payload itself has no generation) |
 
-Store methods map: `load` → SELECT; `save` → UPSERT skipping rows older than current
-`installed_at` (SDK semantics); `delete` → generation-guarded delete returning
-`deleted|missing|stale`.
+Store methods mirror the SDK in-memory semantics exactly: `load` → SELECT;
+`save` → UPSERT that **skips** when the existing row's `installed_at` is strictly newer than the
+incoming context's (`current.installedAt > context.installedAt`); `delete` → returns
+`deleted | missing | stale`, where `stale` means the caller supplied `installedAt` and it differs
+from the row's. The lifecycle DELETED handler passes **no** `installedAt` (the DELETED payload
+carries no generation) → unconditional delete. The generation-guard behaviors are unit-tested at
+the store level (PASS-01), never via lifecycle payloads.
 
 ### `recoverable_entries`
 

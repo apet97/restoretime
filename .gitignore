@@ -11,3 +11,6 @@ build/
 *.sqlite-wal
 *.sqlite-shm
 coverage/
+
+# install-capture tool runtime state (encrypted installation records, key)
+tools/install-capture/var/

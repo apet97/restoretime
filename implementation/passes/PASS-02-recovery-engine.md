@@ -38,9 +38,14 @@ PASS-01 merged: platform boundaries, installations store, `requireViewer`, compo
 - `src/ingest/webhook.ts`: replace the PASS-01 stub. Verify via
   `withClockifyVerifiedWebhookRequest` with `getExpectedWebhookAuthToken` reading the stored
   per-installation webhook tokens (keyed by webhook path from the INSTALLED payload; v1 has exactly
-  one webhook). Then: guard → normalize →
+  one webhook). `getExpectedWebhookAuthToken({workspaceId, addonId, eventType})` maps `eventType`
+  → the declared webhook path through the single-webhook constant and looks up the stored token by
+  NORMALIZED path (collapse repeated slashes — fact 3; live payloads can carry `//webhooks/...`).
+  The handler compares `body.workspaceId === claims.workspaceId` and rejects with 400 on mismatch;
+  the row stores `claims.workspaceId` (fact 8). Then: guard → normalize →
   `INSERT OR IGNORE` → lineage link (`parent_recoverable_id` when the deleted id matches an
   existing `new_entry_id`) → 204. Both writes are one transaction (docs/05 invariant 1).
+  Ingestion is installation-status-independent: an INACTIVE installation still persists.
 
 ### Store
 
@@ -57,27 +62,29 @@ PASS-01 merged: platform boundaries, installations store, `requireViewer`, compo
   decision rules P-* exactly as tabled), `fidelity.ts` (§10), `plan.ts` (hash, staleness compare).
 - `src/clockify/client.ts`: build `createClockifyClient({addonToken, baseUrl})` from the
   installation (`apiUrl` via `resolveClockifyApiBaseUrl`); injected `fetch` for tests.
-- `src/clockify/preflight-data.ts`: the six-lookup fetch set (docs/07 §2).
+- `src/clockify/preflight-data.ts`: the six-lookup fetch set (docs/07 §2); `users.list` uses the
+  exact request `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }`
+  paginated via `iterAll` (`pageSize: 200, maxPages: 10`) — `include-roles` is REQUIRED by the
+  generated type (fact 6).
 - `src/clockify/recreate.ts`: baseline snapshot → `createForUser` → branch per docs/07 §8;
-  verification diff per §9; reconcile (baseline-delta + fingerprint) per §8.
+  verification diff per §9; reconcile (baseline-delta + fingerprint) per §8. Construct the client
+  with `timeoutInSeconds: 30` (fact 7). Outcome classification: `ClockifyApiTimeoutError` OR
+  `ClockifyApiError` with `statusCode === undefined` OR `statusCode >= 500` → AMBIGUOUS; 4xx →
+  FAILED with `getErrorCode(err)` compared as a STRING ("4030", "1003", "501", "4017"). A 201
+  determines RECREATED even if the verification read fails — the diff falls back to the 201 body
+  and records "verification read unavailable" (fact 11).
 
 ### API (all behind `requireViewer`; workspace from claims only)
 
-- `GET /api/entries` — role-scoped list + admin filters (user, project, date range, status,
-  search) + dismissed toggle. Preflight summary is computed on demand per listed row (cheap:
-  lookups are already needed for detail; batch the six lookups per workspace, not per row — one
-  fetch set per request, share across rows).
-- `GET /api/entries/{id}` — source, current lifecycle, latest plan, attempts, lineage links.
-- `POST /api/entries/{id}/preflight` — body `{choices?}`; returns the plan (or blockers /
-  ACTION_REQUIRED items).
-- `POST /api/entries/{id}/recreate` — body `{planId}`; runs §7 revalidation then §8.
-- `POST /api/entries/{id}/reconcile` — manual "Check now" (30 s throttle).
-- `POST /api/entries/{id}/mark-not-created` — only from AMBIGUOUS after the bounded window
-  (≥3 checks / ~10 min enforced server-side).
-- `POST /api/entries/{id}/resolve-ambiguous` — body `{newEntryId}`; adopts after verifying the
-  candidate matches the fingerprint; unique-index conflict → 409.
-- `POST /api/entries/{id}/dismiss` / `undismiss`.
-- `GET /api/options?kind=projects|tasks&projectId=…|tags` — picker data.
+- `GET /api/entries` — role-scoped list + admin filters (user, project, date range, status, search, dismissed) + dismissed toggle. Preflight summary is computed on demand per listed row (batch the six lookups per workspace, not per row — one fetch set per request, share across rows).
+- `GET /api/entries/detail?id=...` — source, current lifecycle, latest plan, attempts, lineage links.
+- `POST /api/entries/preflight` — body `{entryId, choices?}`; returns the plan (or blockers / ACTION_REQUIRED items).
+- `POST /api/entries/recreate` — body `{entryId, planId}`; runs §7 revalidation then §8.
+- `POST /api/entries/reconcile` — body `{entryId}`; manual "Check now" (30 s throttle).
+- `POST /api/entries/mark-not-created` — body `{entryId}`; only from AMBIGUOUS after the bounded window (≥3 checks / ~10 min enforced server-side).
+- `POST /api/entries/resolve-ambiguous` — body `{entryId, newEntryId}`; adopts after verifying the candidate matches the fingerprint; unique-index conflict → 409.
+- `POST /api/entries/dismiss` / `POST /api/entries/undismiss` — body `{entryId}`.
+- `GET /api/options?kind=projects|tasks&projectId=...|tags` — picker data.
 - Remove `/api/ping` (noted in PASS-01).
 - Lazy reconcile: detail GET on an AMBIGUOUS row triggers one reconcile pass when the last check
   is older than 30 s (ADR-010).
@@ -103,6 +110,8 @@ it calls), live API calls, metrics polish, dismiss-undismiss UI.
 - CF values go out only as `customFields` items `{customFieldId, sourceType:"WORKSPACE", value}`
   per P-CF (R5); the `customFieldValues` key is never sent. Only `REGULAR` sources reach the
   mutation path (P-TYPE). No update/delete of Clockify entries anywhere.
+- Reconcile/baseline list reads paginate via `iterAll` with `maxPages: 10`; hitting the bound
+  stays AMBIGUOUS and reports the bound (docs/07 §8).
 - `/api/*` derives identity from claims only (docs/09).
 
 ## Tests

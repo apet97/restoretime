@@ -37,24 +37,34 @@ Planning blueprint only: `docs/`, `adr/`, `implementation/`, `evidence/`, empty 
 - Dependency decision per `implementation/DEPENDENCIES.md` §Registry note: registry vs vendored
   tarballs. Record the decision + checksums in the final report.
 - `src/server.ts` composition root; `src/manifest.ts`:
-  - schema 1.5 builder; key from `ADDON_KEY`; `baseUrl` from `PUBLIC_BASE_URL`;
+  - schema 1.5 via `ClockifyManifest.v1_5Builder()` (there is NO `builder()` — fact 1); key
+    from `ADDON_KEY`; `baseUrl` from `PUBLIC_BASE_URL`; manifest `iconPath` `/icon.svg`
+    (sidebar nav entry requires an icon — fact 16);
   - scopes: TIME_ENTRY READ/WRITE, PROJECT/TASK/TAG/USER/CUSTOM_FIELDS/WORKSPACE READ;
   - `minimalSubscriptionPlan`: FREE;
-  - one webhook: `onTimeEntryDeleted().path("/webhooks/time-entry-deleted")` (handler is a 501
+  - one webhook: `onTimeEntryDeleted().path("/webhooks/time-entry-deleted")` (handler is a
     stub that returns 500 so Clockify retries — ingestion does not exist yet);
-  - one component: `sidebar().allowEveryone().path("/component").label("Time Entry Recovery")`;
+  - one component: `sidebar().allowEveryone().path("/component").label("Time Entry
+    Recovery").iconPath("/icon.svg")`;
   - lifecycle: installed `/lifecycle/installed`, deleted `/lifecycle/deleted`,
     status-changed `/lifecycle/status-changed`;
+  - Manifest construction pattern: build the manifest with scalar fields + scopes only (no
+    entities), then `addon.registerComponent(...)` / `addon.registerWebhook(...)` /
+    `addon.registerLifecycleEvent(...)` — registration adds the entity to the served manifest
+    (fact 2). Use `createValidatedClockifyAddon(manifest)` for boot validation.
   - boot validation via `createValidatedClockifyAddon`.
 - `src/store/db.ts` + `src/store/migrations/0001_init.sql`: SQLite WAL, `foreign_keys=ON`,
   `user_version` tracking. Migration 0001 creates `installations` exactly per docs/08.
 - `src/platform/installations.ts`: `ClockifyInstallationStore` over SQLite, wrapped with
   `wrapClockifyInstallationStoreWithEncryption` + `createClockifyAesGcmTokenCodec`
   (`TOKEN_ENCRYPTION_KEY`). Unit-test the generation-guard semantics.
-- Lifecycle handlers with the SDK `withClockify*LifecycleRequest` wrappers: INSTALLED persists the
-  context incl. per-webhook tokens; STATUS_CHANGED updates `status`; DELETED deletes the
-  installation row (domain tables arrive in PASS-02; write the cascade hook now as a no-op
-  placeholder function with a test that it is called).
+- Lifecycle handlers with the SDK `withClockify*LifecycleRequest` wrappers: INSTALLED persists
+  `{...payload, installedAt: Date.now()}` (fact 9) incl. per-webhook tokens; STATUS_CHANGED
+  updates `status`; DELETED deletes unconditionally — `delete({workspaceId, addonId})` with NO
+  `installedAt` (the payload carries no generation). The generation guard (save skips when
+  current `installedAt` is newer; delete returns `stale` on mismatch) is unit-tested at the
+  STORE level only, never via lifecycle payloads. Domain tables arrive in PASS-02; write the
+  cascade hook now as a no-op placeholder function with a test that it is called.
 - `src/platform/verify.ts`: one signature-parser singleton; `withClockifyVerifiedComponentRequest`
   on the component route; an app-API middleware `requireViewer` built on
   `verifyClockifyToken(parser, token, { requireExpiration: true })` (401 on failure) that attaches
@@ -63,6 +73,11 @@ Planning blueprint only: `docs/`, `adr/`, `implementation/`, `evidence/`, empty 
 - Component route: serve a minimal HTML shell via `createClockifyHtmlResponse` with
   `frame-ancestors` set to the Clockify app origin; the shell loads `/static/app.js` (esbuild
   bundle stub that mounts the SDK `createClockifyBridge` and renders "RestoreTime is installed.").
+- Static routes: `GET /icon.svg` serves the inline SVG icon (content-type `image/svg+xml`);
+  `GET /static/app.js` serves the esbuild bundle stub.
+- Config/env: `CLOCKIFY_PARENT_ORIGIN` (Clockify app origin of the environment) feeds
+  `createClockifyHtmlResponse(shell, {frameAncestors: [CLOCKIFY_PARENT_ORIGIN]})` and the
+  bridge `parentOrigin` (fact 12).
 - `GET /healthz` (no auth) per docs/14. Structured JSON logger module (stdout; level from
   `LOG_LEVEL`); wire the SDK `onError` redaction hook to it.
 - `src/api/routes.ts`: mount point with `requireViewer`; one placeholder route
@@ -77,7 +92,7 @@ beyond the shell, any Clockify REST call, rate limiting, error trackers.
 
 ## Important interfaces
 
-Use exactly the SDK surface from docs/04: `ClockifyManifest.builder()`,
+Use exactly the SDK surface from docs/04: `ClockifyManifest.v1_5Builder()`,
 `createValidatedClockifyAddon`, `registerWebhook/registerComponent/registerLifecycleEvent`,
 `withClockifyInstalledLifecycleRequest` / `…StatusChanged` / `…Deleted`,
 `withClockifyVerifiedComponentRequest`, `verifyClockifyToken`, `isClockifyAdminRole`,
@@ -85,6 +100,12 @@ Use exactly the SDK surface from docs/04: `ClockifyManifest.builder()`,
 `createClockifyAesGcmTokenCodec`, `createNodeHttpAddonServer`, `createClockifyHtmlResponse`,
 `createClockifyBridge`. If any export is missing or behaves differently, stop and report — do not
 shim.
+
+Exact call shapes: `withClockifyVerifiedWebhookRequest(parser, {expectedEventType,
+getExpectedWebhookAuthToken}, handler)` — options second, lookup receives
+`{workspaceId, addonId, eventType}`; `withClockifyVerifiedComponentRequest(parser, handler)` —
+handler second (fact 3, 4); `verifyClockifyToken(parser, token, {requireExpiration: true})` with
+the token extracted from `Authorization: Bearer ...` (fact 5).
 
 ## Safety invariants
 
@@ -98,14 +119,16 @@ shim.
 - SDK `testing` subpath (`generateTestKeys`, `signTestToken`, request factories) for:
   valid/invalid/expired component token on `/component` and `/api/ping`; lifecycle INSTALLED →
   store round-trip (token decrypts to the original); DELETED removes the row; STATUS_CHANGED
-  flips status; out-of-order DELETED with older `installedAt` returns `stale` and keeps the row.
+  flips status; store-level generation-guard tests: save skips an older context; delete with
+  a mismatched `installedAt` returns `stale`; delete without `installedAt` is unconditional
+  (fact 9).
 - Migration test: fresh DB reaches `user_version=1`; boot is idempotent.
 - Webhook stub returns 500 (so redelivery semantics hold once PASS-02 lands).
 
 ## Commands/gates
 
 `npm ci && npm run typecheck && npm run lint && npm run test && npm run build` all green.
-Boot smoke: `PUBLIC_BASE_URL=https://example.invalid ADDON_KEY=restoretime TOKEN_ENCRYPTION_KEY=<32B> DATABASE_PATH=:memory: PORT=8791 npm start` serves `/manifest` (validate its JSON against
+Boot smoke: `PUBLIC_BASE_URL=https://example.invalid ADDON_KEY=restoretime TOKEN_ENCRYPTION_KEY=<32B> DATABASE_PATH=:memory: CLOCKIFY_PARENT_ORIGIN=https://app.clockify.me PORT=8791 npm start` serves `/manifest` (validate its JSON against
 the SDK's schema validator) and `/healthz`.
 
 ## Git requirements

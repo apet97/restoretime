@@ -59,3 +59,6 @@ current rates).
 - Node `>=22.13.0`, TypeScript strict. SQLite via `better-sqlite3`.
 - Source SDKs are read-only neighbors of this repo (paths and pinned commits in `IMPLEMENTER.md`).
 - Secrets live in the environment only. The repo must never contain credentials.
+- The addon SDK router matches exact `method:path` only — no path parameters (docs/04). App API routes are exact paths; `entryId` travels in body/query, never identity (docs/03 §5).
+- `CLOCKIFY_PARENT_ORIGIN` env var carries the Clockify app origin of the environment (production vs developer) and feeds `frame-ancestors` and the iframe bridge.
+- Live developer-environment install capture exists (2026-08-08): evidence/install-capture-2026-08-08.md — R11 addon-token success path and W11 addon-mode webhook are PROVED; production re-confirmation stays in LV-02/LV-04.

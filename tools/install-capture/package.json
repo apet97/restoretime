@@ -1,0 +1,14 @@
+{
+  "name": "restoretime-install-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only install capture server for RestoreTime. Serves the final manifest, verifies lifecycle + webhook deliveries with the addon SDK, and records the installation (encrypted) for evidence probes. Superseded by PASS-01's real server; never shipped.",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@apet97/clockify-addon-sdk": "^1.2.0",
+    "clockify-sdk-ts-115": "^2.0.0"
+  }
+}

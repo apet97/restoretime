@@ -93,8 +93,11 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - FACT: API-key-registered webhooks send `clockify-signature` = plain webhook `authToken`. Addon
   platform deliveries send an RS256 JWT plus a per-installation webhook token check.
 - EVIDENCE: WH payload-contract (API-key mode, PROVED_3X); addon-ts-sdk
-  `clockify-request-verifiers.ts` (addon mode, SDK).
-- CONFIDENCE: PROVED_3X + SDK source.
+  `clockify-request-verifiers.ts` (addon mode, SDK). Addon-mode delivery proved live 2026-08-08
+  (install capture): a real deletion fired `TIME_ENTRY_DELETED` to the declared webhook path; the
+  SDK RS256 + per-installation token verification passed; the payload matched the contract (flat
+  entry, embedded project, owner `userId`).
+- CONFIDENCE: PROVED_3X (API-key mode) + PROVED (addon mode, developer environment 2026-08-08).
 - CONSEQUENCE: Use `withClockifyVerifiedWebhookRequest` from the addon SDK. Never parse the JWT or
   compare tokens by hand.
 
@@ -142,6 +145,13 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - EVIDENCE: WH S13 (10/10 delivered, exactly once, two temporal clusters). CONFIDENCE: PROVED_3X.
 - CONSEQUENCE: Ingestion must not depend on event order (e.g. delete-then-recreate-then-delete
   arrives as independent rows keyed by entry id).
+
+### W17 — INSTALLED webhook paths can carry a double leading slash
+
+- FACT: The INSTALLED lifecycle payload can carry the webhook path as `//webhooks/time-entry-deleted` (Clockify joins `baseUrl` + "/" + the manifest path).
+- EVIDENCE: install-capture 2026-08-08 (captured payload; the token lookup must normalize paths before comparing).
+- CONFIDENCE: PROVED (one capture).
+- CONSEQUENCE: Webhook-token storage and lookup key on a normalized path (collapse repeated slashes, reduce absolute URLs to their pathname). Docs/03 §1, docs/04, PASS-02.
 
 ## R-series — recreation API (`POST …/time-entries`)
 
@@ -267,12 +277,16 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 
 - FACT: `X-Api-Key` and `X-Addon-Token` are distinct. Sending both → 401 code 1000. Bad API key →
   401 code 4003. Bad addon token → 401 code 4017. Bearer is unsupported. Operator statement
-  (2026-08-08): an addon token and an API key behave the same toward the REST API.
-- EVIDENCE: RC addon-token-matrix; operator statement.
-- CONFIDENCE: PROVED (failure paths); operator-stated (success-path equivalence), to be confirmed
-  by LV-04.
+  (2026-08-08): an addon token and an API key behave the same toward the REST API. Live proof
+  2026-08-08 (install capture on the developer environment, workspace 69bda6b317a0c5babe34b4ff):
+  with the captured addon token, `users.list` (10 users), `projects.list` (36 projects),
+  `timeEntries.createForUser` for another user → 201 with the target `userId`, `timeEntries.get`,
+  and `timeEntries.delete` all succeeded.
+- EVIDENCE: RC addon-token-matrix; operator statement; evidence/install-capture-2026-08-08.md.
+- CONFIDENCE: PROVED (developer environment, 2026-08-08); operator-stated equivalence additionally
+  confirmed — production re-confirmation remains LV-04.
 - CONSEQUENCE: The REST client sends exactly one auth mode: the installation `authToken` as
-  `X-Addon-Token`. LV-04 remains a release gate, as confirmation of the equivalence on the real
+  `X-Addon-Token`. LV-04 re-confirms on production, as confirmation of the equivalence on the real
   addon path (admin recreating another user's entry).
 
 ### R12 — Workspace settings readable
@@ -432,6 +446,12 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
   error model) after source inspection.
 - CONSEQUENCE: Any route/serialization defect found there is a blocking dependency fixed upstream,
   not worked around in the app (AGENTS.md).
+
+### S5 — Platform signer is shared across environments
+
+- FACT: The developer environment (`developer.clockify.me`) signs addon JWTs with the same pinned platform key as production: the INSTALLED lifecycle and webhook verification passed with `createClockifySignatureParser(addonKey)` defaults (install-capture 2026-08-08).
+- CONFIDENCE: PROVED (one install).
+- CONSEQUENCE: One parser works in both environments; only `CLOCKIFY_PARENT_ORIGIN` differs (production `https://app.clockify.me`, developer `https://developer.clockify.me`).
 
 ## Evidence hierarchy (standing rule)
 

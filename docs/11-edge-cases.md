@@ -32,6 +32,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Duplicate recreation click (user + admin) | Creates have no dedup (R7) | Atomic claim; loser sees current state | Second clicker sees "Recreating…" | IT-03 |
 | Ambiguous create, entry committed | No idempotency key (R7, R10) | AMBIGUOUS; baseline-delta reconcile adopts the single match | "Unknown result" → auto-resolved | IT-04 |
 | Ambiguous create, nothing committed | Same | Bounded reconcile → user marks not created → IDLE | "It was not created" action | IT-04 |
+| Create committed (201) but verification read fails | The 201 response is definitive; only the follow-up `timeEntries.get` failed | RECREATED regardless; the diff falls back to the 201 body and records "verification read unavailable" (fact 11) | Success view with the note | IT-13 |
 | Ambiguous create, two identical candidates | Fingerprint collision is possible (R10) | Stay AMBIGUOUS; user picks; never auto-delete | Candidate list with links | UT-P13 |
 | User creates a manual copy during ambiguity | Same fingerprint risk | Baseline excludes pre-existing entries; a manual copy inside the window yields ≥2 → user resolves | — | UT-P13 |
 | Re-created entry deleted again | New webhook with the new id | New row; `parent_recoverable_id` links the chain | Lineage links on detail view | IT-06 |

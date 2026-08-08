@@ -19,7 +19,10 @@ After authorization, fetch in parallel via the installation's client (docs/04):
 
 1. `workspaces.get` → `workspaceSettings` (forceProjects/forceTasks/forceTags/forceDescription,
    onlyAdminsCanChangeBillableStatus where present, lock fields) (R12).
-2. `users.list` (status=ALL, include memberships) → owner membership record.
+2. `users.list` with the exact request `{ workspaceId, status: "ALL", "include-roles": false,
+   "page-size": 200 }` (paginated via `iterAll`, `maxPages: 10`) → owner record. On this route
+   `user.status` is the workspace membership status; the owner is unavailable when the user is
+   absent from the list or `status !== "ACTIVE"` (docs/03 note 1).
 3. `projects.get(source.projectId)` if set — 404 means gone.
 4. `tasks.list(source.projectId)` if `source.taskId` set — or, when the project was substituted,
    `tasks.list(choices.projectId)`.
@@ -130,11 +133,14 @@ claim (§6) → baseline snapshot → createForUser → branch:
 
 **Baseline snapshot**: immediately before the create, list the owner's entries with the
 **description filter** (`listForUser` with `description` = source description; fallback when the
-description is empty: the unfiltered list, paginated). Record the matching entry IDs as the
-attempt's baseline. Never use the `start`/`end`-windowed query: it is eventually consistent and
-unreliable for fresh entries (R10 — a new entry stayed invisible >45 s in the windowed variant,
-while description-filtered and unfiltered lists reflect creates immediately). Cost: one read.
-Purpose: the list has no created-at field (R10), so "new" can only mean "not in the baseline".
+description is empty: the unfiltered list). Both reads paginate via `iterAll`
+(`pageSize: 200, maxPages: 10`; a baseline that hits the page bound is treated as a failed
+preflight — "workspace too large to verify; try again" — never a partial baseline). Record the
+matching entry IDs as the attempt's baseline. Never use the `start`/`end`-windowed query: it is
+eventually consistent and unreliable for fresh entries (R10 — a new entry stayed invisible >45 s
+in the windowed variant, while description-filtered and unfiltered lists reflect creates
+immediately). Cost: one read. Purpose: the list has no created-at field (R10), so "new" can only
+mean "not in the baseline".
 
 **Fingerprint** for matching: `start` and `end` (epoch-second compare), `description`
 (byte-exact), `billable`, `projectId`, `taskId`, `tagIds` (sorted compare). Only fields the list
@@ -144,13 +150,15 @@ Branches:
 
 | Outcome | Transition | Behavior |
 |---|---|---|
-| 201 with body | RECREATING → (verify) | `timeEntries.get(newId)`; diff planned vs actual (§9); store attempt SUCCESS, new id, diffs; state RECREATED |
-| 4xx | RECREATING → FAILED | Map reason via status + body `code` (R15); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
+| 201 with body | RECREATING → (verify) | The 201 alone is definitive: the entry exists with that ID. `timeEntries.get(newId)`; diff planned vs actual (§9); store attempt SUCCESS, new id, diffs; state RECREATED. If the verification read fails after SDK read-retries, the state is still RECREATED: the diff falls back to the 201 body (it is the created entry) and records "verification read unavailable" — the diff is a report, never a gate |
+| 4xx | RECREATING → FAILED | Map reason via status + body `code` (R15; codes compare as strings); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
 | 5xx, timeout, connection reset | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Reconcile immediately once (below), then lazily |
 
 **Reconcile (AMBIGUOUS)** — runs inline once, on each detail view while AMBIGUOUS (max once per
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
-and has had ≥3 checks shows the "not found" choice.
+and has had ≥3 checks shows the "not found" choice. List reads use the same description-filtered
+read as the baseline, `iterAll`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
+stays AMBIGUOUS and reports the bound.
 
 ```text
 delta = listForUser(owner, description=source.description) − baseline, fingerprint-filtered
@@ -183,9 +191,12 @@ Compare `plannedRequest` with the fetched new entry:
 | auto-attached CFs beyond the plan | not compared for pass/fail | informational (they reflect current workspace defaults) |
 | duration | never compared | recomputed by Clockify (W5) |
 
-Diffs are stored on the attempt and shown on the success view ("Clockify applied these changes").
-A `VALUE_DIFFERS` that was not warned about in the plan is still recorded and shown — the diff is a
-report, not a gate; the entry exists and is linked.
+The actual `customFieldValues` items are loosely typed (`Record<string, unknown>[]`); read each
+item defensively as `{ customFieldId?: string, value?: unknown }` and skip malformed items. The
+`TimeEntry` model also carries `approvalRequestId`, which live items never populate (R9) — never
+read it. Diffs are stored on the attempt and shown on the success view ("Clockify applied these
+changes"). A `VALUE_DIFFERS` that was not warned about in the plan is still recorded and shown —
+the diff is a report, not a gate; the entry exists and is linked.
 
 ## 10. Fidelity classification (deterministic, pure)
 

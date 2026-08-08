@@ -28,8 +28,12 @@ Engine merged; `/api/*` fully functional; component serves a stub shell; esbuild
 - `src/ui/`: vanilla TS views — list, detail, confirm, result — rendered against `/api/*`. State
   comes from the server; the UI holds no business rules.
 - Token handling: the shell reads `?auth_token`, stores it in memory only, sends it as a Bearer
-  header on every `/api/*` call, and on 401 uses the bridge `refreshAddonToken` flow, then retries
-  once.
+  header on every `/api/*` call. Refresh: `bridge.subscribe("refreshAddonToken", body => ...)`
+  receives the refreshed token as a window message whose body is the token string; the shell
+  dispatches `bridge.refreshAddonToken()` every 25 minutes (tokens live 30 minutes); on 401 it
+  dispatches a refresh, waits up to 5 seconds, retries the call once with the new token, and on
+  timeout shows a session-expired notice (fact 13). Bridge options:
+  `createClockifyBridge({window, parentOrigin})` with `parentOrigin` from `CLOCKIFY_PARENT_ORIGIN`.
 - Bridge integration: `createClockifyBridge` for `navigate("tracker")` (success view) and
   `showToast`; `applyClockifyTheme` / `applyClockifyLanguage` / `formatClockifyDate` from claims
   delivered by the component route (embed the claims' display-safe fields — theme, language — in

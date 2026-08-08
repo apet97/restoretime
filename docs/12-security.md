@@ -4,7 +4,9 @@
 
 1. **Webhook boundary** — Clockify → addon. SDK verification: RS256 JWT (pinned platform key,
    `iss=clockify`, `sub=addonKey`, `type=addon`) + constant-time compare of the per-installation
-   webhook token + event-type match + claims/payload workspace match.
+   webhook token + event-type match + the app's own claims/payload `workspaceId` match (the SDK
+   verifier does not compare the body to the claims — fact 8; mismatch → 400 + log, no row, and
+   the row stores `claims.workspaceId`).
 2. **Viewer boundary** — iframe → addon API. Verified component JWT per call, `exp` required. No
    cookies (no CSRF surface). Workspace and user identity come only from claims.
 3. **Clockify boundary** — addon → Clockify REST. Installation `authToken` as `X-Addon-Token`
@@ -35,7 +37,7 @@
 | Sensitive log leakage | all | IDs/states/codes only; SDK `onError` redaction; no payload logging | review |
 | Addon token exposure | 3 | Server-only; encrypted at rest; never in responses | review |
 | Uninstall data residue | 1/4 | DELETED lifecycle hard-deletes workspace data in one transaction | IT-11 |
-| Iframe embedding abuse | 2 | `frame-ancestors` restricted to the Clockify app origin | LV-01 |
+| Iframe embedding abuse | 2 | `frame-ancestors` restricted to `CLOCKIFY_PARENT_ORIGIN` (env var, fact 12) | LV-01 |
 | Token replay across addons | 2 | JWT `sub` must equal this addon's key | SDK tests |
 
 ## Data protection

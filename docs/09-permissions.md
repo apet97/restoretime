@@ -37,13 +37,15 @@ canAct(entry)   = canRead(entry)
 
 ## Enforcement points
 
+All paths are exact (the SDK router has no path parameters; docs/03 §5). `entryId` arrives in the JSON body (POST) or query (GET); it is a resource selector, never identity. Every lookup is scoped `WHERE id = :entryId AND workspace_id = claims.workspaceId`, then `canRead`/`canAct` applies.
+
 | Boundary | Check |
 |---|---|
-| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; admin filters (`userId`, project, date, status, search) are validated but never widen the workspace scope |
-| `GET /api/entries/{id}` | row lookup scoped `WHERE id=? AND workspace_id=?`; then `canRead` else 404 (no existence leak) |
-| `POST /api/entries/{id}/preflight` | same scoping; then `canAct` |
-| `POST /api/entries/{id}/recreate` | same; plus P-PERM re-evaluated inside preflight (defense in depth) |
-| reconcile/dismiss/undismiss/resolve | same scoping and `canAct` |
+| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; admin filters (`userId`, project, date, status, search, dismissed) are validated but never widen the workspace scope |
+| `GET /api/entries/detail` | row lookup scoped by claims workspace + entry id from query; then `canRead` else 404 (no existence leak) |
+| `POST /api/entries/preflight` | same scoping; then `canAct` |
+| `POST /api/entries/recreate` | same; plus P-PERM re-evaluated inside preflight (defense in depth) |
+| `POST /api/entries/reconcile` / `mark-not-created` / `resolve-ambiguous` / `dismiss` / `undismiss` | same scoping and `canAct` |
 | `POST /api/entries/bulk-preflight`, `POST /api/entries/bulk-recreate` | `isClockifyAdminRole` required on the route itself (admin-only), plus per-entry `canAct` and P-PERM inside the engine. A regular user gets 403 before any per-entry data is computed |
 | `GET /api/options` | workspace-scoped current projects/tasks/tags; available to any verified viewer in the workspace (these are current workspace entities, not deleted data) |
 

@@ -7,9 +7,13 @@
 - Files/modules: `src/manifest.ts`, `src/server.ts`, `src/platform/*`, `src/store/*` (installations
   only), `src/api/routes.ts` (guard + ping), `.github/workflows/ci.yml`.
 - Interfaces: docs/04 addon-SDK rows only.
-- Behavior: INSTALLED persists encrypted context incl. webhook tokens; STATUS_CHANGED flips status;
-  DELETED removes the installation; `/component` and `/api/*` reject bad signatures with 401.
+- Behavior: INSTALLED persists `{...payload, installedAt: Date.now()}` (encrypted context incl.
+  webhook tokens); STATUS_CHANGED flips status; DELETED removes the installation unconditionally
+  (no generation in the payload); the generation guard is store-level unit-tested; `/component`
+  and `/api/*` reject bad signatures with 401. Manifest and component carry `iconPath`;
+  `CLOCKIFY_PARENT_ORIGIN` env feeds `frame-ancestors` and the bridge.
 - Failure behavior: unknown lifecycle payload → 401; DB failure on install → 500 (Clockify retries
   the lifecycle event).
-- Tests: PASS-01 test list (signed/unsigned/expired matrix, generation guard, migrations).
+- Tests: PASS-01 test list (signed/unsigned/expired matrix, store-level unit-tested generation
+  guard, migrations).
 - Acceptance: PASS-01 completion criteria.

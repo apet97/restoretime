@@ -50,6 +50,8 @@ app — report the defect as a blocker (none were known at planning time; docs/0
 10. Escape every Clockify-controlled string before rendering. Tokens never leave the server.
 11. Persist the normalized source only; no raw payloads; no sensitive data in logs (ADR-009).
 12. No background workers (ADR-010). No new dependencies beyond `implementation/DEPENDENCIES.md`.
+13. App routes are exact paths. The addon SDK router has no path parameters (fact 2): `/api/*` uses exact paths with `entryId` in the JSON body (POST) or query (GET); identity and workspace scope come from verified claims only.
+14. `CLOCKIFY_PARENT_ORIGIN` (env var) is the Clockify app origin of the environment (production `https://app.clockify.me`, developer `https://developer.clockify.me`); it feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin` (fact 12).
 
 ## Execute
 

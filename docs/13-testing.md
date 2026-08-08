@@ -15,7 +15,7 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 | UT-S02 | Revalidation detects changed dependency → STALE | TOCTOU guard |
 | UT-A01 | Policy: admin vs regular vs wrong-owner vs wrong-workspace | Authorization |
 | UT-X01 | HTML escaping of descriptions/names with entities and markup-looking text | XSS |
-| UT-M01 | Clockify error mapping: HTTP status + body code → user-facing reason (400/501, 401/4017, 403/4030 force-timer, 403/1003 locked) | Failure honesty |
+| UT-M01 | Clockify error mapping: HTTP status + body code → user-facing reason (400/501, 401/4017, 403/4030 force-timer, 403/1003 locked) | Failure honesty (error codes compare as strings — `getErrorCode` returns `"4030"` etc., never numbers — fact 7) |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
 
 ## Contract (fixture-pinned) — `tests/contract/`
@@ -47,6 +47,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-10 | Dismissed entry absorbs redelivery |
 | IT-11 | Uninstall purges all workspace rows |
 | IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens |
+| IT-13 | Create returns 201 but the verification `get` fails after read-retries → still RECREATED, diff falls back to the 201 body, "verification read unavailable" recorded (fact 11) |
 
 Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by recorded response
 shapes (create 201, get, listForUser, errors). The Clockify SDK stays real; only the network is
@@ -59,10 +60,10 @@ Small and deterministic; not the whole exploratory campaign.
 
 | ID | Scenario |
 |---|---|
-| LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct |
-| LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears |
+| LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct and the sidebar icon (`iconPath`) renders |
+| LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears (addon-mode delivery already proved on the developer environment 2026-08-08 — evidence/install-capture-2026-08-08.md; re-confirm on production) |
 | LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
-| LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) |
+| LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) (the same scenario passed on the developer environment 2026-08-08 with the addon token — users.list, projects.list, createForUser for another user → 201, get, delete; re-confirm on production) |
 | LV-05 | Missing project → ACTION_REQUIRED → substitute → success; archived-tag rejection surfaced correctly (behavior proved by probe A4, R18 — confirmed here on the addon-token path) |
 | LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4) |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |

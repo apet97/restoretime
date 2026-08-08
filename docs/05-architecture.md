@@ -51,7 +51,8 @@ Clockify sidebar iframe   │  GET /component (verified JWT)     │
 ## Processes and modules
 
 One process, layered by dependency direction. No interfaces without two consumers; no dependency
-inversion for its own sake.
+inversion for its own sake. Routing constraint: the SDK router matches exact `method:path` only
+(docs/04) — the API uses exact paths with `entryId` in body/query (docs/03 §5).
 
 ```text
 src/
@@ -119,6 +120,7 @@ Environment variables (no config files):
 |---|---|
 | `PORT` | HTTP listen port |
 | `PUBLIC_BASE_URL` | Addon public HTTPS origin (manifest `baseUrl`, CSP) |
+| `CLOCKIFY_PARENT_ORIGIN` | Clockify app origin of the environment (production `https://app.clockify.me`, developer `https://developer.clockify.me`). Feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin` |
 | `DATABASE_PATH` | SQLite file path |
 | `ADDON_KEY` | Manifest key; JWT `sub` check |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte key for the installation token codec |

@@ -9,7 +9,9 @@
   `tests/fixtures/webhook/`, `tests/contract/*`, `tests/unit` normalization tests.
 - Interfaces: `withClockifyVerifiedWebhookRequest`; `DeletedTimeEntry` per docs/06.
 - Behavior: verify → guard → normalize → `INSERT OR IGNORE` (+ lineage link in the same tx) → 204.
-  Malformed body → 400 + structured log (no payload). Unknown installation → 401.
+  Malformed body → 400 + structured log (no payload). Unknown installation → 401. Webhook tokens
+  are looked up by normalized path (live payloads can carry `//webhooks/...`, fact 3); the handler
+  enforces `body.workspaceId === claims.workspaceId` (fact 8); ingestion is status-independent.
 - Failure behavior: DB error → 500 (redelivery retries; insert is idempotent).
 - Tests: CT-01…CT-05, UT-N01, UT-N02, UT-L01, IT-01, IT-02, IT-10.
 - Acceptance: fixtures pass; duplicate deliveries are no-ops; dismissed rows absorb redelivery.

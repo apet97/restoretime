@@ -120,8 +120,13 @@ Small and deterministic; not the whole exploratory campaign.
 
 PASS-03 scope: load the iframe shell against a local server with SDK test-signing helpers
 (`@apet97/clockify-addon-sdk/testing`), drive list → detail → preflight → confirm with a mocked
-Clockify API, assert rendered states (ready, warnings, blocked, success, unknown-result). Browser:
-agent's choice of the repo-standard tool; keep it one small suite.
+Clockify API, assert rendered states (ready, warnings, blocked, success, unknown-result).
+
+Runner: **vitest with the `happy-dom` environment**, scoped to `tests/e2e/`. This suite exercises
+the real esbuild bundle and the SDK bridge (which takes an injected `window`), and it is the only
+place a DOM environment is used. It deliberately does **not** attempt real-browser verification:
+CSP, `frame-ancestors`, iframe embedding, and console cleanliness belong to LV-01 against a live
+deployment and to PASS-04's XSS proof. Keep it one small suite.
 
 ## Commands
 

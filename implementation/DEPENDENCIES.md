@@ -2,6 +2,10 @@
 
 Complete dependency policy. If it is not listed here, it is not installed.
 
+The list is closed: it changes only by a recorded decision that names what the addition buys, what
+was rejected instead, and which pass report carries the rationale. One such amendment exists so
+far — `happy-dom`, at PASS-03.
+
 ## Runtime dependencies (3)
 
 | Package | Version | Why |
@@ -20,9 +24,14 @@ Transitive: `jose` (via the addon SDK). Never imported directly by app code.
 | `vitest` | Unit/contract/integration runner (matches sibling projects). |
 | `esbuild` | UI bundle (vanilla TS → one IIFE). |
 | `@types/node`, `@types/better-sqlite3` | Types. |
+| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest. The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, console errors — stay where the blueprint already assigns them: LV-01 against a live deployment, plus PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
 
 ## Explicitly rejected
 
+Playwright / any real-browser test runner (the only capabilities it adds over a DOM environment —
+real CSP, real `frame-ancestors`, real iframe embedding, a real console — are release-gated by
+LV-01 and covered by PASS-04's XSS proof, so it buys duplicate coverage at the cost of a second
+test runner and a CI browser download) ·
 Express/Hono/Fastify (the SDK node adapter suffices) · ORM/query builders (four query modules) ·
 zod/io-ts (hand-rolled guard, pinned by fixtures) · React/Vue/Svelte (vanilla TS suffices for four
 views) · Redis (ADR-005) · any job queue (ADR-010) · any logging framework (JSON lines to stdout) ·

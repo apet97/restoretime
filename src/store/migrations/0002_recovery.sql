@@ -39,6 +39,10 @@ CREATE TABLE recreation_plans (
   created_by             TEXT NOT NULL,
   created_at             TEXT NOT NULL,
   source_hash            TEXT NOT NULL,
+  -- The choices this plan was built from (docs/07 §7 revalidation reruns preflight with the
+  -- identical choices). Not in docs/08's original column list; added here because revalidation
+  -- is not implementable without it — an implicit gap in the documented schema, not a redesign.
+  choices_json           TEXT NOT NULL,
   resolution_json        TEXT NOT NULL,
   planned_request_json   TEXT NOT NULL,
   warnings_json          TEXT NOT NULL,

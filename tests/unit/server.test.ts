@@ -120,8 +120,8 @@ describe("GET /component", () => {
   });
 });
 
-describe("GET /api/ping", () => {
-  it("proves the requireViewer guard end-to-end for a valid token", async () => {
+describe("GET /api/entries", () => {
+  it("proves the requireViewer guard end-to-end for a valid token (PASS-02 replaces /api/ping)", async () => {
     const server = await boot();
     const token = await signTestToken(keys.privateKey, ADDON_KEY, {
       workspaceId: WORKSPACE_ID,
@@ -131,22 +131,25 @@ describe("GET /api/ping", () => {
     });
     const response = await server.addon.handle({
       method: "GET",
-      path: "/api/ping",
+      path: "/api/entries",
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      ok: true,
-      userId: "user-1",
-      workspaceId: WORKSPACE_ID,
-      workspaceRole: "admin",
-    });
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true });
   });
 
   it("rejects a request with no Authorization header", async () => {
     const server = await boot();
-    const response = await server.addon.handle({ method: "GET", path: "/api/ping", headers: {} });
+    const response = await server.addon.handle({ method: "GET", path: "/api/entries", headers: {} });
     expect(response.status).toBe(401);
+  });
+});
+
+describe("GET /api/ping (removed in PASS-02)", () => {
+  it("no longer exists", async () => {
+    const server = await boot();
+    const response = await server.addon.handle({ method: "GET", path: "/api/ping", headers: {} });
+    expect(response.status).toBe(404);
   });
 });
 

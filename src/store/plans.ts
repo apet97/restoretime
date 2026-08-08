@@ -11,6 +11,7 @@ import type {
   PlanResolution,
   PlanStatus,
   PlanWarning,
+  PreflightChoices,
   RecreationPlan,
 } from "../domain/entry.js";
 
@@ -20,6 +21,7 @@ interface PlanRow {
   created_by: string;
   created_at: string;
   source_hash: string;
+  choices_json: string;
   resolution_json: string;
   planned_request_json: string;
   warnings_json: string;
@@ -36,6 +38,7 @@ function rowToPlan(row: PlanRow): RecreationPlan {
     createdBy: row.created_by,
     createdAt: row.created_at,
     sourceHash: row.source_hash,
+    choices: JSON.parse(row.choices_json) as PreflightChoices,
     resolution: JSON.parse(row.resolution_json) as PlanResolution[],
     plannedRequest: JSON.parse(row.planned_request_json) as PlannedRequest,
     warnings: JSON.parse(row.warnings_json) as PlanWarning[],
@@ -52,6 +55,7 @@ export interface NewPlan {
   readonly createdBy: string;
   readonly createdAt: string;
   readonly sourceHash: string;
+  readonly choices: PreflightChoices;
   readonly resolution: readonly PlanResolution[];
   readonly plannedRequest: PlannedRequest;
   readonly warnings: readonly PlanWarning[];
@@ -69,9 +73,9 @@ export function createActive(db: Database.Database, plan: NewPlan): RecreationPl
     ).run(p.recoverableEntryId);
     db.prepare(
       `INSERT INTO recreation_plans
-         (id, recoverable_entry_id, created_by, created_at, source_hash, resolution_json,
+         (id, recoverable_entry_id, created_by, created_at, source_hash, choices_json, resolution_json,
           planned_request_json, warnings_json, blockers_json, action_required_json, fidelity, status)
-       VALUES (@id, @recoverableEntryId, @createdBy, @createdAt, @sourceHash, @resolutionJson,
+       VALUES (@id, @recoverableEntryId, @createdBy, @createdAt, @sourceHash, @choicesJson, @resolutionJson,
                @plannedRequestJson, @warningsJson, @blockersJson, @actionRequiredJson, @fidelity, 'ACTIVE')`,
     ).run({
       id: p.id,
@@ -79,6 +83,7 @@ export function createActive(db: Database.Database, plan: NewPlan): RecreationPl
       createdBy: p.createdBy,
       createdAt: p.createdAt,
       sourceHash: p.sourceHash,
+      choicesJson: JSON.stringify(p.choices),
       resolutionJson: JSON.stringify(p.resolution),
       plannedRequestJson: JSON.stringify(p.plannedRequest),
       warningsJson: JSON.stringify(p.warnings),

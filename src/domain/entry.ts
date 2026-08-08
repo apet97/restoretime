@@ -110,6 +110,9 @@ export interface RecreationPlan {
   readonly createdBy: string;
   readonly createdAt: string;
   readonly sourceHash: string;
+  /** The choices this plan was built from — revalidation (docs/07 §7) reruns preflight with the
+   * identical choices to detect a changed dependency. */
+  readonly choices: PreflightChoices;
   readonly resolution: readonly PlanResolution[];
   readonly plannedRequest: PlannedRequest;
   readonly warnings: readonly PlanWarning[];

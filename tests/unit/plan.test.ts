@@ -31,6 +31,7 @@ function plan(overrides: Partial<RecreationPlan> = {}): RecreationPlan {
     createdBy: "user-1",
     createdAt: "2026-08-08T09:00:00Z",
     sourceHash: sourceHash(SOURCE),
+    choices: {},
     resolution: [],
     plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: SOURCE.start },
     warnings: [],

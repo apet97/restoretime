@@ -257,7 +257,13 @@ export async function createServer(
     }
   });
 
-  registerApiRoutes(addon, parser);
+  registerApiRoutes(addon, parser, {
+    db,
+    installations,
+    onError(error, context) {
+      logger.error("api route error", { route: context.route, error: String(error) });
+    },
+  });
 
   return { addon, config, logger, db, installations };
 }

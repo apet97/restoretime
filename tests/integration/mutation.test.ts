@@ -92,6 +92,7 @@ function seedPlan(db: ReturnType<typeof freshDb>, recoverableEntryId: string) {
     createdBy: USER_ID,
     createdAt: "2026-08-08T09:00:30.000Z",
     sourceHash: "hash",
+    choices: {},
     resolution: [],
     plannedRequest: PLANNED,
     warnings: [],

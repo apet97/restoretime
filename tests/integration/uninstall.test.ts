@@ -72,9 +72,9 @@ describe("IT-11 uninstall purges all workspace rows", () => {
     server.db
       .prepare(
         `INSERT INTO recreation_plans
-           (id, recoverable_entry_id, created_by, created_at, source_hash, resolution_json,
+           (id, recoverable_entry_id, created_by, created_at, source_hash, choices_json, resolution_json,
             planned_request_json, warnings_json, blockers_json, action_required_json, fidelity, status)
-         VALUES ('plan-1', 're-1', 'user-1', '2026-08-08T00:00:01.000Z', 'hash', '[]', '{}', '[]', '[]', '[]', 'FULL', 'ACTIVE')`,
+         VALUES ('plan-1', 're-1', 'user-1', '2026-08-08T00:00:01.000Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'ACTIVE')`,
       )
       .run();
     server.db

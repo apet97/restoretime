@@ -2,7 +2,7 @@
 // migrated database.
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/store/db.js";
-import { ingestDeletedEntry, getById } from "../../src/store/entries.js";
+import { ingestDeletedEntry, getById, adopt } from "../../src/store/entries.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 
 function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
@@ -98,5 +98,76 @@ describe("UT-L01 lineage linking on ingestion", () => {
       .prepare("SELECT COUNT(*) AS n FROM recoverable_entries WHERE workspace_id = ?")
       .get("ws-1") as { n: number };
     expect(count.n).toBe(1);
+  });
+});
+
+
+// docs/08 "double-adoption guard (advisor)" and docs/07 §8: two AMBIGUOUS rows must never adopt
+// the same Clockify entry. The guard is the partial unique index on
+// (workspace_id, new_entry_id), not application logic, so it is tested at the database.
+describe("double-adoption guard", () => {
+  function ambiguousRow(db: ReturnType<typeof openDatabase>, id: string, sourceEntryId: string) {
+    ingestDeletedEntry(db, {
+      id,
+      workspaceId: "ws-1",
+      sourceEntryId,
+      ownerId: "user-1",
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: source({ entryId: sourceEntryId }),
+    });
+    db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(id);
+  }
+
+  it("rejects a second row adopting an already-adopted new_entry_id", () => {
+    const db = openDatabase(":memory:");
+    ambiguousRow(db, "re-a", "entry-a");
+    ambiguousRow(db, "re-b", "entry-b");
+
+    const input = {
+      workspaceId: "ws-1",
+      newEntryId: "new-entry-x",
+      recreatedAt: "2026-08-08T10:00:00Z",
+      recreatedBy: "user-1",
+    };
+    expect(adopt(db, { id: "re-a", ...input })?.lifecycleState).toBe("RECREATED");
+
+    // The route maps this throw to 409 and leaves the row AMBIGUOUS for the user to resolve.
+    let thrown: unknown;
+    try {
+      adopt(db, { id: "re-b", ...input });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(String((thrown as { code?: string })?.code)).toMatch(/^SQLITE_CONSTRAINT/);
+
+    const rowB = getById(db, "ws-1", "re-b");
+    expect(rowB?.lifecycleState).toBe("AMBIGUOUS");
+    expect(rowB?.newEntryId).toBeNull();
+  });
+
+  it("allows the same new_entry_id in a different workspace", () => {
+    const db = openDatabase(":memory:");
+    ambiguousRow(db, "re-a", "entry-a");
+    ingestDeletedEntry(db, {
+      id: "re-other",
+      workspaceId: "ws-2",
+      sourceEntryId: "entry-a",
+      ownerId: "user-1",
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: source({ workspaceId: "ws-2" }),
+    });
+    db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(
+      "re-other",
+    );
+
+    const common = { recreatedAt: "2026-08-08T10:00:00Z", recreatedBy: "user-1" };
+    expect(
+      adopt(db, { id: "re-a", workspaceId: "ws-1", newEntryId: "new-entry-x", ...common })
+        ?.lifecycleState,
+    ).toBe("RECREATED");
+    expect(
+      adopt(db, { id: "re-other", workspaceId: "ws-2", newEntryId: "new-entry-x", ...common })
+        ?.lifecycleState,
+    ).toBe("RECREATED");
   });
 });

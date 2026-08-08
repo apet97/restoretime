@@ -7,6 +7,7 @@
 // request, share across rows" (pass file API scope).
 
 import { ClockifyApiError, iterPages, type ClockifyClient } from "clockify-sdk-ts-115";
+import { clockifyErrorCode } from "./errors.js";
 import type { DeletedTimeEntry, PreflightChoices } from "../domain/entry.js";
 import { resolveEffectiveIds, type CustomFieldDef, type LookupResult, type TaskLookupResult, type WorkspaceState } from "../domain/preflight.js";
 
@@ -96,6 +97,25 @@ export async function fetchSharedWorkspaceData(client: ClockifyClient, workspace
   };
 }
 
+/**
+ * A project that no longer exists is reported two different ways, and only one of them is a 404.
+ * Live-probed on 2026-08-08 (evidence/error-shapes-2026-08-08.md): a project that was created,
+ * archived, and deleted reads back as `400 {"message":"Project doesn't belong to Workspace",
+ * "code":501}`, exactly like an id that never existed. Treating 404 alone as "gone" — which is
+ * what docs/03 §2 originally said — would send every deleted-project recreation down the "Clockify
+ * could not be reached" path instead of P-PROJ-GONE's replacement picker (R24).
+ *
+ * The mapping is scoped to this one lookup on purpose. Body code `501` covers several unrelated
+ * validation failures elsewhere (R15, R18), but this request carries only `workspaceId` and
+ * `projectId`, so "doesn't belong to Workspace" has exactly one cause here. Everything else
+ * re-throws and fails the preflight honestly.
+ */
+function isProjectGone(err: unknown): boolean {
+  if (!(err instanceof ClockifyApiError)) return false;
+  if (err.statusCode === 404) return true;
+  return err.statusCode === 400 && clockifyErrorCode(err) === "501";
+}
+
 async function lookupProject(
   client: ClockifyClient,
   workspaceId: string,
@@ -106,7 +126,7 @@ async function lookupProject(
     const project = await client.projects.get({ workspaceId, projectId });
     return { id: project.id, archived: project.archived };
   } catch (err) {
-    if (err instanceof ClockifyApiError && err.statusCode === 404) return null;
+    if (isProjectGone(err)) return null;
     throw err;
   }
 }

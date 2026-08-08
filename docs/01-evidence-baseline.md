@@ -407,6 +407,26 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONSEQUENCE: P-CF-REQ resolution order is: source value → current default → user input
   (mandatory). P-LOCK-REG skips its warning entirely for entries younger than 24 hours.
 
+### R24 — A gone project reads back as 400 code `501`, not 404
+
+- FACT: `GET /workspaces/{ws}/projects/{id}` for a project that no longer exists returns
+  `400 {"message":"Project doesn't belong to Workspace","code":501}`. This holds both for an id
+  that never existed and for a project that was created, archived, and then deleted — the
+  deletion case was probed deliberately, because the two could have differed. A 404 from that
+  route is therefore not the signal that a project is gone. Separately: an unknown **workspace**
+  id returns a 404 with an entirely empty body (the code-absent case R15 records), while an
+  unknown **route** returns 404 with body code `3000` — so "404" and "no body code" are
+  independent conditions.
+- EVIDENCE: `evidence/error-shapes-2026-08-08.md` (developer environment, addon token; the
+  create/archive/delete steps used the operator's dev API key because the addon token correctly
+  lacks `PROJECT_WRITE`).
+- CONFIDENCE: PROVED (2026-08-08).
+- CONSEQUENCE: P-PROJ-GONE triggers on 404 **or** 400 body code `501` from `projects.get`, scoped
+  to that lookup only; every other error fails the preflight honestly. Corrects docs/03 §2,
+  docs/04, and docs/07 §2–§3, which previously said "404 = gone". Without this the most common
+  recovery scenario — the project was deleted after the entry — would surface as "Clockify could
+  not be reached" instead of the replacement picker. `tasks.list`/`tags.list` are unaffected.
+
 ### R21 — Invoice state is invisible on entries
 
 - FACT: `PATCH /time-entries/invoiced` returns 200 but the entry read model never exposes the

@@ -76,6 +76,9 @@ yet, so an honest gap is visible here rather than buried in a report.
       release-blocking defect present in rc.1…rc.5 — the component response omitted `connect-src`,
       so `default-src 'none'` blocked every `/api/*` call and the UI could not load data in any
       browser. Fixed and pinned in `tests/unit/server.test.ts`.
+      The docs/10 §8 **token-refresh** contract is also verified live now: the proactive dispatch
+      fired at exactly 25 minutes and a call 106 s after the original token's expiry still
+      succeeded (evidence "Live run 12"). Its reactive 401-retry half remains unit-covered only.
       **Still unverified**: production (`app.clockify.me`) has never been exercised.
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
       package is staged (`implementation/marketplace/`: manifest review, scope justification,

@@ -1,0 +1,12 @@
+// `lint` is `typecheck` plus the checks that catch dead code and silent fallthrough. Keeping them
+// out of `typecheck` means an in-progress edit still typechecks while the gate stays strict
+// (AGENTS.md rule 15: no dead code, no unused exports).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}

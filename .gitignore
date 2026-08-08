@@ -17,3 +17,6 @@ tools/install-capture/var/
 
 # Planning session transcripts (not blueprint inputs)
 omp-session-*.html
+
+# Agent worktrees (harness-managed, never part of the product)
+.claude/

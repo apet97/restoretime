@@ -716,4 +716,32 @@ describe("the shipped bundle", () => {
     expect(text()).toContain("Deleted time entries");
     expect(text()).toContain("API investigation");
   });
+  it("carries the verified theme claim through to the attribute the stylesheet keys off", async () => {
+    // src/ui/app.css styles dark via `:root[data-clockify-theme="dark"]`. That selector is only
+    // correct if the claim really reaches `documentElement` in that normalized form, and nothing
+    // else asserted the chain JWT claim -> shell `data-theme` -> SDK `applyClockifyTheme`.
+    // NOTE: `DARK` has never been observed arriving from Clockify — the developer environment
+    // exposes no dark-mode setting (evidence "Live run 9"). This pins our half of the contract:
+    // whatever Clockify sends, `applyClockifyTheme` lowercases it onto the root.
+    const server = await bootServer();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+
+    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "member",
+      theme: "DARK",
+    });
+    await mountShell(server, token);
+    expect(document.body.dataset.theme).toBe("DARK");
+
+    vi.stubGlobal("fetch", makeFetchImpl(server, baseClockifyStub()));
+    const { window } = createTestWindow(token);
+    boot({ window, fetchImpl: makeFetchImpl(server, baseClockifyStub()) });
+    await waitFor(() => text().includes("Deleted time entries"));
+
+    expect(document.documentElement.dataset.clockifyTheme).toBe("dark");
+  });
 });

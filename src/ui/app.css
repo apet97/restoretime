@@ -1,0 +1,255 @@
+/* Component styling (docs/10 §8). Served from /static/app.css and allowed by `style-src 'self'` —
+ * an inline <style> block or a style= attribute would be blocked by `default-src 'none'` exactly as
+ * the /api/* fetch was before `connect-src` was added.
+ *
+ * Scope: layout, spacing, readable type, button affordance, status colour, and the two theme
+ * palettes. Deliberately not a design system — no utility classes, no component library.
+ *
+ * Theme: `applyClockifyTheme` (SDK) writes the verified `theme` claim to
+ * `documentElement.dataset.clockifyTheme`, lowercased, defaulting to "default". So the dark palette
+ * keys off [data-clockify-theme="dark"]. Every colour is a custom property, and only those
+ * properties are re-declared for dark — the rules below never repeat a colour. */
+
+:root {
+  --rt-bg: #ffffff;
+  --rt-surface: #f7f9fc;
+  --rt-border: #dfe5ec;
+  --rt-text: #1a2531;
+  --rt-muted: #5c6b7a;
+  --rt-accent: #03a9f4;
+  --rt-accent-text: #ffffff;
+  --rt-danger: #c62828;
+  --rt-warn: #a1620a;
+  --rt-ok: #2e7d32;
+  --rt-focus: #0277bd;
+}
+
+:root[data-clockify-theme="dark"] {
+  --rt-bg: #1b2028;
+  --rt-surface: #232a34;
+  --rt-border: #38414e;
+  --rt-text: #e7edf4;
+  --rt-muted: #a4b1c0;
+  --rt-accent: #29b6f6;
+  --rt-accent-text: #10151b;
+  --rt-danger: #ef9a9a;
+  --rt-warn: #e5b168;
+  --rt-ok: #a5d6a7;
+  --rt-focus: #4fc3f7;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: var(--rt-bg);
+  color: var(--rt-text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+h3 {
+  margin: 20px 0 8px;
+  font-size: 15px;
+}
+
+p {
+  margin: 8px 0;
+}
+
+/* Filters ------------------------------------------------------------------------------------ */
+
+section[aria-label="Filters"],
+fieldset {
+  border: 1px solid var(--rt-border);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0 0 16px;
+  background: var(--rt-surface);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: end;
+}
+
+legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--rt-muted);
+}
+
+input,
+select {
+  font: inherit;
+  color: var(--rt-text);
+  background: var(--rt-bg);
+  border: 1px solid var(--rt-border);
+  border-radius: 4px;
+  padding: 5px 7px;
+}
+
+input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--rt-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--rt-focus);
+  outline-offset: 1px;
+}
+
+/* Buttons ------------------------------------------------------------------------------------ */
+
+button {
+  font: inherit;
+  padding: 6px 13px;
+  border-radius: 4px;
+  border: 1px solid var(--rt-border);
+  background: var(--rt-bg);
+  color: var(--rt-text);
+  cursor: pointer;
+}
+
+button:hover:not([disabled]) {
+  border-color: var(--rt-accent);
+}
+
+button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Primary action, marked by the view that owns it. An earlier version inferred this from position
+ * (`div > button:first-child`) and styled the list row's date header as a filled primary button,
+ * because every row child is its own <div> — position is not a reliable stand-in for intent. */
+.rt-primary {
+  background: var(--rt-accent);
+  border-color: var(--rt-accent);
+  color: var(--rt-accent-text);
+}
+
+.rt-primary[disabled] {
+  background: var(--rt-muted);
+  border-color: var(--rt-muted);
+}
+
+button + button {
+  margin-left: 8px;
+}
+
+/* Entry list --------------------------------------------------------------------------------- */
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Scoped to the top-level entry/result list. Nested lists (the Differences bullets, a blocker
+ * list) are prose, and styling every <li> as a card turned four sentences into four cards. */
+#app > ul > li {
+  border: 1px solid var(--rt-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--rt-surface);
+  list-style: none;
+}
+
+/* Nested lists stay ordinary bulleted prose. */
+li li,
+section ul {
+  list-style: disc;
+  margin-left: 18px;
+}
+
+/* The row header is a button carrying the date range (docs/10 §1) — it reads as a title, not a
+ * control, so it drops the button chrome and keeps only the affordance. */
+.rt-title {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--rt-accent);
+  text-align: left;
+}
+
+.rt-title:hover {
+  text-decoration: underline;
+}
+
+li > div {
+  color: var(--rt-muted);
+  font-size: 13px;
+}
+
+/* The description line carries the entry's identity — keep it at body colour, not muted. */
+li > div:nth-of-type(2) {
+  color: var(--rt-text);
+  font-size: 14px;
+}
+
+/* Facts table -------------------------------------------------------------------------------- */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+
+caption {
+  text-align: left;
+  padding-bottom: 6px;
+  color: var(--rt-muted);
+}
+
+th,
+td {
+  border: 1px solid var(--rt-border);
+  padding: 6px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  background: var(--rt-surface);
+}
+
+tbody th {
+  background: var(--rt-surface);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Notices ------------------------------------------------------------------------------------ */
+
+[role="alert"] {
+  color: var(--rt-danger);
+  font-weight: 600;
+}
+
+/* The two things a user must not miss: the blocker list and the ACTION_REQUIRED region. Marked by
+ * the views themselves — an earlier `section:not([aria-label="Filters"])` also caught the routine
+ * "Differences" section and coloured plain information as a warning. */
+.rt-notice {
+  border: 1px solid var(--rt-warn);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 16px 0;
+}
+
+.rt-notice > h3 {
+  margin-top: 0;
+  color: var(--rt-warn);
+}

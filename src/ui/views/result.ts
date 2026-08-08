@@ -44,7 +44,7 @@ function renderSuccess(ctx: Ctx, plan: RecreationPlan, result: Extract<AttemptRe
     );
   }
 
-  const openButton = el("button", { type: "button" }, "Open in Clockify tracker");
+  const openButton = el("button", { type: "button", class: "rt-primary" }, "Open in Clockify tracker");
   openButton.addEventListener("click", () => ctx.bridge.navigate("tracker"));
   const backButton = el("button", { type: "button" }, "Back to deleted entries");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));

@@ -42,6 +42,7 @@ import {
   ICON_PATH,
   lifecycleDescriptors,
   STATIC_APP_JS_PATH,
+  STATIC_APP_CSS_PATH,
   WEBHOOK_PATH,
   webhookDescriptor,
 } from "./manifest.js";
@@ -58,10 +59,19 @@ const ADDON_ICON_SVG =
  * production). Read per-request, not cached at createServer() time: this function is also invoked
  * by tests that build the server straight from src/ (no dist/), which never hit this route. */
 function loadAppBundle(): string | undefined {
+  return loadStaticAsset("./static/app.js");
+}
+
+/** Same read-per-request contract as the bundle, for the stylesheet. */
+function loadAppStylesheet(): string | undefined {
+  return loadStaticAsset("./static/app.css");
+}
+
+function loadStaticAsset(relative: string): string | undefined {
   // `NodeURL`, not the ambient global — see the comment on the equivalent line in store/db.ts.
-  const bundlePath = fileURLToPath(new NodeURL("./static/app.js", import.meta.url));
+  const assetPath = fileURLToPath(new NodeURL(relative, import.meta.url));
   try {
-    return readFileSync(bundlePath, "utf8");
+    return readFileSync(assetPath, "utf8");
   } catch {
     return undefined;
   }
@@ -226,7 +236,7 @@ export async function createServer(
     componentDescriptor(),
     withClockifyVerifiedComponentRequest(parser, async (_request, claims) =>
       createClockifyHtmlResponse(
-        componentShellHtml(config.clockifyParentOrigin, STATIC_APP_JS_PATH, {
+        componentShellHtml(config.clockifyParentOrigin, STATIC_APP_JS_PATH, STATIC_APP_CSS_PATH, {
           ...(claims.theme !== undefined ? { theme: claims.theme } : {}),
           ...(claims.language !== undefined ? { language: claims.language } : {}),
           ...(claims.workspaceRole !== undefined ? { workspaceRole: claims.workspaceRole } : {}),
@@ -239,7 +249,10 @@ export async function createServer(
           // `fetch`, which is governed by connect-src and would otherwise fall back to
           // default-src 'none'. Omitting it shipped a component that rendered but could never
           // load data — see the live violation event recorded in evidence/live-release-run.md.
-          contentSecurityPolicy: { "script-src": ["'self'"], "connect-src": ["'self'"] },
+          // style-src is the same story again: the stylesheet at /static/app.css is an
+          // external resource, so without this `default-src 'none'` blocks it and the component
+          // renders unstyled.
+          contentSecurityPolicy: { "script-src": ["'self'"], "connect-src": ["'self'"], "style-src": ["'self'"] },
         },
       ),
     ),
@@ -264,6 +277,19 @@ export async function createServer(
         "cache-control": "public, max-age=300",
       },
       body: bundle,
+    };
+  });
+
+  addon.registerHandler(STATIC_APP_CSS_PATH, "GET", async () => {
+    const stylesheet = loadAppStylesheet();
+    if (stylesheet === undefined) {
+      logger.error("static stylesheet missing", { path: STATIC_APP_CSS_PATH });
+      return { status: 500, body: "Static stylesheet not built. Run npm run build." };
+    }
+    return {
+      status: 200,
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=300" },
+      body: stylesheet,
     };
   });
 

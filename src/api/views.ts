@@ -24,16 +24,18 @@ export function escapeHtml(value: string): string {
 export function componentShellHtml(
   parentOrigin: string,
   staticAppJsPath: string,
+  staticAppCssPath: string,
   claims: { readonly theme?: string; readonly language?: string; readonly workspaceRole?: string } = {},
 ): string {
   const safeOrigin = escapeHtml(parentOrigin);
   const safeScriptPath = escapeHtml(staticAppJsPath);
+  const safeStylePath = escapeHtml(staticAppCssPath);
   const safeTheme = escapeHtml(claims.theme ?? "");
   const safeLanguage = escapeHtml(claims.language ?? "");
   const safeRole = escapeHtml(claims.workspaceRole ?? "");
   return `<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Time Entry Recovery</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Time Entry Recovery</title><link rel="stylesheet" href="${safeStylePath}"></head>
 <body data-parent-origin="${safeOrigin}" data-theme="${safeTheme}" data-language="${safeLanguage}" data-role="${safeRole}">
 <main id="app"><h1>RestoreTime</h1><p>Loading…</p></main>
 <script src="${safeScriptPath}"></script>

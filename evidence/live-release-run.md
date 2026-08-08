@@ -598,3 +598,74 @@ assumed with its `!isAdmin(viewer)` condition. The rule matches the platform.
 
 The probe entry was deleted (HTTP 204). Every setting was returned to baseline:
 `timeTrackingMode: "DEFAULT"`, `lockTimeEntries: null`, `automaticLock: null`, `forceProjects: true`.
+
+# Live run 9 — a full UI/UX sweep in the real iframe, and what it found
+
+The CSP fix (Live run 7) made the component usable for the first time, so this run walked every
+view an operator can reach, in the real Clockify iframe on the developer environment.
+
+## What already worked, confirmed by walking it
+
+```
+ACTION_REQUIRED   P-CF-OPT widget offered the current options plus "Keep the original value" /
+                  "Drop this value"; "Continue to confirm" stayed disabled until a choice was made;
+                  choosing re-ran preflight, cleared the region, and the confirm view reported
+                  Fidelity: Adjusted. The chosen "Option 2" was written verbatim to that exact
+                  custom field on the new Clockify entry.
+Blocked entry     detail showed "This entry cannot be recreated yet" with the real P-TYPE reason,
+                  and "Continue to confirm" was disabled — no dead action.
+Filters           search 127 -> 12 matching rows; status=Recreated returned only recreated rows,
+                  which correctly carry no Recreate button.
+Bulk              select -> review -> "Recreate 2 entries" -> both RECREATED.
+Escaping          a description carrying quotes, &, backtick, ${tpl} and unicode rendered literally;
+                  nothing executed. Clockify itself rejects < and > in descriptions
+                  (400 {"message":"You entered wrong value. Don't use \"<\" and \">\" characters",
+                  "code":501}), but the UI does not rely on that: src/ui/dom.ts builds every node
+                  with createTextNode, and there is no innerHTML in src/ui/.
+```
+
+## Defects the sweep found
+
+**Dismiss had no user interface at all.** `POST /api/entries/dismiss` existed and worked, but
+nothing in `src/ui/` ever called it — only `undismiss` was wired. docs/06 specifies
+IDLE/FAILED → DISMISSED, so the state was unreachable through the product: the "Show dismissed"
+toggle could never show anything, and a list could only ever grow. Added the action to the detail
+view beside "Continue to confirm", where the inverse already lived. Now proven live: dismiss → the
+entry leaves the default list → "Show dismissed" reveals exactly it, "Status: Dismissed" →
+undismiss → back. `tests/integration/dismiss-roundtrip.test.ts` pins the contract, which nothing
+covered before (only a 403 path and one auth loop touched the endpoint).
+
+**The list was unbounded.** `entries.list` had no `LIMIT`, and `handleListEntries` runs a full
+preflight — with its own Clockify project/task lookups — for every actionable row returned. The test
+workspace reached 127 rows within a day, all rendered and all preflighted on every list render. Now
+bounded to 50 with the page and a `truncated` flag returned by the server, and a notice in the UI.
+The performance test now asserts the bound instead of asserting 5000 rows come back.
+
+**The bulk review view could not be reviewed.** A "ready" row carries no reason text, so rows
+rendered as a bare "Ready — ": several identical lines an admin was asked to confirm blind. The
+route now returns each row's `source`, and the view shows the entry header and description. Its
+checkboxes also had no accessible name; they now say which entry they toggle. The results view
+reported the raw 24-character Clockify id ("New entry 6a777ab2cf..."), which told the reader
+nothing — the "Open" button beside it is what reaches the entry.
+
+**There was no styling at all.** The component rendered in browser defaults — Times New Roman
+headings, unstyled controls — inside Clockify's own interface, and the verified `theme` claim was
+applied to an attribute no rule consumed, so a dark-mode user would get a white panel. Added
+`/static/app.css` with `style-src 'self'` (the third directive this project has had to add past
+`default-src 'none'`), custom-property colours, and a dark palette.
+
+Two CSS mistakes worth recording, both from styling against the accessibility tree instead of the
+DOM: `li > button:first-of-type` matched nothing (every row child is its own `<div>`), so the row's
+date header picked up the primary-button rule and rendered as a filled blue button; and a generic
+`section` rule painted the routine "Differences" block in warning orange. Both are now explicit
+classes the views set — `rt-primary`, `rt-title`, `rt-notice` — rather than positional guesses.
+
+## Not verified
+
+`DARK` has never been observed arriving from Clockify: the developer environment exposes no
+dark-mode setting to turn on. The dark palette keys off the attribute the SDK's `applyClockifyTheme`
+writes, and `tests/e2e/component-flow.test.ts` proves the chain claim → shell `data-theme` → root
+`data-clockify-theme="dark"`; whether Clockify ever sends that claim value is untested.
+
+The 401 token-refresh path (docs/10 §8) still has no live proof — it needs a component session left
+open past the 25-minute proactive refresh.

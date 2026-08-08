@@ -28,6 +28,10 @@ Status: Ready to recreate
 - "Detected" is the receipt time (W14). The UI never says "Deleted at".
 - Empty state: "No deleted time entries. When you delete a time entry in Clockify, it appears
   here."
+- The list is bounded server-side (50 most recently detected). Every returned row costs a preflight
+  with its own Clockify lookups, so an unbounded list scales API traffic with the backlog. When rows
+  were withheld the list says so — "Showing the 50 most recently detected entries. Use the filters
+  above to find older ones." — rather than letting a full page read as "everything".
 
 ## 2. List view (admin additions)
 
@@ -49,6 +53,10 @@ Tags: support, api                     Tags: support, api
 Billable: yes                          Billable: yes
 Owner: Ana Markovic                    Owner: Ana Markovic
 ```
+
+A **Dismiss** action sits beside "Continue to confirm" (docs/06: IDLE/FAILED → DISMISSED). Without
+it the "Show dismissed" toggle in §2 has nothing to reveal and a list can only ever grow. The
+inverse, **Undismiss**, is on the dismissed entry's own view.
 
 Then a **Differences** section that always lists the system differences:
 
@@ -144,6 +152,15 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
 
 ## 8. General UI rules
 
+- Styling is a single stylesheet served at `/static/app.css`, allowed by `style-src 'self'`. Inline
+  `<style>` blocks and `style=` attributes are blocked by `default-src 'none'` — the same rule that
+  blocked the bundle before `script-src` and `/api/*` before `connect-src`. Colours are custom
+  properties; the dark palette keys off `[data-clockify-theme="dark"]`, the attribute the SDK's
+  `applyClockifyTheme` writes to the document root.
+- Views mark their own intent with `rt-primary` (the one primary action), `rt-title` (a row header
+  that reads as a title), and `rt-notice` (blockers and ACTION_REQUIRED). Position is not a
+  substitute: inferring the primary button from `div > button:first-child` styled the list row's
+  date header as a filled button, because every row child is its own `<div>`.
 - All Clockify-controlled strings (descriptions, project names, tag names, user names) are escaped
   before insertion into HTML (N5). No `innerHTML` with interpolated values; use `textContent`.
 - Dates display in the viewer's locale via the SDK `formatClockifyDate`; theme and language apply

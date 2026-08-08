@@ -99,6 +99,15 @@ function source(projectId: string | null): DeletedTimeEntry {
   };
 }
 
+interface SeedRow {
+  readonly id: string;
+  readonly sourceEntryId: string;
+  readonly detectedAt: string;
+  readonly sourceJson: string;
+  readonly lifecycleState: LifecycleState;
+  readonly newEntryId: string | null;
+}
+
 /** Seeds `TOTAL_ROWS` rows directly (one prepared statement, one transaction — the fast path a
  * webhook-per-row seed would not give us at this scale). `ACTIONABLE_ROWS` are IDLE, spread evenly
  * across `DISTINCT_PROJECTS`; the rest are RECREATED (never actionable, so `handleListEntries`
@@ -110,14 +119,14 @@ function seedRows(server: AppServer): void {
        (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state, new_entry_id)
      VALUES (@id, @workspaceId, @sourceEntryId, @ownerId, @detectedAt, @sourceJson, @lifecycleState, @newEntryId)`,
   );
-  const run = server.db.transaction((rows: { id: string; sourceEntryId: string; sourceJson: string; lifecycleState: LifecycleState; newEntryId: string | null }[]) => {
+  const run = server.db.transaction((rows: SeedRow[]) => {
     for (const row of rows) {
       insert.run({
         id: row.id,
         workspaceId: WORKSPACE_ID,
         sourceEntryId: row.sourceEntryId,
         ownerId: OWNER_ID,
-        detectedAt: "2026-08-08T09:00:00.000Z",
+        detectedAt: row.detectedAt,
         sourceJson: row.sourceJson,
         lifecycleState: row.lifecycleState,
         newEntryId: row.newEntryId,
@@ -125,15 +134,18 @@ function seedRows(server: AppServer): void {
     }
   });
 
-  const rows: { id: string; sourceEntryId: string; sourceJson: string; lifecycleState: LifecycleState; newEntryId: string | null }[] = [];
+  const rows: SeedRow[] = [];
   for (let i = 0; i < ACTIONABLE_ROWS; i++) {
     const projectId = `proj-${i % DISTINCT_PROJECTS}`;
-    rows.push({ id: `re-actionable-${i}`, sourceEntryId: `src-actionable-${i}`, sourceJson: JSON.stringify(source(projectId)), lifecycleState: "IDLE", newEntryId: null });
+    // Newest, so the bounded page `handleListEntries` returns is deterministically the actionable
+    // rows. Leaving every row on one timestamp made the page depend on insertion order, which is
+    // not something `ORDER BY detected_at DESC` promises.
+    rows.push({ id: `re-actionable-${i}`, sourceEntryId: `src-actionable-${i}`, detectedAt: "2026-08-08T10:00:00.000Z", sourceJson: JSON.stringify(source(projectId)), lifecycleState: "IDLE", newEntryId: null });
   }
   for (let i = 0; i < TOTAL_ROWS - ACTIONABLE_ROWS; i++) {
     // RECREATED rows need a `new_entry_id` (docs/08 invariant); distinct per row so nothing
     // collides with the unique (workspace_id, new_entry_id) index.
-    rows.push({ id: `re-filler-${i}`, sourceEntryId: `src-filler-${i}`, sourceJson: JSON.stringify(source(null)), lifecycleState: "RECREATED", newEntryId: `filler-clockify-id-${i}` });
+    rows.push({ id: `re-filler-${i}`, sourceEntryId: `src-filler-${i}`, detectedAt: "2026-08-08T09:00:00.000Z", sourceJson: JSON.stringify(source(null)), lifecycleState: "RECREATED", newEntryId: `filler-clockify-id-${i}` });
   }
   run(rows);
 }
@@ -194,8 +206,16 @@ describe("Performance sanity: 5000 seeded rows, no N+1, documented p95 budget", 
     const response = await server.addon.handle({ method: "GET", path: "/api/entries", query: new URLSearchParams(), headers: { authorization: `Bearer ${token}` } });
 
     expect(response.status).toBe(200);
-    const body = response.body as { entries: unknown[] };
-    expect(body.entries).toHaveLength(TOTAL_ROWS);
+    const body = response.body as { entries: unknown[]; truncated: boolean; limit: number };
+    // The endpoint is bounded: 5000 rows in the table, one page out, and it says so. This is the
+    // point of the bound — every returned row costs a preflight with its own Clockify lookups, so
+    // returning all 5000 would have made list traffic scale with the backlog.
+    expect(body.entries).toHaveLength(body.limit);
+    expect(body.truncated).toBe(true);
+    expect(body.limit).toBeLessThan(TOTAL_ROWS);
+    // The page is the actionable rows (seeded newest), so the N+1 assertions below still measure
+    // real preflight lookups rather than a page of never-preflighted RECREATED filler.
+    expect(body.entries).toHaveLength(ACTIONABLE_ROWS);
 
     // Shared workspace-level lookups: exactly once per request, regardless of row count.
     expect(workspaceCalls).toBe(1);

@@ -174,12 +174,22 @@ function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, 
   }
 
   const canConfirm = plan.blockers.length === 0 && plan.actionRequired.length === 0;
-  const continueButton = el("button", { type: "button" }, "Continue to confirm");
+  const continueButton = el("button", { type: "button", class: "rt-primary" }, "Continue to confirm");
   continueButton.toggleAttribute("disabled", !canConfirm);
   continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled }));
   const backButton = el("button", { type: "button" }, "Back to deleted entries");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-  nodes.push(el("div", {}, continueButton, backButton));
+  // docs/06 lifecycle: IDLE/FAILED -> DISMISSED. Without this the server's dismiss endpoint had no
+  // caller, so nothing could ever enter the state that docs/10 §2's "Show dismissed" toggle exists
+  // to reveal, and a list could only ever grow. `renderDismissed` already offers the inverse.
+  const dismissButton = el("button", { type: "button" }, "Dismiss");
+  dismissButton.addEventListener("click", () => {
+    ctx.api
+      .post("/api/entries/dismiss", { entryId })
+      .then(() => ctx.navigate({ kind: "list" }))
+      .catch((err) => renderApiError(ctx.root, err, reflow));
+  });
+  nodes.push(el("div", {}, continueButton, dismissButton, backButton));
 
   mount(ctx.root, ...nodes);
 }

@@ -4,6 +4,7 @@
 // cross-entry transaction) — this view only renders whatever per-entry outcome comes back.
 
 import { el, mount } from "../dom.js";
+import { formatEntryHeader } from "../format.js";
 import type { Ctx } from "../state.js";
 import { renderApiError, runAction } from "./shared.js";
 import type { BulkPreflightRow, BulkRecreateRow } from "../types.js";
@@ -27,7 +28,7 @@ const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
 export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): void {
   const selected = new Set(rows.filter((r) => r.status === "ready" && r.plan).map((r) => r.entryId));
 
-  const recreateButton = el("button", { type: "button" }, "");
+  const recreateButton = el("button", { type: "button", class: "rt-primary" }, "");
   const readyPlanIds = () => rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
   /** The label and the action have to agree: computing the count once left the button saying
    * "Recreate 2 entries" after the admin unchecked one, and clicking with nothing checked
@@ -39,9 +40,21 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
   };
 
   const listItems = rows.map((row) => {
-    const line = [el("strong", {}, STATUS_LABEL[row.status]), ` — ${rowReason(row)}`];
+    // A review view has to say what is being reviewed. A "ready" row carries no reason text, so
+    // without the entry's own header and description it rendered as a bare "Ready — ": several
+    // identical lines the admin was asked to confirm blind.
+    const label = row.source ? formatEntryHeader(row.source.start, row.source.end, ctx.locale) : "This entry";
+    const description = row.source?.description ?? "";
+    const reason = rowReason(row);
+    const line = [
+      el("strong", {}, STATUS_LABEL[row.status]),
+      ` — ${label}`,
+      ...(description ? [el("div", {}, description)] : []),
+      ...(reason ? [el("div", {}, reason)] : []),
+    ];
     if (row.status === "ready" && row.plan) {
-      const checkbox = el("input", { type: "checkbox" });
+      // Named, so a screen reader announces which entry is being toggled rather than "checkbox".
+      const checkbox = el("input", { type: "checkbox", "aria-label": `Recreate ${label}` });
       checkbox.checked = true;
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selected.add(row.entryId);
@@ -89,7 +102,9 @@ const OUTCOME_LABEL: Record<string, string> = {
 function rowMessage(row: BulkRecreateRow): string {
   if (row.outcome === "ERROR") return row.message;
   if (row.outcome === "FAILED") return row.message;
-  if (row.outcome === "RECREATED") return `New entry ${row.newEntryId}.`;
+  // The raw Clockify id said nothing to the person reading it — the "Open" button beside this row
+  // is what actually reaches the new entry.
+  if (row.outcome === "RECREATED") return "The new entry is in Clockify.";
   return "Clockify's answer did not arrive. Open this entry to check.";
 }
 

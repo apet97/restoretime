@@ -57,7 +57,7 @@ export function renderConfirm(ctx: Ctx, entryId: string, plan: RecreationPlan, s
     return;
   }
 
-  const confirmButton = el("button", { type: "button" }, "Recreate entry");
+  const confirmButton = el("button", { type: "button", class: "rt-primary" }, "Recreate entry");
 
   confirmButton.addEventListener("click", () => {
     confirmButton.toggleAttribute("disabled", true);

@@ -1,0 +1,10 @@
+// The same lint rules applied to the browser bundle project (src/ui), which needs the DOM lib.
+{
+  "extends": "./tsconfig.ui.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}

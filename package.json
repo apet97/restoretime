@@ -1,0 +1,33 @@
+{
+  "name": "restoretime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RestoreTime — Clockify Marketplace add-on that recreates deleted time entries.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/store/migrations dist/static && cp src/store/migrations/*.sql dist/store/migrations/ && esbuild src/ui/app.ts --bundle --outfile=dist/static/app.js --format=iife --target=es2020",
+    "start": "node dist/server.js",
+    "dev": "npm run build && node --watch dist/server.js",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json",
+    "lint": "tsc -p tsconfig.lint.json && tsc -p tsconfig.lint.ui.json",
+    "test": "vitest run tests/unit tests/contract tests/integration --passWithNoTests",
+    "test:dev-smoke": "vitest run tests/dev-smoke --passWithNoTests",
+    "test:e2e": "vitest run tests/e2e --passWithNoTests",
+    "test:live": "vitest run tests/live --passWithNoTests"
+  },
+  "dependencies": {
+    "@apet97/clockify-addon-sdk": "^1.2.0",
+    "better-sqlite3": "^11",
+    "clockify-sdk-ts-115": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7",
+    "@types/node": "^22",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

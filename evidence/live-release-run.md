@@ -448,3 +448,27 @@ workspace's actual settings, never assumed.**
 
 The operator's three custom fields were left in place; the sweep removes only `RT-PROBE-` artefacts,
 and found none.
+
+---
+
+# Live run 6 — R17: a real non-REGULAR deletion payload
+
+R17 rested on "every captured webhook entry had `type:"REGULAR"`" plus an operator directive. The
+blocker P-TYPE had therefore never seen a real non-REGULAR payload — the one input it keys on.
+
+Probed with the API key: create a `BREAK` entry, read it back, delete it, then read what the addon
+actually persisted from the delivery.
+
+```
+created with type BREAK ->  server says type = "BREAK"
+read back               ->  type = "BREAK"
+deleted                 ->  webhook delivered
+persisted source_json   ->  type = "BREAK"
+```
+
+So a non-REGULAR deletion does fire `TIME_ENTRY_DELETED`, the payload does carry the distinguishing
+`type`, and normalization preserves it. P-TYPE's input is real, not assumed; the rule itself stays
+unit-covered by UT-P14.
+
+The probe entry was deleted from Clockify. The persisted row remains in the local live database,
+which is the throwaway store this run created.

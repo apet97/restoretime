@@ -67,8 +67,14 @@ yet, so an honest gap is visible here rather than buried in a report.
       carrying no default, a create that omits them is rejected `400 {"message":" <field names>",
       "code":501}` and one that supplies them succeeds — so LV-08's P-CF-REQ half runs too and the
       whole docs/07 §3 custom-field rule set is live-verified. The suite runs with **no skips**.
-      **Still unverified**: production (`app.clockify.me`) has never been exercised, and an
-      authenticated component render needs a Clockify-signed session (docs/15 step-6 smoke).
+      The docs/15 step-6 smoke has now **run on the developer environment** (evidence
+      "Live run 7"): the addon was loaded in a real Clockify iframe and walked list → detail →
+      preflight → confirm → RECREATED against another user's entry, with Clockify's own
+      "Add-on: Time entry recreated." toast confirming the postMessage bridge. That render found a
+      release-blocking defect present in rc.1…rc.5 — the component response omitted `connect-src`,
+      so `default-src 'none'` blocked every `/api/*` call and the UI could not load data in any
+      browser. Fixed and pinned in `tests/unit/server.test.ts`.
+      **Still unverified**: production (`app.clockify.me`) has never been exercised.
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
       package is staged (`implementation/marketplace/`: manifest review, scope justification,
       privacy text, terminology check, rollback proof) — everything docs/15's own prerequisites
@@ -81,9 +87,9 @@ yet, so an honest gap is visible here rather than buried in a report.
       including a deliberately incompatible drill-only migration, executed and reversed for real,
       not a dry run. Scope caveat: the pass file's "verify `/healthz` + one component load" was
       satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
-      (401 without a token). An **authenticated** component render needs a Clockify-signed session
-      and belongs to the docs/15 step-6 production smoke, not to this drill.
-- [x] GitHub release tagged with notes — `v1.0.0-rc.3`, a **release candidate**, not `v1.0.0`.
-      docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above shows two
-      things still unverified (production, and an authenticated component render), so calling this
-      `v1.0.0` would assert them. The tag notes state exactly what was and was not proved.
+      (401 without a token). The **authenticated** component render was out of scope for this drill;
+      it has since been done separately on the developer environment (evidence "Live run 7").
+- [x] GitHub release tagged with notes — `v1.0.0-rc.6`, a **release candidate**, not `v1.0.0`.
+      docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
+      production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
+      what was and was not proved.

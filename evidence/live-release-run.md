@@ -472,3 +472,71 @@ unit-covered by UT-P14.
 
 The probe entry was deleted from Clockify. The persisted row remains in the local live database,
 which is the throwaway store this run created.
+
+# Live run 7 — the first authenticated component render, and the defect it found
+
+Every earlier run exercised the server through HTTP. This one loaded the addon in a real Clockify
+iframe on the developer environment, which is what docs/15 step 6 asks for and what docs/16 twice
+recorded as unverified.
+
+## The defect: the component could not load data in any browser
+
+The shell rendered and then showed "RestoreTime could not complete that request." The cause was the
+component response's own CSP:
+
+```
+default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <parent>; script-src 'self'
+```
+
+`src/ui/api.ts` reaches `/api/*` with `fetch`, which is governed by `connect-src`. That directive was
+absent, so it fell back to `default-src 'none'` and the browser blocked every call. Captured from the
+page itself via a `securitypolicyviolation` listener:
+
+```
+violatedDirective: "connect-src"
+effectiveDirective: "connect-src"
+blockedURI:         <addon base>/api/entries?scope=mine
+```
+
+A same-origin `fetch` that `curl` served fine threw `TypeError: Failed to fetch`; the UI's generic
+catch turned that into the message above.
+
+This shipped in rc.1 through rc.5. **No offline test could have caught it**: `tests/e2e/` injects a
+stub `fetch`, and happy-dom does not enforce CSP. It is the same failure mode as the earlier
+`script-src` omission — `default-src 'none'` denies one directive at a time, and only a real browser
+says which.
+
+Fix: `connect-src 'self'` added alongside `script-src` in `src/server.ts`. Pinned by
+`tests/unit/server.test.ts`, which was confirmed to fail with the directive removed and pass with it
+restored — the assertion bites rather than merely existing.
+
+## What the render then proved, in the real iframe
+
+Walked with the addon embedded at `https://developer.clockify.me/addons/restoretime`, signed in as an
+OWNER, against an entry owned by a *different* user:
+
+```
+list       ->  "Deleted time entries" with filters, bulk mode, and rows in three real states
+               (Blocked / Needs your input / Ready to recreate)
+detail     ->  deleted-vs-planned comparison, Differences, "Continue to confirm"
+confirm    ->  "Fidelity: Complete", "Recreate entry"
+recreate   ->  metric:recreate_attempt -> metric:recreate_success
+success    ->  "Time entry recreated." + "Open in Clockify tracker"
+```
+
+Clockify itself then displayed a native toast, **"Add-on: Time entry recreated."** That is the parent
+frame reacting to our `postMessage` bridge, so the bridge is verified live. A top-level page load
+cannot show this — `window.parent === window` there — which is also why the 401-refresh path must not
+be claimed from a top-level load.
+
+No CSP violation appeared anywhere in the walk, and every request in the flow succeeded. A completed
+pass is a stronger check than enumerating directives by hand: any other missing directive would have
+broken one of these calls.
+
+The recreated entry was deleted afterwards (HTTP 204). The component token used for diagnosis was a
+short-lived Clockify-signed JWT held only in the scratchpad; no credential entered this repository.
+
+## What is still not verified
+
+Production (`app.clockify.me`) has still never been exercised — this run was entirely on the
+developer environment, per the operator's instruction.

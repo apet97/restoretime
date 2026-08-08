@@ -235,7 +235,11 @@ export async function createServer(
           frameAncestors: [config.clockifyParentOrigin],
           // default-src 'none' blocks the external /static/app.js script; script-src is not a
           // managed directive, so this is the correct (and only) way to allow it.
-          contentSecurityPolicy: { "script-src": ["'self'"] },
+          // connect-src is required for the same reason: `src/ui/api.ts` reaches /api/* with
+          // `fetch`, which is governed by connect-src and would otherwise fall back to
+          // default-src 'none'. Omitting it shipped a component that rendered but could never
+          // load data — see the live violation event recorded in evidence/live-release-run.md.
+          contentSecurityPolicy: { "script-src": ["'self'"], "connect-src": ["'self'"] },
         },
       ),
     ),

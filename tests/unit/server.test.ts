@@ -95,6 +95,12 @@ describe("GET /component", () => {
     const csp = response.headers?.["content-security-policy"];
     expect(csp).toContain("frame-ancestors https://app.clockify.me");
     expect(csp).toContain("script-src 'self'");
+    // `src/ui/api.ts` reaches /api/* with `fetch`; without an explicit connect-src the browser
+    // falls back to default-src 'none' and blocks every call, so the component renders but never
+    // loads data. No offline test can observe this — tests/e2e injects a stub fetch and happy-dom
+    // does not enforce CSP — which is exactly how it reached a real browser. This asserts the
+    // served policy instead; the live violation event is in evidence/live-release-run.md.
+    expect(csp).toContain("connect-src 'self'");
   });
 
   it("rejects an invalid token with 401", async () => {

@@ -10,16 +10,6 @@ import {
 } from "@apet97/clockify-addon-sdk/testing";
 import { validateClockifyManifest } from "@apet97/clockify-addon-sdk/clockify";
 import type { AppConfig } from "../../src/config.js";
-
-const { mockDeleteWorkspaceDomainData } = vi.hoisted(() => ({
-  mockDeleteWorkspaceDomainData: vi.fn(),
-}));
-vi.mock("../../src/store/cascade.js", () => ({
-  deleteWorkspaceDomainData: mockDeleteWorkspaceDomainData,
-}));
-
-// `import` bindings are hoisted, but vi.mock() above is additionally hoisted by Vitest's
-// transform to run before the module graph loads, so createServer picks up the mocked cascade.
 import { createServer } from "../../src/server.js";
 
 const ADDON_KEY = "restoretime-test";
@@ -42,7 +32,6 @@ let keys: ClockifyTestKeys;
 
 beforeEach(async () => {
   keys = await generateTestKeys();
-  mockDeleteWorkspaceDomainData.mockClear();
 });
 
 async function boot() {
@@ -131,8 +120,8 @@ describe("GET /component", () => {
   });
 });
 
-describe("GET /api/ping", () => {
-  it("proves the requireViewer guard end-to-end for a valid token", async () => {
+describe("GET /api/entries", () => {
+  it("proves the requireViewer guard end-to-end for a valid token (PASS-02 replaces /api/ping)", async () => {
     const server = await boot();
     const token = await signTestToken(keys.privateKey, ADDON_KEY, {
       workspaceId: WORKSPACE_ID,
@@ -142,22 +131,25 @@ describe("GET /api/ping", () => {
     });
     const response = await server.addon.handle({
       method: "GET",
-      path: "/api/ping",
+      path: "/api/entries",
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      ok: true,
-      userId: "user-1",
-      workspaceId: WORKSPACE_ID,
-      workspaceRole: "admin",
-    });
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true });
   });
 
   it("rejects a request with no Authorization header", async () => {
     const server = await boot();
-    const response = await server.addon.handle({ method: "GET", path: "/api/ping", headers: {} });
+    const response = await server.addon.handle({ method: "GET", path: "/api/entries", headers: {} });
     expect(response.status).toBe(401);
+  });
+});
+
+describe("GET /api/ping (removed in PASS-02)", () => {
+  it("no longer exists", async () => {
+    const server = await boot();
+    const response = await server.addon.handle({ method: "GET", path: "/api/ping", headers: {} });
+    expect(response.status).toBe(404);
   });
 });
 
@@ -221,7 +213,7 @@ describe("lifecycle: STATUS_CHANGED", () => {
 });
 
 describe("lifecycle: DELETED", () => {
-  it("removes the row unconditionally and calls the domain-data cascade", async () => {
+  it("removes the installation row and every domain-table row for the workspace, in one transaction", async () => {
     const server = await boot();
     const installToken = await lifecycleToken();
     await server.addon.handle(
@@ -231,6 +223,13 @@ describe("lifecycle: DELETED", () => {
         { path: "/lifecycle/installed" },
       ),
     );
+    server.db
+      .prepare(
+        `INSERT INTO recoverable_entries
+           (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
+         VALUES ('re-1', ?, 'entry-1', 'user-1', '2026-08-08T00:00:00.000Z', '{}', 'IDLE')`,
+      )
+      .run(WORKSPACE_ID);
 
     const deleteToken = await lifecycleToken();
     const response = await server.addon.handle(
@@ -242,8 +241,10 @@ describe("lifecycle: DELETED", () => {
     );
     expect(response.status).toBe(204);
     expect(await server.installations.load(WORKSPACE_ID, ADDON_INSTALLATION_ID)).toBeNull();
-    expect(mockDeleteWorkspaceDomainData).toHaveBeenCalledTimes(1);
-    expect(mockDeleteWorkspaceDomainData).toHaveBeenCalledWith(server.db, WORKSPACE_ID);
+    const remaining = server.db
+      .prepare("SELECT COUNT(*) AS n FROM recoverable_entries WHERE workspace_id = ?")
+      .get(WORKSPACE_ID) as { n: number };
+    expect(remaining.n).toBe(0);
   });
 });
 
@@ -263,7 +264,45 @@ describe("POST /webhooks/time-entry-deleted", () => {
     );
   }
 
-  it("returns 500 for a correctly verified delivery (stub — ingestion is PASS-02)", async () => {
+  it("returns 204 and persists the row for a correctly verified delivery", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_INSTALLATION_ID,
+    });
+    await installWithWebhookToken(server, webhookToken);
+
+    const response = await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        {
+          id: "entry-1",
+          workspaceId: WORKSPACE_ID,
+          userId: "user-1",
+          description: "hello",
+          billable: true,
+          projectId: null,
+          type: "REGULAR",
+          currentlyRunning: false,
+          timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z", timeZone: "UTC" },
+          project: null,
+          task: null,
+          tags: [],
+          user: { name: "User One" },
+          customFieldValues: [],
+        },
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    expect(response.status).toBe(204);
+    const row = server.db
+      .prepare("SELECT * FROM recoverable_entries WHERE workspace_id = ? AND source_entry_id = ?")
+      .get(WORKSPACE_ID, "entry-1");
+    expect(row).toBeDefined();
+  });
+
+  it("returns 400 for a malformed delivery (missing required fields)", async () => {
     const server = await boot();
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
       workspaceId: WORKSPACE_ID,
@@ -279,7 +318,7 @@ describe("POST /webhooks/time-entry-deleted", () => {
         { path: "/webhooks/time-entry-deleted" },
       ),
     );
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(400);
   });
 
   it("returns 401 when the delivered token does not match the stored one", async () => {

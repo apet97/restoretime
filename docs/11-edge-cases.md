@@ -11,7 +11,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Running entry deleted | `currentlyRunning:true`, `end:null` (W12) | Source stores `wasRunning`; preflight asks for mode (P-RUN). Starting the new timer can auto-stop the owner's current timer (single-timer rule) — the choice carries that warning | Radio: running timer vs set end time, with the auto-stop warning | UT-P01 |
 | Entry deleted right after create | Fires always (W9) | Normal ingestion | — | CT-01 (fixture) |
 | Entry updated then deleted | Payload carries final state (W8) | No special handling; the final state is the source | — | CT-02 (fixture) |
-| Project deleted after entry deletion | Create with dead project → 400 (R3) | P-PROJ-GONE: replacement picker | Select project; or "No project" when allowed | UT-P02, IT-05 |
+| Project deleted after entry deletion | Create with dead project → 400 (R3). The preflight lookup `projects.get` also answers **400 body code `501`**, not 404, for a deleted project (live-probed 2026-08-08, evidence/error-shapes-2026-08-08.md) | P-PROJ-GONE: replacement picker | Select project; or "No project" when allowed | UT-P02, IT-05, tests/integration/project-gone.test.ts |
 | Project archived | Create allowed, 201 (R6) | P-PROJ-ARCH warning; recreation proceeds | Warning text in Differences | UT-P03 |
 | Task deleted or project substituted | 400 "Task doesn't belong to Project" (R3) | P-TASK-GONE / P-TASK-CTX | Task picker or remove | UT-P04 |
 | Tag deleted | 400 "Tag doesn't belong to Workspace" (R3) | P-TAG-GONE per tag | Confirm removal; optional add-picker | UT-P05 |

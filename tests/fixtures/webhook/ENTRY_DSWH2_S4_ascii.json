@@ -1,0 +1,137 @@
+{
+  "id": "ENTRY_DSWH2_S4_ascii",
+  "description": "DSWH2_S4_ascii_plain",
+  "userId": "USER_SELF",
+  "billable": false,
+  "projectId": "PROJ_DSWH2",
+  "timeInterval": {
+    "start": "2026-08-07T22:54:50Z",
+    "end": "2026-08-07T23:04:50Z",
+    "duration": "PT10M",
+    "timeZone": "Europe/Belgrade",
+    "offsetStart": 7200,
+    "offsetEnd": 7200,
+    "zonedStart": "2026-08-08T00:54:50",
+    "zonedEnd": "2026-08-08T01:04:50"
+  },
+  "workspaceId": "WS",
+  "isLocked": false,
+  "hourlyRate": null,
+  "costRate": null,
+  "customFieldValues": [
+    {
+      "customFieldId": "CF_test123",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": "tqewq",
+      "name": "test123"
+    },
+    {
+      "customFieldId": "CF_MCP_TEST_FIELD",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "MCP-TEST-FIELD"
+    },
+    {
+      "customFieldId": "CF_RARA",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "RARARARARARARAr"
+    },
+    {
+      "customFieldId": "CF_AAAA",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "AAAAAASSSSSSSS"
+    },
+    {
+      "customFieldId": "CF_DSR8_Text",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "DSR8_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR8_Number",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "DSR8_CF_Number"
+    },
+    {
+      "customFieldId": "CF_DSR9_Text",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "DSR9_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR9_Dropdown",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "DSR9_CF_Dropdown"
+    },
+    {
+      "customFieldId": "CF_DSR9_Number",
+      "timeEntryId": "ENTRY_DSWH2_S4_ascii",
+      "value": null,
+      "name": "DSR9_CF_Number"
+    }
+  ],
+  "type": "REGULAR",
+  "kioskId": null,
+  "approvalStatus": null,
+  "detailedApprovalStatus": null,
+  "projectCurrency": null,
+  "currentlyRunning": false,
+  "project": {
+    "name": "DSWH2_proj_s1",
+    "hourlyRate": {
+      "amount": 0
+    },
+    "costRate": null,
+    "clientId": "",
+    "workspaceId": "WS",
+    "billable": true,
+    "memberships": [
+      {
+        "userId": "USER_SELF",
+        "hourlyRate": null,
+        "costRate": null
+      }
+    ],
+    "estimate": {
+      "estimate": "PT0S",
+      "type": "AUTO"
+    },
+    "color": "#B39DDB",
+    "archived": false,
+    "clientName": "",
+    "duration": "PT30M",
+    "note": "",
+    "activeEstimate": "NONE",
+    "timeEstimate": {
+      "includeNonBillable": true,
+      "estimate": 0,
+      "type": "AUTO",
+      "resetOption": null
+    },
+    "budgetEstimate": null,
+    "estimateReset": null,
+    "sourceType": null,
+    "auditMetadata": null,
+    "accessOnPaidPlan": null,
+    "id": "PROJ_DSWH2",
+    "public": true,
+    "template": false
+  },
+  "task": null,
+  "user": {
+    "id": "USER_SELF",
+    "name": "Firstname Lastname",
+    "status": "ACTIVE",
+    "hourlyRate": {
+      "amount": 99900
+    },
+    "costRate": {
+      "amount": 777700
+    }
+  },
+  "tags": []
+}

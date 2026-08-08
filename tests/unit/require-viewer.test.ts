@@ -56,7 +56,29 @@ describe("requireViewer", () => {
     const response = await handler(request({ authorization: `Bearer ${token}` }));
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ userId: "user-1", workspaceId: "ws-1", workspaceRole: "admin" });
+    expect(response.body).toEqual({
+      userId: "user-1",
+      workspaceId: "ws-1",
+      workspaceRole: "admin",
+      addonId: "addon-1",
+    });
+  });
+
+  it("rejects a token whose claims have no addonId (every route needs it to load the installation)", async () => {
+    const stubParser = {
+      parseClaims: async () => ({
+        type: "addon",
+        iss: "clockify",
+        sub: ADDON_KEY,
+        exp: Math.floor(Date.now() / 1000) + 60,
+        user: "user-1",
+        workspaceId: "ws-1",
+        workspaceRole: "admin",
+      }),
+    } as unknown as ClockifySignatureParser;
+    const handler = requireViewer(stubParser, async (_req, viewer) => ({ status: 200, body: viewer }));
+    const response = await handler(request({ authorization: "Bearer anything" }));
+    expect(response.status).toBe(401);
   });
 
   it("rejects a missing Authorization header", async () => {

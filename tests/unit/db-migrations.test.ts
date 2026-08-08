@@ -12,13 +12,15 @@ describe("openDatabase migrations", () => {
     dir = undefined;
   });
 
-  it("a fresh in-memory database reaches user_version=1", () => {
+  it("a fresh in-memory database reaches user_version=2", () => {
     const db = openDatabase(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(1);
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
     const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'installations'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('installations', 'recoverable_entries', 'recreation_plans', 'recreation_attempts')",
+      )
       .all();
-    expect(tables).toHaveLength(1);
+    expect(tables).toHaveLength(4);
   });
 
   it("a second boot on the same database file is a no-op and keeps existing rows", () => {
@@ -26,7 +28,7 @@ describe("openDatabase migrations", () => {
     const dbPath = join(dir, "restoretime.sqlite");
 
     const first = openDatabase(dbPath);
-    expect(first.pragma("user_version", { simple: true })).toBe(1);
+    expect(first.pragma("user_version", { simple: true })).toBe(2);
     first
       .prepare(
         `INSERT INTO installations
@@ -37,7 +39,7 @@ describe("openDatabase migrations", () => {
     first.close();
 
     const second = openDatabase(dbPath);
-    expect(second.pragma("user_version", { simple: true })).toBe(1);
+    expect(second.pragma("user_version", { simple: true })).toBe(2);
     const row = second
       .prepare("SELECT * FROM installations WHERE workspace_id = ? AND addon_id = ?")
       .get("ws-1", "addon-1");

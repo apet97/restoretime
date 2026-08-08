@@ -101,7 +101,9 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
       api_url       = excluded.api_url,
       auth_token    = excluded.auth_token,
       webhooks_json = excluded.webhooks_json,
-      installed_at  = excluded.installed_at
+      installed_at  = excluded.installed_at,
+      -- A reinstall carries a fresh token, so whatever made the old one broken is resolved.
+      broken_at     = NULL
   `);
   // status is deliberately absent from the DO UPDATE SET list above: it never travels through
   // ClockifyInstallationContext (the SDK contract has no status field), so a redelivered
@@ -155,6 +157,26 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
       return "deleted";
     },
   };
+}
+
+/**
+ * Records that Clockify rejected this installation's token (401 body code "4017", R11). Kept
+ * apart from `status`: a user disabling the addon and a token going bad are different conditions
+ * with different remedies (docs/14 — "reinstall replaces the installation row"; docs/10 §8 shows
+ * a different notice for each). Returns whether a row was updated.
+ */
+export function markInstallationBroken(
+  db: Database.Database,
+  workspaceId: string,
+  addonId: string,
+  at: string,
+): boolean {
+  const result = db
+    .prepare(
+      "UPDATE installations SET broken_at = ? WHERE workspace_id = ? AND addon_id = ? AND broken_at IS NULL",
+    )
+    .run(at, workspaceId, addonId);
+  return result.changes > 0;
 }
 
 /** STATUS_CHANGED is a separate write path: `status` has no place in ClockifyInstallationContext,

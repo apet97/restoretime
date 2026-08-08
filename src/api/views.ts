@@ -9,7 +9,10 @@ const HTML_ESCAPES: Record<string, string> = {
   "'": "&#39;",
 };
 
-function escapeHtml(value: string): string {
+/** Escapes Clockify-controlled strings (descriptions, names) before any HTML rendering
+ * (AGENTS.md rule 12, UT-X01). Exported for direct unit testing; also used by the component
+ * shell above. */
+export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
 }
 

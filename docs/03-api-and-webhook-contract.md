@@ -43,7 +43,7 @@ reads on 408/429/5xx with backoff by default; that behavior is kept (N7).
 |---|---|---|
 | Workspace settings (forceProjects, locks, billable permission) | `workspaces.get` | `GET /workspaces/{ws}` |
 | Owner existence/status | `users.list` with the exact request `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` (see note 1) | `GET /workspaces/{ws}/users` |
-| Project current state | `projects.get` (404 = gone) | `GET /workspaces/{ws}/projects/{id}` |
+| Project current state | `projects.get` — gone is **404 or 400 with body code `501`** (see note 7) | `GET /workspaces/{ws}/projects/{id}` |
 | Replacement project options | `projects.list` | `GET /workspaces/{ws}/projects` |
 | Task current state + options | `tasks.list` / `tasks.get` | `GET /workspaces/{ws}/projects/{pid}/tasks[/{id}]` |
 | Tag current state + options | `tags.list` | `GET /workspaces/{ws}/tags` |
@@ -95,6 +95,14 @@ Notes:
    `defaultValue`), and `status` is `"INACTIVE" | "VISIBLE" | "INVISIBLE"` — there is no
    `"ACTIVE"` value, so "the field is active" means `status !== "INACTIVE"` (S6, L6). Every
    `CustomField` property is optional; read each with an explicit undefined branch.
+7. `projects.get` reports a project that no longer exists as **404 or 400 with body code `501`**
+   (`"Project doesn't belong to Workspace"`). Live-probed 2026-08-08 on a project that was
+   created, archived, and then deleted: the answer was the 400 form, not 404
+   (`evidence/error-shapes-2026-08-08.md`). Preflight therefore treats both as P-PROJ-GONE and
+   re-throws everything else. The mapping is scoped to this one lookup: the request carries only
+   `workspaceId` and `projectId`, so "doesn't belong to Workspace" has exactly one cause here,
+   while body code `501` means other things elsewhere (R15, R18). `tasks.list` and `tags.list` are
+   unaffected — a missing task or tag is simply absent from a list that still returns 200.
 
 ## 3. Outbound write (recreation)
 

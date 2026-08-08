@@ -23,7 +23,10 @@ After authorization, fetch in parallel via the installation's client (docs/04):
    "page-size": 200 }` (paginated via `iterPages`, `maxPages: 10`) → owner record. On this route
    `user.status` is the workspace membership status; the owner is unavailable when the user is
    absent from the list or `status !== "ACTIVE"` (docs/03 note 1).
-3. `projects.get(source.projectId)` if set — 404 means gone.
+3. `projects.get(source.projectId)` if set — gone is **404 or 400 with body code `501`**
+   ("Project doesn't belong to Workspace"). A deleted project returns the 400 form, not 404
+   (live-probed 2026-08-08, evidence/error-shapes-2026-08-08.md). Every other error re-throws and
+   fails the preflight.
 4. `tasks.list(source.projectId)` if `source.taskId` set — or, when the project was substituted,
    `tasks.list(choices.projectId)`.
 5. `tags.list` → current workspace tags.
@@ -50,7 +53,7 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-RUN-END | `choices.runningMode="completed"` and (`completedEnd` missing or `completedEnd ≤ start`) | ACTION_REQUIRED: end must be after start (R2) |
 | P-TIMER | `timeTrackingMode = "STOPWATCH_ONLY"` AND the plan sends an `end` (completed entry) AND viewer is not admin | blocker `TIMER_REQUIRED` — the workspace forbids manual entries for regular users (403 code 4030). Owner/admins bypass on route B (R16), so the message says: an admin can recreate this entry. Running-mode plans (no `end`) are unaffected. Admin viewers: rule does not apply |
 | P-PROJ-REQ | effective projectId is null AND `forceProjects` AND mode is completed | ACTION_REQUIRED: select a project (running mode also resolves it, R4) |
-| P-PROJ-GONE | source projectId set, lookup 404, no `choices.projectId` | ACTION_REQUIRED: select a replacement project (or "no project" if `!forceProjects`) |
+| P-PROJ-GONE | source projectId set, lookup reports gone (404, or 400 body code `501` — §2 step 3), no `choices.projectId` | ACTION_REQUIRED: select a replacement project (or "no project" if `!forceProjects`) |
 | P-PROJ-SUB | `choices.projectId` set | validate it exists; substitute (fidelity → ADJUSTED) |
 | P-PROJ-ARCH | effective project exists and `archived` | warning `ARCHIVED_PROJECT` — creation is allowed (R6) |
 | P-TASK-GONE | source taskId set and (task missing on effective project, or `status ≠ ACTIVE`), no choice | ACTION_REQUIRED: select a replacement task or remove the task (removal invalid if `forceTasks`) |

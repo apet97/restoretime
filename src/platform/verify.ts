@@ -12,6 +12,9 @@ export interface Viewer {
   readonly userId: string;
   readonly workspaceId: string;
   readonly workspaceRole: string;
+  /** Needed to load the right installation row for every Clockify call the route makes
+   * (docs/08 installations PK is `(workspace_id, addon_id)`). */
+  readonly addonId: string;
 }
 
 export type ViewerRequestHandler = (
@@ -49,9 +52,9 @@ export function requireViewer(
     const result = await verifyClockifyToken(parser, token, { requireExpiration: true });
     if (!result.ok) return unauthorized();
 
-    const { user, workspaceId, workspaceRole } = result.claims;
-    if (!user || !workspaceId || !workspaceRole) return unauthorized();
+    const { user, workspaceId, workspaceRole, addonId } = result.claims;
+    if (!user || !workspaceId || !workspaceRole || !addonId) return unauthorized();
 
-    return handler(request, { userId: user, workspaceId, workspaceRole });
+    return handler(request, { userId: user, workspaceId, workspaceRole, addonId });
   };
 }

@@ -74,10 +74,11 @@ describe("LV-01 install + component boundary (docs/13)", () => {
     expect(bundleBody.length).toBeGreaterThan(0);
 
     // No token: proves the verified-claims boundary is wired on the deployed process (not just
-    // offline) — a real authenticated load (frame-ancestors, icon render inside the iframe) needs
-    // a genuine Clockify-signed session and is out of this suite's reach; see the module comment.
+    // offline). An authenticated load still needs a genuine Clockify-signed session and stays out
+    // of this suite's reach; it was done by hand in a real iframe instead (evidence
+    // "Live run 7"), which is what caught the missing `connect-src` this suite could not see.
     const component = await fetch(`${base}/component`);
     expect(component.status).toBe(401);
-    console.log("LV-01: manifest/icon/bundle served and /component boundary enforced. A fully authenticated component load (frame-ancestors + iconPath render inside a real Clockify session) was NOT verified here — that needs a human/Clockify-side browser session (docs/15 'Production smoke').");
+    console.log("LV-01: manifest/icon/bundle served and /component boundary enforced. A fully authenticated component load is NOT verified here — that needs a browser session (done separately on the developer environment, evidence 'Live run 7').");
   }, 30_000);
 });

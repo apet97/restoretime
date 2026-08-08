@@ -454,13 +454,22 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
 - CONSEQUENCE: The authorization boundary (docs/09) is: verified claims → policy predicate. Role
   is never accepted from request bodies or the client.
 
-### S3 — Installation token never expires; per-installation storage is consumer-built
+### S3 — Installation token carries a far-future expiry; per-installation storage is consumer-built
 
-- FACT: The `INSTALLED` payload carries `authToken` (no expiry) and per-webhook tokens. The SDK
-  ships the `ClockifyInstallationStore` interface, an AES-256-GCM encryption wrapper, and an
-  in-memory implementation only.
-- CONSEQUENCE: The app implements one durable store over its database and wraps it with the SDK
-  encryption codec.
+- FACT: The `INSTALLED` payload carries `authToken` and per-webhook tokens. The `authToken` **does
+  carry an `exp` claim**, set about a century out: the captured developer-environment token has
+  `exp: 4939751754` (2126-07-15), alongside `iss: "clockify"`, `sub: "restoretime"`,
+  `type: "addon"`, `workspaceId`, `addonId`, and the backend URLs. Earlier wording said "no
+  expiry"; that was wrong in letter, right in effect. The SDK ships the
+  `ClockifyInstallationStore` interface, an AES-256-GCM encryption wrapper, and an in-memory
+  implementation only.
+- EVIDENCE: `evidence/fresh-pass-2026-08-08.md` FP-5 (token re-check 2026-08-08).
+- CONFIDENCE: PROVED (one installation).
+- CONSEQUENCE: Treat the installation token as non-expiring operationally — never build a refresh
+  path, a renewal timer, or an expiry warning for it. But never assume the claim is absent: any
+  code that reads the token's claims must handle `exp` being present. The app implements one
+  durable store over its database and wraps it with the SDK encryption codec. Rejection is still
+  detected the same way, by 401 code `"4017"` at call time (R11), never by reading `exp`.
 
 ### S4 — Clockify REST SDK behavior
 

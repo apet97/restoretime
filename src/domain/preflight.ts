@@ -15,6 +15,7 @@ import type {
 } from "./entry.js";
 import { isAdmin } from "./policy.js";
 import { classifyFidelity } from "./fidelity.js";
+import { looselyEqual } from "./values.js";
 
 export interface CustomFieldDef {
   readonly id: string;
@@ -80,15 +81,6 @@ export interface PreflightResult {
   readonly actionRequired: ActionRequiredItem[];
   readonly plannedRequest: PlannedRequest;
   readonly fidelity: Fidelity;
-}
-
-function looselyEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a === "object" || typeof b === "object") return JSON.stringify(a) === JSON.stringify(b);
-  const na = typeof a === "number" ? a : typeof a === "string" && a.trim() !== "" ? Number(a) : NaN;
-  const nb = typeof b === "number" ? b : typeof b === "string" && b.trim() !== "" ? Number(b) : NaN;
-  if (Number.isFinite(na) && Number.isFinite(nb)) return na === nb;
-  return String(a) === String(b);
 }
 
 function hasUsableValue(value: unknown): boolean {

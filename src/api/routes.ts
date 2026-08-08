@@ -301,7 +301,7 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
   }
 
   // `claim()` returns the row AFTER the update, so the pre-claim state has to be read here — a
-  // release path needs to restore exactly what was there (IDLE or FAILED; those are the only two
+  // release path needs to put back exactly what was there (IDLE or FAILED; those are the only two
   // states the claim predicate admits for a fresh claim).
   const priorState = entry.lifecycleState === "FAILED" ? "FAILED" : "IDLE";
   const claimToken = randomUUID();
@@ -315,13 +315,13 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
       id: entry.id,
       workspaceId: viewer.workspaceId,
       claimToken,
-      restoreState: priorState,
+      previousState: priorState,
     });
 
   const consumed = plans.consumeActive(deps.db, plan.id);
   if (!consumed) {
-    // Another confirm won the plan first. Nothing was sent to Clockify, so restore the pre-claim
-    // state rather than inventing a FAILED with no attempt row (docs/08 invariant 4).
+    // Another confirm won the plan first. Nothing was sent to Clockify, so put the pre-claim state
+    // back rather than inventing a FAILED with no attempt row (docs/08 invariant 4).
     release();
     return json(409, { error: "plan already consumed" });
   }

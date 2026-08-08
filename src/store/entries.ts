@@ -233,8 +233,8 @@ export function setRecreated(
 }
 
 /**
- * Fenced release of a claim that never reached Clockify: restores the exact pre-claim state and
- * clears the lease.
+ * Fenced release of a claim that never reached Clockify: puts the row back into the exact state
+ * it held before the claim, and clears the lease.
  *
  * A confirm can win the claim and then abort before any Clockify write — a racing confirm consumed
  * the plan first, or the baseline read hit the page bound. Neither case is a failure of a
@@ -247,12 +247,12 @@ export function setRecreated(
  */
 export function releaseClaim(
   db: Database.Database,
-  input: FencedInput & { restoreState: "IDLE" | "FAILED" },
+  input: FencedInput & { previousState: "IDLE" | "FAILED" },
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<FencedInput & { restoreState: string }, EntryRow>(
+    .prepare<FencedInput & { previousState: string }, EntryRow>(
       `UPDATE recoverable_entries
-       SET lifecycle_state=@restoreState, claim_token=NULL, claim_expires_at=NULL
+       SET lifecycle_state=@previousState, claim_token=NULL, claim_expires_at=NULL
        WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
        RETURNING *`,
     )

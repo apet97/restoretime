@@ -46,7 +46,10 @@ Planning blueprint only: `docs/`, `adr/`, `implementation/`, `evidence/`, empty 
 - `package.json` (Node `>=22.13.0`, type module), `tsconfig.json` (strict +
   `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`), npm scripts:
   `build`, `start`, `dev`, `test`, `typecheck`, `lint` (tsc-based lint is enough; add no linter
-  package unless you justify it in the report).
+  package unless you justify it in the report). Also declare the three env-gated runners so later
+  passes only have to fill their directories: `test:dev-smoke` (`tests/dev-smoke/`, PASS-02),
+  `test:e2e` (`tests/e2e/`, PASS-03), `test:live` (`tests/live/`, PASS-05). Each must glob only
+  its own directory — `test:live` must never pick up `tests/dev-smoke/` (docs/13).
 - Install both SDKs from the npm registry (`implementation/DEPENDENCIES.md` §Registry note — the
   decision is closed, do not re-open it). Record in the final report: resolved versions, both
   `integrity` hashes from `package-lock.json`, and `git status --porcelain` for each read-only SDK

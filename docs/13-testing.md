@@ -69,14 +69,25 @@ Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by r
 shapes (create 201, get, listForUser, errors). The Clockify SDK stays real; only the network is
 stubbed.
 
-## Developer-environment smoke (PASS-02, additive) — `tests/live/dev-smoke/`
+## Developer-environment smoke (PASS-02, additive) — `tests/dev-smoke/`
 
 Three REST-only checks that need no deployed addon and no tunnel: they run against Clockify's
-developer environment with a captured installation token. They exist because PASS-02 builds the
-Clockify read/write client months before PASS-05 can run, and a wrong request shape should surface
-then, not at release. They are **additive**: they add no release gate, replace no `LV-` row, and
-change nothing in docs/16. A run without `CK_DEV_*` credentials reports "blocked — no developer
-credentials" and does not fail the pass (ROADMAP rule 4).
+developer environment with an already-captured installation token. They exist because PASS-02
+builds the Clockify read/write client long before PASS-05 can run, and a wrong request shape
+should surface then, not at release. They are **additive**: they add no release gate, replace no
+`LV-` row, and change nothing in docs/16.
+
+- Command: `npm run test:dev-smoke`. The directory is `tests/dev-smoke/`, deliberately **outside**
+  `tests/live/`, so `npm run test:live` never picks it up and the release workflow never runs it.
+- Environment (all three required, exact names): `CK_DEV_WORKSPACE_ID`, `CK_DEV_ADDON_ID`,
+  `CK_DEV_ADDON_TOKEN`. The token is the installation `authToken` captured when the addon was
+  installed on `developer.clockify.me`; the operator supplies it, and it never enters the repo.
+- Precondition: a live installation for that workspace/addon pair. A quick-tunnel restart changes
+  `baseUrl` and forces a reinstall (evidence/install-capture-2026-08-08.md), which invalidates the
+  captured token — that is the "blocked" case, not a failure.
+- With any of the three variables missing, or with the token rejected as 401 code `"4017"`, the
+  suite reports "blocked — no valid developer installation" and does **not** fail the pass
+  (ROADMAP rule 4).
 
 | ID | Scenario | Closes |
 |---|---|---|
@@ -84,7 +95,7 @@ credentials" and does not fail the pass (ROADMAP rule 4).
 | DS-02 | A deliberate 4xx (create without `projectId` in a `forceProjects` workspace) maps through `clockifyErrorCode` to `"501"`, and a 404 maps with `undefined` | R15 / UT-M01 against live bodies, not fixtures |
 | DS-03 | `users.list` + `projects.list` + `timeEntries.createForUser` + `timeEntries.get` + `timeEntries.delete` round-trip with the exact request shapes docs/03 §2–§3 mandate. Probe descriptions are prefixed `RT-PROBE-` and every created entry is deleted | R11 request shapes as the app builds them |
 
-Gate: DS-01…DS-03 pass, or the pass report records "blocked" with the exact missing credential.
+Gate: DS-01…DS-03 pass, or the PASS-02 report records "blocked" with the exact missing variable.
 `LV-01…LV-10` and the docs/16 release gates are unchanged.
 
 ## Live suite (sacrificial workspace, release gate) — `tests/live/`
@@ -116,7 +127,8 @@ agent's choice of the repo-standard tool; keep it one small suite.
 
 ```bash
 npm run test            # unit + contract + integration (no network)
-npm run test:live       # live suite — env-gated, release workflow only
+npm run test:dev-smoke  # DS-01…DS-03 — env-gated, additive, never a release gate
+npm run test:live       # LV suite — env-gated, release workflow only
 npm run test:e2e        # component flow
 npm run typecheck && npm run lint
 ```

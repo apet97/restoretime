@@ -39,7 +39,7 @@ documented migration path in the release notes.
 ## Deployment
 
 - Single Node 22 process behind TLS. `PUBLIC_BASE_URL` is the public origin.
-- Environment: the six variables from docs/05. The deploy target is operator choice (a VM, a
+- Environment: the seven variables from the docs/05 §Configuration table. The deploy target is operator choice (a VM, a
   container, or a PaaS all satisfy the shape); the release workflow (docs/15) builds one container
   image as the reference artifact.
 - Database file on a persistent, encrypted volume. Backup = stop-gap copy with WAL checkpoint

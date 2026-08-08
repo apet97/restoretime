@@ -24,7 +24,7 @@ The product is done when every statement is true and verified.
 ## Quality bars
 
 - [ ] `npm run typecheck`, `lint`, `test`, `build` green on `main`.
-- [ ] No dependency beyond docs/05's list; no dead code; no TODO/FIXME in `src/`.
+- [ ] No dependency beyond `implementation/DEPENDENCIES.md`; no dead code; no TODO/FIXME in `src/`.
 - [ ] Every user-facing string follows docs/10 terminology (recreate, never restore).
 - [ ] No raw webhook payload, token, or description appears in any log line (verified by the
       PASS-04 log-audit test that captures logs across the full suite run).

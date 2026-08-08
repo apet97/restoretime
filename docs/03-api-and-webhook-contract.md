@@ -210,8 +210,10 @@ Notes:
 - Auth errors: 401 code `"4017"` (addon token invalid) → installation is marked broken; component
   shows a reinstall notice. 401 code `"1000"` = both/no auth sent → client configuration bug;
   crash-log, never reach in normal operation.
-- Code-absent 4xx (live: 404 unknown workspace) maps on `statusCode` alone: 404 → "Clockify does
-  not have this workspace or route"; any other code-less 4xx → the generic FAILED reason plus the
-  status. Never guess a code.
+- Code-absent 4xx maps on `statusCode` alone. **This mapping is for the create call only**
+  (§3 outcome classification): 404 → "Clockify does not have this workspace or route"; any other
+  code-less 4xx → the generic FAILED reason plus the status. Preflight reads keep their own 404
+  meanings (§2) — `projects.get` 404 means the project is gone (P-PROJ-GONE), not a routing
+  failure. Never guess a code.
 - The Clockify client is constructed with `timeoutInSeconds: 30` (the SDK default has no timeout;
   the AMBIGUOUS protocol needs timeouts to fire).

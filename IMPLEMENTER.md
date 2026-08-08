@@ -79,6 +79,7 @@ npm run lint
 npm run test          # unit + contract + integration (offline)
 npm run test:e2e      # after PASS-03
 npm run build
+npm run test:dev-smoke # PASS-02 onward; env-gated, additive, never a release gate
 npm run test:live     # PASS-05 only; env-gated
 ```
 

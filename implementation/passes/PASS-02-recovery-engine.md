@@ -116,11 +116,14 @@ material (grep for key patterns) before committing.
 
 ### Developer-environment smoke (additive)
 
-`tests/live/dev-smoke/` implementing DS-01…DS-03 (docs/13). REST only — no tunnel, no deployed
-addon, no webhook. It runs with `CK_DEV_*` credentials from the operator's environment and proves
-that the request shapes this pass builds are the ones Clockify accepts. Without credentials it
-reports "blocked — no developer credentials" and does not fail the pass. It adds **no** release
-gate and replaces no `LV-` row.
+`tests/dev-smoke/` implementing DS-01…DS-03 (docs/13), run by a new npm script `test:dev-smoke`.
+REST only — no tunnel, no deployed addon, no webhook. It proves that the request shapes this pass
+builds are the ones Clockify accepts. Requires `CK_DEV_WORKSPACE_ID`, `CK_DEV_ADDON_ID`, and
+`CK_DEV_ADDON_TOKEN` (the captured installation `authToken`) from the operator's environment; with
+any missing, or on 401 code `"4017"`, it reports "blocked — no valid developer installation" and
+does **not** fail the pass. The directory sits outside `tests/live/` so `test:live` never runs it.
+It adds **no** release gate and replaces no `LV-` row. Probe entries are prefixed `RT-PROBE-` and
+deleted in a `finally` block.
 
 ## Explicit out of scope
 
@@ -149,7 +152,8 @@ against the same row; assert exactly one 201-path and one current-state response
 ## Commands/gates
 
 `npm run typecheck && npm run lint && npm run test && npm run build` green. Test count covers every
-UT/CT/IT ID in docs/13.
+UT/CT/IT ID in docs/13. `npm run test:dev-smoke` green, or reported blocked with the exact missing
+variable — never silently skipped (ROADMAP rule 4).
 
 ## Git requirements
 

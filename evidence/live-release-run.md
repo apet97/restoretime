@@ -540,3 +540,61 @@ short-lived Clockify-signed JWT held only in the scratchpad; no credential enter
 
 Production (`app.clockify.me`) has still never been exercised — this run was entirely on the
 developer environment, per the operator's instruction.
+
+# Live run 8 — workspace settings toggled in the UI; a second real defect
+
+R20 proved these settings cannot be changed through the API, so the rules that read them had never
+seen a non-default value. Browser access to the developer workspace removed that blocker. Each
+setting was toggled in the Clockify UI, read back through the API, and reverted; the workspace was
+confirmed byte-for-byte back at baseline afterwards.
+
+## The defect: an unlocked workspace looked locked
+
+Baseline read of the workspace, before touching anything:
+
+```
+timeTrackingMode: "DEFAULT"   lockTimeEntries: null   automaticLock: null
+```
+
+`automaticLock` is an explicit `null` when no automatic lock is configured — not an absent field. The
+mapping in `src/clockify/preflight-data.ts` computed:
+
+```
+automaticLockSet: settings?.automaticLock !== undefined
+```
+
+and `null !== undefined` is `true`. So `lockConfigured` was true on every workspace with no lock at
+all, and P-LOCK-REG warned every regular user that "the entry's date may be in a locked period" on
+any entry 24 hours or older. docs/07 §3 requires the setting to be *set*.
+
+Fixed to `(settings?.automaticLock ?? null) !== null`, pinned by
+`tests/integration/lock-settings.test.ts`, which was confirmed to fail against the old expression.
+
+The unit preflight tests could not have caught it: they construct `WorkspaceState` directly, so they
+start from `automaticLockSet` already decided. The defect lived in the API mapping — the same layer,
+and the same class of assumption, as the R24 project-gone defect.
+
+## Real shapes, now recorded rather than assumed
+
+With "Automatically update lock date" switched on, Clockify returns:
+
+```json
+{"type":"WEEKLY","changeDay":"WEDNESDAY","firstDay":"MONDAY","dayOfMonth":1,
+ "olderThanPeriod":"DAYS","olderThanValue":1}
+```
+
+That object is what the regression test now uses. "Lock time before" is mutually exclusive with the
+automatic lock in the UI and could not be set while it was on, so a non-null `lockTimeEntries` string
+remains unobserved; the rule only tests it for `!== null`, which is shape-independent.
+
+## P-TIMER's input is real, and the admin carve-out is right
+
+With "Disable adding and editing time manually" switched on, the API reports
+`timeTrackingMode: "STOPWATCH_ONLY"` — exactly the literal the app's type expects.
+
+A completed entry created by the workspace OWNER while that setting was active returned **HTTP 201**,
+not a rejection. So Clockify exempts admins from the timer requirement, which is what P-TIMER already
+assumed with its `!isAdmin(viewer)` condition. The rule matches the platform.
+
+The probe entry was deleted (HTTP 204). Every setting was returned to baseline:
+`timeTrackingMode: "DEFAULT"`, `lockTimeEntries: null`, `automaticLock: null`, `forceProjects: true`.

@@ -63,7 +63,8 @@ Always different on the new entry (system differences):
 
 - new time entry ID;
 - new creation timestamp and audit history;
-- approval state: the new entry is always `UNSUBMITTED`;
+- approval: the new entry is not part of any approval request. (Approved entries cannot be deleted
+  in Clockify, so approval state can never be lost by deletion — evidence R9);
 - no link to any invoice;
 - rates: Clockify applies the rates that are current at recreation time;
 - custom fields: values that existed on the deleted entry are written to the new entry when the

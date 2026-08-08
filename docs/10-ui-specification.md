@@ -55,7 +55,7 @@ Then a **Differences** section that always lists the system differences:
 ```text
 The new entry always differs from the deleted entry:
 - It has a new ID and a new creation time.
-- Its approval state is Not submitted.
+- It is not part of any approval request.
 - It is not linked to any invoice.
 - Clockify applies the rates that are current today.
 ```

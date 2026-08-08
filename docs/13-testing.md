@@ -63,11 +63,11 @@ Small and deterministic; not the whole exploratory campaign.
 | LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears |
 | LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
 | LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) |
-| LV-05 | Missing project → ACTION_REQUIRED → substitute → success |
-| LV-06 | Archived-tag create behavior (closes the UNKNOWN in P-TAG-ARCH) |
+| LV-05 | Missing project → ACTION_REQUIRED → substitute → success; archived-tag rejection surfaced correctly (behavior proved by probe A4, R18 — confirmed here on the addon-token path) |
+| LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4) |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
 | LV-08 | Custom-field lifecycle: removed option → P-CF-OPT resolution; new required field without default → P-CF-REQ input → success |
-| LV-09 | `listForUser` response field coverage pinned (baseline-delta matcher inputs — R10 closure), including: a running entry inside the query window, and exact fingerprint round-trip (start/end epoch equality, description bytes, tagIds set) |
+| LV-09 | Reconcile-read pinning on the real addon path: description-filtered `listForUser` reflects a fresh create immediately (round-2 API-key proof: A1/A2); fingerprint round-trip (start/end epoch, description bytes, tagIds set); running entry visible with `end:null` in the unfiltered list. The windowed query is never used (R10) |
 | LV-10 | Mandatory ambiguity drill via the chaos hook: the suite runs the app with `RT_CHAOS_FETCH=lose-response` (test-only env flag; the app's fetch wrapper performs the real `createForUser` POST, then reports a transport timeout to the caller). (a) Lose-after-commit → the entry exists in Clockify → AMBIGUOUS → reconcile must adopt it → RECREATED. (b) Fail-before-send → nothing committed → bounded reconcile → user "not created" path → IDLE. The flag is rejected at boot unless `NODE_ENV=test` |
 
 ## E2E (component flow) — `tests/e2e/`

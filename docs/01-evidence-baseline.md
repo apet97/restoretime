@@ -10,10 +10,11 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 
 ## W-series — `TIME_ENTRY_DELETED` webhook
 
-### W1 — Payload is flat and self-contained
+### W1 — Payload is unwrapped and self-contained
 
-- FACT: The body is a flat time-entry object, not wrapped in `{timeEntry:{...}}`. It is a superset
-  of the pre-delete GET response for every stored field.
+- FACT: The body's top level is the time-entry object itself — not wrapped in `{timeEntry:{...}}`.
+  Referenced entities are embedded as nested objects (`project`, `task`, `user`, `tags[]`). It is
+  a superset of the pre-delete GET response for every stored field.
 - EVIDENCE: WH payload-contract.md, all three agent reports, sanitized payloads S1–S14.
 - CONFIDENCE: PROVED_3X.
 - CONSEQUENCE: No snapshot store. No `/entities/*` feeds. Normalize the body directly at the
@@ -110,9 +111,9 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 
 - FACT: `userId`/`user` identify the entry owner, never the deleter. Cross-user deletion carries
   the owner.
-- EVIDENCE: WH S3; self-deletion PROVED_3X; cross-user PROVED_ONCE (DSWH2, admin deleted PM USER's
-  entry).
-- CONFIDENCE: PROVED_ONCE (cross-user), PROVED_3X (self).
+- EVIDENCE: WH S3; self-deletion PROVED_3X; cross-user PROVED twice independently (DSWH2: admin
+  deleted PM USER's entry; round-2 probe B3 2026-08-08 re-proved it with a fresh capture).
+- CONFIDENCE: PROVED_2X (cross-user), PROVED_3X (self).
 - CONSEQUENCE: Authorization and recreation ownership key on `userId`. Do not show "deleted by".
 
 ### W14 — No timestamps on the payload
@@ -123,13 +124,18 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONSEQUENCE: Store `detected_at` = server receipt time and label it honestly in the UI
   ("Detected", not "Deleted at").
 
-### W15 — Approval/currency fields are always null in tested workspaces
+### W15 — Approval/currency fields are always null; approved entries cannot be deleted
 
-- FACT: `approvalStatus`, `detailedApprovalStatus`, `projectCurrency` were `null` in every capture.
-  No approval-enabled workspace was available.
-- EVIDENCE: WH consensus gaps. CONFIDENCE: NOT_TESTABLE (populated values).
-- CONSEQUENCE: Never claim approval or invoice restoration. Recreated entries are `UNSUBMITTED`
-  (R12). If approval fields ever arrive populated, normalization keeps them for display only.
+- FACT: `approvalStatus`, `detailedApprovalStatus`, `projectCurrency` were `null` in every capture
+  (campaign + 5 round-2 captures). A genuinely approved entry could not be produced for a payload
+  test — and structurally never will produce one: deleting an approved entry is rejected (403 code
+  `4005`) until the approval is withdrawn (R9). Round-2 note: one approvals API path errors with
+  code `501` ("Approval period has changed…"), while the user-scoped submit path works.
+- EVIDENCE: WH consensus gaps; round-2 probes A8/B1/B2.
+- CONFIDENCE: PROVED (null in all captures); PROVED (4005 deletion block); NOT_TESTABLE (populated
+  approval payload — structurally unreachable for deletions).
+- CONSEQUENCE: Never claim approval restoration. If approval fields ever arrive populated,
+  normalization keeps them for display only.
 
 ### W16 — Burst delivery has no ordering guarantee
 
@@ -222,25 +228,40 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONSEQUENCE: Source descriptions are always create-safe (they were stored once). No client-side
   description rewriting, ever (no-silent-changes invariant).
 
-### R9 — Recreated entry system state
+### R9 — Recreated entry system state (approval, invoice, identity)
 
-- FACT: A recreated entry has a new ID, new audit timestamps, `approvalStatus:UNSUBMITTED`, no
-  invoice linkage, and current rates. `kioskId` is not settable.
-- EVIDENCE: RC recreation-fidelity-matrix, approval probes (create → UNSUBMITTED).
-- CONFIDENCE: PROVED (create-response state); NOT_TESTABLE (invoice linkage behavior).
-- CONSEQUENCE: These are the standard system differences shown on every recreation (docs/10).
-  Fidelity FULL ignores them.
+- FACT: A recreated entry has a new ID, new audit timestamps, and current rates. Entry DTOs (GET
+  and list) expose NO approval fields and NO invoice fields at all (15-field item, verified). An
+  APPROVED entry cannot be deleted: DELETE → 403 code `4005` "Can't edit approved time entry."
+  until the approval is withdrawn — so a deleted entry was never approved at deletion time.
+  Invoiced entries CAN be deleted (204); their deletion webhook fires and carries no invoice
+  marker; `markInvoiced` state is not visible on the entry read model at all.
+- EVIDENCE: RC recreation-fidelity-matrix; live round-2 probes A8/A9/B2 (2026-08-08); operator
+  directive: "if an entry was locked or invoiced or approved — just recreate it; you cannot add an
+  invoiced or approved entry via add time entry."
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: UI wording is exact: "The new entry is not part of any approval request and is not
+  linked to any invoice." Do not quote `UNSUBMITTED` as a field value — no such field exists on
+  entry DTOs. Approval can never be silently lost by deletion, because Clockify blocks deleting
+  approved entries.
 
-### R10 — Ambiguous create outcome is possible
+### R10 — Ambiguous create outcome; reconcile read reliability
 
 - FACT: A POST can commit while the client never learns the result (timeout, reset, 5xx after
-  commit). No idempotency key exists to retry safely. Reconciliation read:
-  `GET /workspaces/{ws}/user/{userId}/time-entries?start&end`.
-- EVIDENCE: RC consensus (mechanism PROVED, scenario inferred); agent-7 G32/G33.
-- CONFIDENCE: PROVED (mechanism).
-- CONSEQUENCE: The AMBIGUOUS protocol (docs/07 §8): baseline-delta matching, bounded re-poll,
-  never auto-retry, user resolves collisions. List-response field coverage (taskId/tagIds/billable
-  presence) is UNVERIFIED — the release live suite pins it (docs/13).
+  commit). No idempotency key exists. Reconciliation read:
+  `GET /workspaces/{ws}/user/{userId}/time-entries`. Round-2 probes (2026-08-08) proved: the
+  `start`/`end`-windowed variant is UNRELIABLE for fresh entries (a new entry stayed absent >45 s;
+  the windowed result set was fixed and even returned out-of-window items). The no-filter and
+  `description`-filtered variants return fresh entries immediately (0 s). List items carry 15
+  fields — `taskId`, `tagIds`, `billable`, `customFieldValues`, `hourlyRate`, `costRate` present;
+  NO created-at field.
+- EVIDENCE: RC consensus (mechanism); live round-2 probes A1/A2/A3.
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: The AMBIGUOUS protocol (docs/07 §8) uses the **description-filtered** list
+  (fallback: no-filter list, paginated) plus client-side fingerprint matching on
+  start/end/billable/project/task/tags — never the windowed query. Baseline-delta (not a
+  created-after filter) remains mandatory because no created-at exists. Running entries appear in
+  the unfiltered list with `end:null`.
 
 ### R11 — Auth schemes
 
@@ -267,9 +288,10 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
   an always-shown system difference, not a settings branch.
 - EVIDENCE: agent-7 §3 (GET workspace/settings); SDK type inspection 2026-08-08; operator guide.
 - CONFIDENCE: PROVED_ONCE.
-- CONSEQUENCE: Preflight reads these once per preflight. `onlyAdminsCanChangeBillableStatus:true`
-  means a regular user's `billable:true` recreate can be forced to `false` by the server — the
-  post-create diff catches and reports this drift.
+- CONSEQUENCE: Preflight reads these once per preflight. Silent billable override is PROVED, not
+  hypothetical: with `onlyAdminsCanChangeBillableStatus:true` + `defaultBillableProjects:true`, a
+  regular user's `billable:false` create was stored as `true` (and `billable:true` stored true) —
+  round-2 probe A5. P-BILL warns and the post-create diff reports the actual stored value.
 
 ### R13 — Deleted/created/updated feeds are unusable for this product
 
@@ -327,6 +349,44 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONFIDENCE: PROVED (evidence scope) + directive (product rule).
 - CONSEQUENCE: The source stores `type`; preflight rule P-TYPE blocks non-`REGULAR` sources with
   an explanation. No UI is built for other types.
+
+### R18 — Archived tags reject creation
+
+- FACT: Create with an archived tag → 400 with body code `501` "You can not create entities for
+  archived tag". (Contrast: archived PROJECTS accept creates, R6.)
+- EVIDENCE: live round-2 probe A4 (2026-08-08).
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: P-TAG-ARCH is a resolution case (ACTION_REQUIRED: remove or replace), not a
+  warning. Error mapping must not confuse its code `501` with project-required `501` — preflight
+  lookups distinguish causes, codes never do (R15).
+
+### R19 — Dropdown custom-field options are not server-validated
+
+- FACT: Create with a value outside `allowedValues` for a DROPDOWN_SINGLE field → 201; the value
+  is stored verbatim. There is no server-side option validation.
+- EVIDENCE: live round-2 probe A6 (2026-08-08).
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: P-CF-OPT offers keep-with-warning (value preserved verbatim but absent from current
+  options), replace (current option), or drop (PARTIAL). Never assume a rejection.
+
+### R20 — Workspace settings are immutable via the API
+
+- FACT: PATCH/PUT `/workspaces/{ws}` (flat and nested) → 405 code `3000`. Force-timer and lock
+  settings can only be changed in the Clockify UI.
+- EVIDENCE: live round-2 probe A10 (2026-08-08); agent-7 G25.
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: The live suite cannot toggle force-timer/locks; the R16 matrix stands on the
+  operator's live guide. Preflight only reads settings.
+
+### R21 — Invoice state is invisible on entries
+
+- FACT: `PATCH /time-entries/invoiced` returns 200 but the entry read model never exposes the
+  flag (`isInvoiced:null`; no invoice key in GET or list). Invoiced entries delete normally (204)
+  and their deletion webhook carries no invoice field.
+- EVIDENCE: live round-2 probes A9/B2 (2026-08-08).
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: Recreation never carries invoice linkage and can never detect one from entry data.
+  The UI's invoice difference line is unconditional (R9).
 
 ## S-series — SDK facts
 

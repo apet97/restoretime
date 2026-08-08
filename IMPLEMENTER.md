@@ -32,7 +32,8 @@ app — report the defect as a blocker (none were known at planning time; docs/0
 
 ## Critical invariants (violating one is a failed pass)
 
-1. Recreation, never restoration. The new entry is a new entity (ADR-001).
+1. Recreation, never restoration. The new entry is a new entity (new ID, new timestamps, never
+   part of any approval request or invoice, current rates — ADR-001, R9).
 2. `TIME_ENTRY_DELETED` is the only deleted-entry source. No `/entities/*` feeds, no pre-delete
    snapshots (ADR-002).
 3. Webhook ingestion = verify → normalize → one `INSERT OR IGNORE` → 204. No inbox table

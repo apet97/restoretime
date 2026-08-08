@@ -50,17 +50,17 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-TASK-CTX | project substituted while source taskId set | source task cannot follow (R3); treat as P-TASK-GONE |
 | P-TAG-GONE | a source tag id is absent from workspace tags, not in `dropTagIds` | ACTION_REQUIRED per tag: confirm removal (tags have no substitute picker; `addTagIds` multi-select is offered) |
 | P-TAG-REQ | all source tags dropped AND `forceTags` AND `addTagIds` empty | ACTION_REQUIRED: select at least one current tag |
-| P-TAG-ARCH | effective tag exists but `archived` | warning `ARCHIVED_TAG` (create behavior for archived tags is UNKNOWN; rejection maps to FAILED with explanation) |
+| P-TAG-ARCH | effective tag exists but `archived` | ACTION_REQUIRED: archived tags reject creation (400 code 501, R18) — confirm removal or pick a replacement, same as P-TAG-GONE |
 | P-DESC | `forceDescription` AND effective description empty | ACTION_REQUIRED: user enters a description |
 | P-CF-KEEP | source CF value non-null; field exists and is active; value equals the current default | send nothing — the value auto-attaches (R5). No warning |
 | P-CF-WRITE | field exists and is active; value differs from the current default; value valid for the field type (dropdown: in `allowedValues`; NUMBER: numeric) | include `{customFieldId, sourceType:"WORKSPACE", value}` in `plannedRequest.customFields` (R5) |
-| P-CF-OPT | dropdown value not in current `allowedValues`, no choice made | ACTION_REQUIRED: pick a current option (substitute → ADJUSTED) or drop the value (→ warning, PARTIAL) |
+| P-CF-OPT | dropdown value not in current `allowedValues`, no choice made | ACTION_REQUIRED with three choices: pick a current option (substitute → ADJUSTED), keep the original value (server accepts any string, R19 → warning `CF_OPTION_STALE`, value preserved), or drop the value (→ warning, PARTIAL) |
 | P-CF-GONE | field missing or no longer active | warning `CF_FIELD_GONE`; the value is not sent; fidelity → PARTIAL |
 | P-CF-REQ | a required CF has no default and no source value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`) |
-| P-BILL | `onlyAdminsCanChangeBillableStatus` AND viewer not admin AND `source.billable=true` | warning `BILLABLE_MAY_CHANGE` — server may force non-billable; post-create diff reports the actual result (R12) |
+| P-BILL | (`onlyAdminsCanChangeBillableStatus` OR `defaultBillableProjects`) set AND viewer not admin AND source `billable` differs from what the workspace defaults imply | warning `BILLABLE_MAY_CHANGE` — silent override is PROVED (a regular user's `billable:false` was stored as `true`, R12); the post-create diff reports the actual stored value |
 | P-LOCK | viewer is admin/owner | rule does not apply — admins are lock-exempt on route B (R16, PROVED) |
 | P-LOCK-REG | viewer is regular AND any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) | warning `PERIOD_MAY_BE_LOCKED` — lock-range semantics are not fully verified, so the rule never parses dates and never blocks; the rejection mapping is precise: 403 code 1003 → "The entry's date is in a locked period. An admin can recreate this entry, or unlock the period." (R15, R16) |
-| P-SYS | always | informational system differences: new ID, new timestamps, `UNSUBMITTED`, no invoice link, current rates (R9) |
+| P-SYS | always | informational system differences: new ID, new timestamps, never part of any approval request, no invoice link, current rates (R9) |
 
 Owner substitution is not offered. Changing the owner changes the entry's meaning; no evidence
 supports safe semantics. An unavailable owner is a blocker with an explanation, not a picker.
@@ -128,10 +128,13 @@ On confirm, before any Clockify call:
 claim (§6) → baseline snapshot → createForUser → branch:
 ```
 
-**Baseline snapshot**: immediately before the create, `listForUser` the owner with
-`start=source.start`, `end=source.end ?? now`. Store the matching entry IDs (fingerprint filter
-below) as the attempt's baseline. Cost: one read. Purpose: the list has no created-at field (W14),
-so "new" can only mean "not in the baseline" (advisor requirement).
+**Baseline snapshot**: immediately before the create, list the owner's entries with the
+**description filter** (`listForUser` with `description` = source description; fallback when the
+description is empty: the unfiltered list, paginated). Record the matching entry IDs as the
+attempt's baseline. Never use the `start`/`end`-windowed query: it is eventually consistent and
+unreliable for fresh entries (R10 — a new entry stayed invisible >45 s in the windowed variant,
+while description-filtered and unfiltered lists reflect creates immediately). Cost: one read.
+Purpose: the list has no created-at field (R10), so "new" can only mean "not in the baseline".
 
 **Fingerprint** for matching: `start` and `end` (epoch-second compare), `description`
 (byte-exact), `billable`, `projectId`, `taskId`, `tagIds` (sorted compare). Only fields the list
@@ -150,7 +153,8 @@ Branches:
 and has had ≥3 checks shows the "not found" choice.
 
 ```text
-delta = listForUser(owner, start, end) − baseline, fingerprint-filtered
+delta = listForUser(owner, description=source.description) − baseline, fingerprint-filtered
+        (same read as the baseline; unfiltered-list fallback for empty descriptions)
   0 matches → stay AMBIGUOUS ("not found yet"); after the bound, offer "Clockify shows no such
               entry — mark as not created" → user confirms → IDLE (retry needs a new plan)
   1 match   → adopt: UPDATE ... SET new_entry_id (guarded by UNIQUE(workspace_id,new_entry_id));
@@ -199,5 +203,6 @@ FULL        otherwise — including running→running recreation: the explicit r
 Custom fields preserved through the write path (P-CF-KEEP/P-CF-WRITE) do not downgrade fidelity —
 the value on the new entry equals the source value (R5).
 
-System differences (new ID, timestamps, UNSUBMITTED, invoice, rates, CF auto-attach of matching
-defaults) never downgrade fidelity. They are always listed on the confirm and success views.
+System differences (new ID, timestamps, no approval-request membership, no invoice link, rates,
+CF auto-attach of matching defaults) never downgrade fidelity. They are always listed on the
+confirm and success views.

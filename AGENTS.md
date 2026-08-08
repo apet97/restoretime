@@ -3,7 +3,8 @@
 ## What this product is
 
 RestoreTime **recreates** deleted Clockify time entries. It never restores them. A recreated entry
-always has a new identity (new ID, new timestamps, `UNSUBMITTED`, no invoice link, current rates).
+always has a new identity (new ID, new timestamps, never part of any approval request or invoice,
+current rates).
 
 ## Non-negotiable rules
 

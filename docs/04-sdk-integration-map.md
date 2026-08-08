@@ -50,7 +50,7 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 |---|---|---|---|---|---|
 | Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequest` | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
 | Post-create fetch | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` | — | `TimeEntry` | Verification diff input (F12) |
-| Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `start`,`end`,`description` | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
+| Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `description` (never `start`/`end` windows — proved laggy for fresh entries, R10) | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
 | Owner check | `users.list` | `GET /workspaces/{ws}/users` | query `status=ALL`, `memberships` | `UserDtoV1[]` | Membership status = workspace membership |
 | Project check/options | `projects.get` / `projects.list` | `GET …/projects[/{id}]` | — | `Project` | 404 = gone; `archived` flag present |
 | Task check/options | `tasks.get` / `tasks.list` | `GET …/projects/{pid}/tasks[/{id}]` | — | `Task` | `status` field |

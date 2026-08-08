@@ -60,8 +60,15 @@ lifetime tracks the recovery decision, not a clock (docs/08 "Retention and delet
 ## Uninstalling
 
 Removing RestoreTime from a workspace deletes every row RestoreTime holds for that workspace —
-the installation record and every deleted-entry copy — in one operation, immediately (docs/08 F17,
-verified by `tests/integration/uninstall.test.ts`). Nothing is kept "in case you reinstall."
+the installation record and every deleted-entry copy — in one operation (docs/08 F17, verified by
+`tests/integration/uninstall.test.ts` and by a real uninstall of 132 rows, evidence "Live run 10").
+Nothing is kept "in case you reinstall."
+
+One honest qualification: the deletion is triggered by Clockify calling RestoreTime's `DELETED`
+lifecycle endpoint. If RestoreTime's host is unreachable at that moment, the call cannot arrive and
+the data is not deleted then — Clockify still removes the add-on on its side, so the two can
+disagree. This was observed, not theorised (evidence "Live run 11"). An operator whose host was down
+during an uninstall should confirm the purge ran, or delete that workspace's rows directly.
 Disabling the addon (without uninstalling) is different: it keeps the data, because the addon can
 be re-enabled.
 

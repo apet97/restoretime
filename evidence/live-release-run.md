@@ -725,3 +725,40 @@ skipped**, including LV-07 re-confirming R12 (`onlyAdminsCanChangeBillableStatus
 No `RT-PROBE` time entries remain in Clockify. Workspace settings are at baseline
 (`timeTrackingMode: DEFAULT`, `lockTimeEntries: null`, `automaticLock: null`, `forceProjects: true`).
 The addon is installed and ACTIVE.
+
+# Live run 11 — the purge is delivery-dependent (found by an outage, not a test)
+
+The session's cloudflared quick tunnel exited, and its hostname cannot be recovered — a quick tunnel
+gets a new random name each start. The addon installed in the developer workspace was therefore
+pointing at a dead URL, so a fresh tunnel was started and the installation re-pointed:
+
+```
+new tunnel      https://consideration-automatically-…trycloudflare.com   /healthz 200, /manifest 200
+uninstall       confirmed in the Clockify UI
+                -> NO "installation deleted" line arrived
+install         "installation installed" ... addonId 6a779984…            (new id, new URL)
+component       renders again, 12 rows
+```
+
+## What the missing log line means
+
+Clockify sends the `DELETED` lifecycle to the URL registered **at install time**. That URL was the
+dead tunnel, so the call never reached this process. Checked straight afterwards:
+
+```
+Clockify:   add-on removed from the workspace
+this addon: installations 1 (addonId 6a778f5a…, ACTIVE), recoverable_entries 12
+```
+
+The two disagreed, and nothing reconciles them — there is no periodic check that an installation
+still exists. So **F17's purge is delivery-dependent**: it is exact when the call arrives (Live run
+10 took 132 rows to zero), and it simply does not happen when the host is unreachable at that
+moment.
+
+This matters because `implementation/marketplace/privacy-policy.md` told users deletion happens
+"in one operation, immediately". That claim is only true for a reachable host. The privacy text and
+docs/08 now carry the qualification instead of implying a guarantee the delivery model cannot make.
+No code changed: a reconciliation pass would be the fix, and v1 does not have one.
+
+Worth noting how this surfaced — an infrastructure outage during cleanup, not a test. The suite
+cannot see it, because every test delivers the lifecycle call it is asserting on.

@@ -100,6 +100,10 @@ Constraints:
   is bounded by how often users delete entries.
 - Uninstall (`DELETED` lifecycle): hard-delete the installation row and all rows in the three
   domain tables for the workspace, in one transaction. (F17)
+  The purge is delivery-dependent: it only runs when Clockify's `DELETED` call reaches this
+  process. A workspace uninstalled while the host is unreachable stays removed on Clockify's side
+  and keeps its rows here, and nothing reconciles the two afterwards — observed live (evidence
+  "Live run 11"). v1 accepts this; a reconciliation pass is the fix if it ever matters.
 - Dismissal keeps a DISMISSED row (duplicate deliveries must not resurrect it, W10). Undismiss
   returns the entry to IDLE.
 - Sensitive content: entry descriptions and custom-field values can hold business data. They exist

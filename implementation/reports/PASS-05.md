@@ -189,7 +189,7 @@ this local drill — deliberately — does not fabricate.
 
 ## 5. LV-01…LV-10 — implementation status, row by row
 
-All ten scenarios are implemented as real, complete test files (not stubs) in `tests/live/`. None
+All ten scenarios are implemented as real, complete test files (not stubs) across the nine files in `tests/live/` — LV-06 has no file of its own because docs/13 merges it into LV-05. None
 of the code in `tests/live/` is a substitute for the real check it names — every row either (a)
 drives real, unmocked HTTP against production Clockify, or (b) is explicit in its own file header
 about the one thing it structurally cannot verify without a human/Clockify browser session, and
@@ -345,3 +345,29 @@ silent fix undersells what "reviewed" means:
 Run any part of LV-01…LV-10 for real, deploy anywhere, or produce a Marketplace-ready icon/
 screenshots/description/host — all correctly blocked on operator inputs named in §7, not worked
 around.
+
+---
+
+## Adversarial review (added by the judging author)
+
+An independent reviewer worked in its own worktree, ran every gate, built and booted the image,
+and exercised both the blocked path and the wrong-credential path against real `api.clockify.me`.
+
+Its most important result is a negative one: **it tried to falsify every checked docs/16 box and
+could not.** No false checked box, no fabricated verification, no credential in the tree, no
+dependency outside the closed list. **No blocking findings.** Eight others, all fixed.
+
+| ID | Sev | Finding | Disposition |
+|---|---|---|---|
+| F1 | high | Shape-gated LV rows `return`ed instead of skipping, so a **credentialed** run could print "11 passed" while the load-bearing scenario never ran — LV-04 (the row that closes R11) went green on a one-member workspace, behind a tautological `expect(active.length).toBeGreaterThanOrEqual(0)`. | **Fixed.** LV-04 and LV-08 now call `ctx.skip(reason)`, so vitest reports them as **skipped**, not passed; the tautological assertion is gone. LV-03's partial run prints `LV-03 PARTIAL` and names LV-08 as the row that pins what it could not. |
+| F2 | high | LV-08's `catch` swallowed **any** error from custom-field creation into "workspace/plan-shape gap" and passed green — so a transient 500 or a mid-run 401 would be reported as a plan limitation. Exactly the swallow a blocked path must never have. | **Fixed.** Only a 400/402/403 refusal is treated as a plan-tier gap; everything else rethrows. |
+| F3 | med | LV-10 leg (b) asserted only that the row stayed AMBIGUOUS — equally true if the immediate reconcile threw and never reached Clockify, since the route swallows a failed first check by design. | **Fixed.** It now asserts the reconcile was actually recorded: `checks >= 1`, `matchCount === 0`, `truncated === false`. |
+| F4 | med | The privacy text claimed RestoreTime stores "who deletes" an entry. No deleter exists anywhere — W13 proves the deletion event carries the owner, never the actor. | **Fixed.** The line now says "who owned the entry, and who recreates it later", and the "never stores" list gains an explicit entry saying there is no deleted-by data, citing W13. |
+| F5 | low | `evidence/live-release-run.md` claimed no "workspace-identifying value" appears, then quoted the sacrificial workspace id. | **Fixed.** The claim now covers credentials and tokens, and says plainly that the workspace id appears and is already recorded elsewhere in `evidence/`. |
+| F6 | low | docs/16 and the report said "all ten rows are implemented"; nine files exist (LV-06 is merged into LV-05 by docs/13). | **Fixed** in both. |
+| F7 | low | The live harness stored the operator's **real production API key** encrypted under a fixed all-zero key — effectively plaintext — in a temp directory a killed run would leave behind. | **Fixed.** A per-boot `randomBytes(32)` key. |
+| F8 | low | The rollback-drill box did not carry the caveat that "one component load" was satisfied by the 401 boundary and assets, not an authenticated render. | **Fixed.** The box now states the caveat and points at the docs/15 step-6 production smoke. |
+
+F1 and F2 are the ones that mattered most, and neither affects this run — both change what a
+**future** credentialed run will report. That is the point: this pass could not run the live suite,
+so its remaining job was to make sure the run that can is impossible to misread.

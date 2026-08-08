@@ -10,7 +10,7 @@ makes it true, not aspiration.
 When a time entry is deleted, RestoreTime keeps a copy of these fields in its own database (one
 row per deleted entry, docs/08 `recoverable_entries`):
 
-- who owned the entry, and who deletes/recreates it later
+- who owned the entry, and who recreates it later
 - the entry's description, start and end time, billable flag, and time zone
 - the entry's project, task, tags, and custom-field values, **if the deletion webhook carried
   them** — a normalized copy, not the raw event
@@ -23,6 +23,8 @@ RestoreTime never stores:
 - the deleted entry's pay rate or cost rate (ADR-009 — discarded at normalization, even though the
   webhook may carry them)
 - the raw webhook payload Clockify sends (only the normalized fields above; docs/08 invariant 5)
+- who deleted the entry — Clockify's deletion event carries the entry's owner, never the actor
+  who deleted it (docs/01 W13), so RestoreTime has no deleted-by data to store or show
 - any data about entries that were never deleted
 - Clockify session cookies (there are none — every request is a short-lived, independently
   verified signed token, docs/12 boundary 2)

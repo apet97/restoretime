@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("LV-04 admin recreates another user's entry (docs/13)", () => {
-  it("createForUser targeting a different userId succeeds with CK_LIVE_API_KEY as the addon token (R11)", async () => {
+  it("createForUser targeting a different userId succeeds with CK_LIVE_API_KEY as the addon token (R11)", async (ctx) => {
     const check = checkLiveEnv();
     if (check.blocked) {
       console.log(`LV-04 ${check.reason}`);
@@ -51,10 +51,12 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
       const users = await restClient.users.list({ workspaceId: env.workspaceId, status: "ALL", "include-roles": false, "page-size": 200 });
       const active = users.filter((u) => u.status === "ACTIVE");
       if (active.length < 2) {
-        console.log(
+        // `ctx.skip` rather than `return`: a returned row is reported as PASSED, and this row is
+        // the one that closes R11 — the pass file's stated load-bearing unknown. A credentialed
+        // run on a one-member workspace must not print "passed" for a scenario that never ran.
+        ctx.skip(
           `LV-04 blocked — the sacrificial workspace has ${active.length} ACTIVE user(s); this scenario needs at least 2 distinct members (the acting admin and the entry's owner). This is a workspace-shape gap, not a missing credential.`,
         );
-        expect(active.length).toBeGreaterThanOrEqual(0); // record the observation without failing the pass on a workspace-shape gap
         return;
       }
       const actingAdmin = active[0]!;

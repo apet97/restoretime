@@ -1,8 +1,9 @@
 # Live release run — PASS-05 (sanitized)
 
-What was actually verified during PASS-05, and, plainly, what could not be. No credential, token,
-or workspace-identifying value appears in this file — every value below is a throwaway generated on
-this machine, an image ID, or a status code.
+What was actually verified during PASS-05, and, plainly, what could not be. No credential or token
+appears in this file — every other value below is a throwaway generated on this machine, an image
+ID, a status code, or the sacrificial workspace id, which the blueprint already records elsewhere
+in `evidence/`.
 
 ## 1. What could not run, and why
 

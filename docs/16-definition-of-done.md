@@ -56,7 +56,7 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [ ] Live suite LV-01…LV-10 passes on the production build against the sacrificial workspace
       (LV-10 proves the ambiguity protocol live; it is not optional). **Reason unchecked**: blocked
       — `CK_LIVE_API_KEY` (all rows) and `CK_LIVE_ADDON_BASE_URL` (LV-01/LV-02) are not present in
-      this environment. All ten rows are implemented and run (report blocked by exact variable
+      this environment. All nine LV files are implemented and run (LV-06 has no file — docs/13 merges it into LV-05) (report blocked by exact variable
       name, `npm run test:live` exits 0 with zero rows exercised) — see
       evidence/live-release-run.md §3 and `implementation/reports/PASS-05.md` for the row-by-row
       status. This is the release-blocking gap; nothing stands in for it.
@@ -70,7 +70,10 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [x] Rollback drill executed and recorded (evidence/live-release-run.md §2.3,
       `implementation/reports/PASS-05.md` "Rollback drill") — a real Docker build/run sequence
       including a deliberately incompatible drill-only migration, executed and reversed for real,
-      not a dry run.
+      not a dry run. Scope caveat: the pass file's "verify `/healthz` + one component load" was
+      satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
+      (401 without a token). An **authenticated** component render needs a Clockify-signed session
+      and belongs to the docs/15 step-6 production smoke, not to this drill.
 - [ ] GitHub release tagged with notes. **Reason unchecked**: the tag is created only after every
       gate passes (`implementation/passes/PASS-05-release.md` "Git requirements"), and the live
       suite above has not passed — it is blocked, not green. Tagging was not attempted.

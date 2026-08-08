@@ -116,7 +116,12 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
         const match = values.find((v) => v.customFieldId === usableField.id);
         expect(match?.value, `custom field ${usableField.id} value must be preserved on the new entry (R5)`).toEqual(cfValue);
       } else {
-        console.log("LV-03: no usable custom field on this workspace — the R5 custom-field-preservation assertion was skipped; the core recreation path was still fully exercised.");
+        // Recorded loudly rather than silently: the core recreation path above DID run and its
+        // assertions held, but R5 — the custom-field write path, one of this row's named claims —
+        // did not. A reader of the run output must be able to tell those apart.
+        console.log(
+          "LV-03 PARTIAL — no usable custom field on this workspace, so the R5 custom-field-preservation assertion did not run. The core recreation path was fully exercised and asserted. LV-08 is the row that pins the custom-field behaviour.",
+        );
       }
     } catch (err) {
       const rejected = describeIfAuthRejected(err);

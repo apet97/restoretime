@@ -200,6 +200,16 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(stayedAmbiguous?.lifecycleState).toBe("AMBIGUOUS");
       expect(stayedAmbiguous?.newEntryId).toBeNull(); // nothing was ever created
 
+      // "Still AMBIGUOUS" alone proves nothing: it is equally true if the immediate reconcile
+      // threw and never reached Clockify (the route swallows a failed first check by design —
+      // src/api/routes.ts, since a failed check leaves the truthful state). The named behaviour of
+      // this row is that a reconcile RAN against real Clockify and found nothing, so assert the
+      // check was recorded.
+      const attempt = attempts.latestForEntry(harness.server.db, recoverableId);
+      expect(attempt?.reconcile?.checks ?? 0).toBeGreaterThanOrEqual(1);
+      expect(attempt?.reconcile?.matchCount).toBe(0);
+      expect(attempt?.reconcile?.truncated).toBe(false);
+
       // Store-level "user marks not created" (bypasses only the UI cooldown window, not the
       // reconcile mechanics under test — see the module header).
       const marked = entries.markNotCreated(harness.server.db, env.workspaceId, recoverableId);

@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe("LV-08 custom-field lifecycle (docs/13)", () => {
-  it("a removed dropdown option resolves via P-CF-OPT; a new required field with no default resolves via P-CF-REQ; both recreate successfully", async () => {
+  it("a removed dropdown option resolves via P-CF-OPT; a new required field with no default resolves via P-CF-REQ; both recreate successfully", async (ctx) => {
     const check = checkLiveEnv();
     if (check.blocked) {
       console.log(`LV-08 ${check.reason}`);
@@ -80,7 +80,16 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
         });
         requiredFieldId = requiredField.id;
       } catch (err) {
-        console.log(`LV-08 blocked — creating a custom field on the sacrificial workspace was rejected (${err instanceof ClockifyApiError ? `status ${err.statusCode}` : "unknown error"}). This is a workspace/plan-shape gap, not a suite defect.`);
+        // Only a genuine plan-tier or permission refusal is a workspace-shape gap. Catching
+        // everything here would report a transient 500, a mid-run 401, or a network failure as
+        // "your plan does not allow custom fields" and pass green — exactly the swallow the
+        // blocked path must never do.
+        const status = err instanceof ClockifyApiError ? err.statusCode : undefined;
+        const isPlanOrPermissionRefusal = status === 403 || status === 402 || status === 400;
+        if (!isPlanOrPermissionRefusal) throw err;
+        ctx.skip(
+          `LV-08 blocked — creating a custom field on the sacrificial workspace was refused (status ${String(status)}). This is a workspace/plan-shape gap, not a suite defect.`,
+        );
         return;
       }
 

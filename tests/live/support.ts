@@ -18,6 +18,7 @@
 // LV-01 and LV-02 are different in kind (real Clockify-issued claims / real webhook delivery to a
 // real deployed host) and this in-process harness must never be used for them — they require
 // `CK_LIVE_ADDON_BASE_URL` and report blocked without it (`checkLiveDeployedHost`).
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,7 +123,11 @@ export async function bootLiveHarness(env: LiveEnv): Promise<LiveHarness> {
     clockifyParentOrigin: "https://app.clockify.me",
     databasePath: join(dir, "restoretime.sqlite"),
     addonKey: LIVE_ADDON_KEY,
-    tokenEncryptionKeyHex: "00".repeat(32),
+    // A per-boot random key, not a fixed constant. This harness stores the operator's REAL
+    // production API key as the installation token, and the SDK codec encrypts it at rest — under
+    // an all-zero key that is effectively plaintext to anyone who reads this file. A run killed
+    // before teardown leaves that database in a temp directory.
+    tokenEncryptionKeyHex: randomBytes(32).toString("hex"),
     logLevel: "error",
   };
   const server = await createServer(config, { publicKey: keys.publicKey });

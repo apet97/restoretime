@@ -32,10 +32,10 @@
 | Concurrent recreation | 2/3 | Atomic claim CAS + lease + fencing token | IT-03 |
 | Duplicate mutation (blind retry) | 3 | POST never auto-retried (SDK default + app rule) | review + LV-04 |
 | Ambiguous POST | 3 | AMBIGUOUS protocol; baseline-delta; double-adoption unique index | IT-04 |
-| XSS via stored Clockify values | 2 | Escape all interpolated values; CSP `default-src 'none'`; `textContent` only | UT-X01 |
+| XSS via stored Clockify values | 2 | Escape all interpolated values; CSP `default-src 'none'`; `textContent` only | UT-X01 (+ E2E) |
 | SQL injection | 4 | Prepared statements only; no string-built SQL | review |
-| Sensitive log leakage | all | IDs/states/codes only; SDK `onError` redaction; no payload logging | review |
-| Addon token exposure | 3 | Server-only; encrypted at rest; never in responses | review |
+| Sensitive log leakage | all | IDs/states/codes only; SDK `onError` redaction; no payload logging | IT-15 |
+| Addon token exposure | 3 | Server-only; encrypted at rest; never in responses | IT-15 (never logged); review (never in responses) |
 | Uninstall data residue | 1/4 | DELETED lifecycle hard-deletes workspace data in one transaction | IT-11 |
 | Iframe embedding abuse | 2 | `frame-ancestors` restricted to `CLOCKIFY_PARENT_ORIGIN` (env var, fact 12) | LV-01 |
 | Token replay across addons | 2 | JWT `sub` must equal this addon's key | SDK tests |

@@ -6,7 +6,7 @@
 // listed row and only repeat the two per-entry lookups (project, task) — "one fetch set per
 // request, share across rows" (pass file API scope).
 
-import { ClockifyApiError, iterPages, type ClockifyClient } from "clockify-sdk-ts-115";
+import { ClockifyApiError, iterPages, type ClockifyApi, type ClockifyClient } from "clockify-sdk-ts-115";
 import { clockifyErrorCode } from "./errors.js";
 import type { DeletedTimeEntry, PreflightChoices } from "../domain/entry.js";
 import { resolveEffectiveIds, type CustomFieldDef, type LookupResult, type TaskLookupResult, type WorkspaceState } from "../domain/preflight.js";
@@ -120,19 +120,71 @@ function isProjectGone(err: unknown): boolean {
   return err.statusCode === 400 && clockifyErrorCode(err) === "501";
 }
 
-async function lookupProject(
+/**
+ * Per-request memoization for the two per-row lookups (project, task) — PASS-04 performance fix.
+ * `GET /api/entries` calls `fetchEntryWorkspaceState` once per listed row, concurrently, via
+ * `Promise.all` (docs §Scope "list endpoint... without N+1"); rows sharing a `projectId` (the
+ * overwhelmingly common case — a project has many entries) were each re-fetching the identical
+ * project and task-list, an N+1 that turns fifty rows across ten projects into up to a hundred
+ * Clockify calls. A cache keyed by `projectId` (and `projectId:taskId` for tasks) collapses that to
+ * one call per distinct project.
+ *
+ * The cache stores the in-flight *promise*, not the resolved value: `Promise.all` starts every
+ * row's lookup in the same microtask, before any of them has resolved, so a cache keyed on
+ * resolved values would still let concurrent rows for the same project each miss the cache and
+ * issue their own duplicate call (the dedupe would only work call-by-call, not under real
+ * concurrency). Registering the promise synchronously, before its first `await`, is what makes a
+ * second concurrent caller for the same key observe the first one's in-flight request instead of
+ * starting a new one.
+ *
+ * Scoped to one caller-owned instance per request — never shared across requests or workspaces —
+ * so a project that changes between two unrelated requests is never served stale.
+ */
+export interface ProjectTaskCache {
+  readonly projects: Map<string, Promise<LookupResult | null | undefined>>;
+  /** Keyed by `projectId` alone, not `projectId:taskId`: `tasks.list` returns every task for a
+   * project in one call, so two rows in the same project with DIFFERENT task ids must still share
+   * one `tasks.list` call, not issue one each. */
+  readonly taskLists: Map<string, Promise<readonly ClockifyApi.Task[]>>;
+}
+
+export function createProjectTaskCache(): ProjectTaskCache {
+  return { projects: new Map(), taskLists: new Map() };
+}
+
+function lookupProject(
   client: ClockifyClient,
   workspaceId: string,
   projectId: string | null,
+  cache: ProjectTaskCache,
 ): Promise<LookupResult | null | undefined> {
-  if (projectId === null) return undefined;
-  try {
-    const project = await client.projects.get({ workspaceId, projectId });
-    return { id: project.id, archived: project.archived };
-  } catch (err) {
-    if (isProjectGone(err)) return null;
-    throw err;
-  }
+  if (projectId === null) return Promise.resolve(undefined);
+  const cached = cache.projects.get(projectId);
+  if (cached) return cached;
+  const promise = (async (): Promise<LookupResult | null> => {
+    try {
+      const project = await client.projects.get({ workspaceId, projectId });
+      return { id: project.id, archived: project.archived };
+    } catch (err) {
+      if (isProjectGone(err)) return null;
+      throw err;
+    }
+  })();
+  cache.projects.set(projectId, promise);
+  return promise;
+}
+
+function listTasksForProject(
+  client: ClockifyClient,
+  workspaceId: string,
+  projectId: string,
+  cache: ProjectTaskCache,
+): Promise<readonly ClockifyApi.Task[]> {
+  const cached = cache.taskLists.get(projectId);
+  if (cached) return cached;
+  const promise = collectPaged(client.tasks.list.bind(client.tasks), { workspaceId, projectId });
+  cache.taskLists.set(projectId, promise);
+  return promise;
 }
 
 async function lookupTask(
@@ -140,25 +192,29 @@ async function lookupTask(
   workspaceId: string,
   projectId: string | null,
   taskId: string | null,
+  cache: ProjectTaskCache,
 ): Promise<TaskLookupResult | null | undefined> {
   if (taskId === null || projectId === null) return taskId === null ? undefined : null;
-  const tasks = await collectPaged(client.tasks.list.bind(client.tasks), { workspaceId, projectId });
+  const tasks = await listTasksForProject(client, workspaceId, projectId, cache);
   const task = tasks.find((t) => t.id === taskId);
   return task ? { id: task.id, status: task.status } : null;
 }
 
 /** Assembles the pure `WorkspaceState` for one entry from already-fetched shared data plus this
- * entry's two per-row lookups (project, task). */
+ * entry's two per-row lookups (project, task). `cache` is optional so single-entry callers
+ * (preflight, confirm's revalidation) keep their existing one-shot behavior unchanged; omitting it
+ * is equivalent to a cache used exactly once. */
 export async function fetchEntryWorkspaceState(
   client: ClockifyClient,
   workspaceId: string,
   shared: SharedWorkspaceData,
   source: DeletedTimeEntry,
   choices: PreflightChoices,
+  cache: ProjectTaskCache = createProjectTaskCache(),
 ): Promise<WorkspaceState> {
   const { effectiveProjectId, effectiveTaskId } = resolveEffectiveIds(source, choices);
-  const effectiveProject = await lookupProject(client, workspaceId, effectiveProjectId);
-  const effectiveTask = await lookupTask(client, workspaceId, effectiveProjectId, effectiveTaskId);
+  const effectiveProject = await lookupProject(client, workspaceId, effectiveProjectId, cache);
+  const effectiveTask = await lookupTask(client, workspaceId, effectiveProjectId, effectiveTaskId, cache);
 
   return {
     forceProjects: shared.forceProjects,

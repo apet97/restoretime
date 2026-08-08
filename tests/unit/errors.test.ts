@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { getErrorCode } from "clockify-sdk-ts-115";
 import { ClockifyApiError } from "clockify-sdk-ts-115";
-import { clockifyErrorCode, describeClockifyCreateFailure, isAddonTokenInvalid } from "../../src/clockify/errors.js";
+import { clockifyErrorCode, describeClockifyCreateFailure, isAddonTokenInvalid, safeErrorSummary } from "../../src/clockify/errors.js";
 
 function apiError(statusCode: number | undefined, body: unknown): ClockifyApiError {
   return new ClockifyApiError({ statusCode, body, message: "generic Clockify error" });
@@ -75,6 +75,26 @@ describe("UT-M01 describeClockifyCreateFailure — user-facing reasons", () => {
 
   it("code-absent, non-404 4xx -> generic status-based reason", () => {
     expect(describeClockifyCreateFailure(422, undefined)).toContain("422");
+  });
+});
+
+describe("UT-M02 safeErrorSummary — the log-safe error field set (N3, docs/12, docs/14)", () => {
+  it("a ClockifyApiError never surfaces its message or body — status + normalized code only", () => {
+    const err = apiError(400, { message: "rejected", code: 501, echoedDescription: "sensitive-source-text" });
+    const summary = safeErrorSummary(err);
+    expect(summary).toEqual({ errorName: "ClockifyApiError", errorStatus: 400, errorCode: "501" });
+    expect(JSON.stringify(summary)).not.toContain("sensitive-source-text");
+    expect(JSON.stringify(summary)).not.toContain("rejected");
+  });
+
+  it("a plain Error logs name + message (this codebase's own thrown messages are static, non-interpolated text)", () => {
+    const summary = safeErrorSummary(new Error("workspace too large to verify; try again"));
+    expect(summary).toEqual({ errorName: "Error", errorMessage: "workspace too large to verify; try again" });
+  });
+
+  it("a non-Error thrown value degrades to a bare marker, never a raw dump", () => {
+    expect(safeErrorSummary("a thrown string")).toEqual({ errorName: "unknown" });
+    expect(safeErrorSummary({ some: "object" })).toEqual({ errorName: "unknown" });
   });
 });
 

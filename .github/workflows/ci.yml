@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to diff against (docs/15 gate 6, "secret scan of the diff") —
+          # a shallow checkout has nothing to diff.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -26,3 +30,13 @@ jobs:
       # After build: the E2E suite's last test boots the real dist/static/app.js, so the artifact
       # has to exist. Everything before it runs against source.
       - run: npm run test:e2e
+
+      # Gate 6 (docs/15): secret scan of the diff. A GitHub Action, not an npm dependency — the
+      # closed dependency list (implementation/DEPENDENCIES.md) is untouched. `gitleaks/
+      # gitleaks-action` is free for a personal-account repo (github.com/apet97/restoretime,
+      # docs/15 "Repository") — no `GITLEAKS_LICENSE` needed. It is required only for
+      # organization-owned repos; if this repository is ever transferred to an organization, add
+      # `GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}` to this step's `env`.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

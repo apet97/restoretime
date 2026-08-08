@@ -31,6 +31,7 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 | UT-A01 | Policy: admin vs regular vs wrong-owner vs wrong-workspace | Authorization |
 | UT-X01 | HTML escaping of descriptions/names with entities and markup-looking text | XSS |
 | UT-M01 | Clockify error mapping through `clockifyErrorCode` (docs/03 §6): body `{"code": 501}` (a JSON **number**) → `"501"`; 400/`"501"`, 401/`"4017"`, 403/`"4030"` force-timer, 403/`"1003"` locked → their user-facing reasons; **code-absent 404** → status-only reason; non-`ClockifyApiError` → `undefined`. A test asserting the SDK `getErrorCode` returns these codes must fail — it returns `undefined` for numeric codes (R15, FP-1/FP-2) | Failure honesty |
+| UT-M02 | `safeErrorSummary` (docs/12 "Sensitive log leakage", docs/14 "Logging"): a `ClockifyApiError` never surfaces `.message`/`.body` (which embed the full response verbatim) — only `{errorName, errorStatus, errorCode}`; a plain `Error` yields `{errorName, errorMessage}`; a non-`Error` throw degrades to `{errorName:"unknown"}` | Log-safe error fields |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
 
 ## Contract (fixture-pinned) — `tests/contract/`
@@ -52,18 +53,23 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 |---|---|
 | IT-01 | Duplicate webhook delivery → one row, both 204 |
 | IT-02 | Wrong webhook token / unknown installation → 401, no row |
-| IT-03 | Concurrent recreate claims → exactly one winner; loser gets current state |
-| IT-04 | Ambiguous protocol: commit-lost → reconcile adopts; nothing-committed → user marks; two candidates → user picks |
+| IT-03 | Concurrent recreate claims → exactly one winner; loser gets current state. **PASS-04 extension** (`tests/integration/concurrency-workers.test.ts`): the same invariant proved again under real process-level parallelism — 8 `node:worker_threads` workers, each with its own SQLite connection, racing to claim one row on one shared database file; exactly one `claimed:true` |
+| IT-04 | Ambiguous protocol: commit-lost → reconcile adopts; nothing-committed → user marks; two candidates → user picks. **PASS-04 extension** (`tests/integration/ambiguous-soak.test.ts`): one scripted soak covering all three phases plus a fourth — two *different* rows both resolving to the same Clockify id via the real `/api/entries/resolve-ambiguous` route; exactly one 409, the loser stays AMBIGUOUS |
 | IT-05 | Dependency deleted between plan and create → 4xx → FAILED with mapped reason |
 | IT-06 | Recreated entry deleted → new row with parent link |
-| IT-07 | Authorization negatives: other-user entry 404; demoted admin 403; cross-workspace 404 |
+| IT-07 | Authorization negatives: other-user entry 404; demoted admin 403; cross-workspace 404. **PASS-04 extension** (`tests/integration/permission-negatives.test.ts`, 53 cases): every `/api/*` route against five forgeries (expired token, wrong-addon-key token, cross-workspace viewer, other-member viewer, demoted admin), each asserting the exact failure mode and that no row changed |
 | IT-08 | Clockify 401 code 4017 on any call → installation marked broken |
-| IT-09 | Forged workspace/body identity ignored |
+| IT-09 | Forged workspace/body identity ignored. **PASS-04 extension**: the same sweep as IT-07 above (`tests/integration/permission-negatives.test.ts`) covers forged workspace and forged user identity across every route |
 | IT-10 | Dismissed entry absorbs redelivery |
 | IT-11 | Uninstall purges all workspace rows |
-| IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens |
+| IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens. **PASS-04 extension** (`tests/integration/lease-fencing-drill.test.ts`): crashes the real recreate handler mid-attempt via the test-only `RT_TEST_CRASH_MID_ATTEMPT` flag (rejected unless `NODE_ENV==="test"`, verified by a negative test), then drives the full lifecycle through the real route: too-soon reclaim refused, post-lease reclaim succeeds, the dead attempt's late write is fenced off |
 | IT-13 | Create returns 201 but the verification `get` fails after read-retries → still RECREATED, diff falls back to the 201 body, "verification read unavailable" recorded (fact 11) |
 | IT-14 | Page bound reached: the stub transport returns full pages past `maxPages: 10` → preflight fails with "workspace too large to verify; try again", and an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound. Never a partial baseline (docs/03 note 5, docs/07 §8) |
+| IT-15 | Log audit (docs/12 "Sensitive log leakage", docs/14 "Logging"; `tests/integration/log-audit.test.ts`). Captures every `process.stdout`/`stderr` line while a scripted run drives every logging call site (install, webhook, list, detail, preflight — including a preflight failure whose Clockify error body is adversarially crafted to contain a sentinel — recreate FAILED, uninstall), seeded with distinctive sentinel values (description, custom-field value, installation auth token, webhook token); asserts none appear in any captured line. Verified real: temporarily reverting the `safeErrorSummary` fix at the api-route error site made the sentinel appear in the failure diff |
+| IT-16 | Revalidation drill (docs/07 §7, ADR-006; `tests/integration/revalidation-drill.test.ts`). A dependency (the source project) is removed between plan and confirm → the plan is marked STALE, a fresh preflight is returned, AND a call-counting fetch stub proves zero `POST .../time-entries` calls were ever issued — not just that the response says STALE |
+| IT-17 | Performance sanity + N+1 fix (pass file §Scope item 9; `tests/integration/performance.test.ts`). Seeds 5000 `recoverable_entries` rows (50 actionable across 5 distinct projects, 4950 filler). A counting fetch stub proves `GET /api/entries` issues exactly one project/task lookup set per distinct project (never per row — the PASS-02 N+1 in `fetchEntryWorkspaceState`, fixed by `src/clockify/preflight-data.ts`'s per-request `ProjectTaskCache`); p95 over 15 sequential calls is asserted under the documented local budget `LOCAL_P95_BUDGET_MS=150` (non-SLA — see docs/14 "Performance") |
+| IT-18 | Metrics emission (docs/14 "Metrics"; `tests/integration/metrics.test.ts`). One scripted flow touches every documented emission point (webhook received/rejected/duplicate, recoverable_created, preflight_blockers/action_required, recreate_attempt/success/failed/ambiguous, ambiguous_adopted/not_created, authz_denied); asserts the SET of distinct `metric:*` names emitted equals `METRIC_NAMES` exactly — catches an extra undocumented counter as well as a missing one |
+| IT-19 | Error-message sweep (docs/02 N8, docs/10 §8; `tests/integration/error-message-sweep.test.ts`). Drives the real routes into the weakest user-facing failure strings PASS-04 found (several paths shared one bare "Clockify could not be reached; try again" regardless of whether a mutation might be in flight) and asserts the fixed text answers, per situation: what happened, whether anything was created, what to do next |
 
 Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by recorded response
 shapes (create 201, get, listForUser, errors). The Clockify SDK stays real; only the network is
@@ -125,8 +131,14 @@ Clockify API, assert rendered states (ready, warnings, blocked, success, unknown
 Runner: **vitest with the `happy-dom` environment**, scoped to `tests/e2e/`. This suite exercises
 the real esbuild bundle and the SDK bridge (which takes an injected `window`), and it is the only
 place a DOM environment is used. It deliberately does **not** attempt real-browser verification:
-CSP, `frame-ancestors`, iframe embedding, and console cleanliness belong to LV-01 against a live
-deployment and to PASS-04's XSS proof. Keep it one small suite.
+CSP, `frame-ancestors`, and iframe embedding belong to LV-01 against a live deployment. Keep it a
+small number of suites.
+
+`tests/e2e/xss-proof.test.ts` (**UT-X01 extension**, PASS-04) drives entity-encoded and
+markup-looking payloads in the description, project name, task name, tag names, owner name, and a
+custom-field value through every rendered view (list, detail, resolution widgets, confirm,
+success/result) against the real bundle boot path, asserting no `img`/`svg`/`script`/`iframe`
+element is ever created from stored Clockify text.
 
 ## Commands
 

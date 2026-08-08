@@ -378,6 +378,17 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONSEQUENCE: The live suite cannot toggle force-timer/locks; the R16 matrix stands on the
   operator's live guide. Preflight only reads settings.
 
+### R22 — Required custom fields and lock minimum (operator statements)
+
+- FACT: (a) A required custom field makes a value mandatory at create time; recreation tries to
+  match the source value first. (b) The minimum lock date is 24 hours — an entry whose start is
+  less than 24 hours old can never be in a locked period.
+- EVIDENCE: operator statements 2026-08-08 (consistent with P-CF-REQ design and the force-timer
+  guide's lock matrix).
+- CONFIDENCE: operator-stated (authoritative product input); rejection behavior covered by R15.
+- CONSEQUENCE: P-CF-REQ resolution order is: source value → current default → user input
+  (mandatory). P-LOCK-REG skips its warning entirely for entries younger than 24 hours.
+
 ### R21 — Invoice state is invisible on entries
 
 - FACT: `PATCH /time-entries/invoiced` returns 200 but the entry read model never exposes the

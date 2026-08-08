@@ -104,6 +104,6 @@ on both routes. This grounds docs/01 R15/R16 and preflight rules P-TIMER/P-LOCK.
 |---|---|---|
 | Addon-token success path on Clockify REST calls | No installed addon existed in any test environment; operator states API key and addon token act the same toward REST | LV-04 confirms on the real addon path before submission (docs/13) |
 | Approval fields populated in a deletion payload | Structurally unreachable: approved entries cannot be deleted (403 code 4005, probe A8) until withdrawn | None needed. The product never claims approval restoration (R9) |
-| Locked-period date semantics (which ranges are locked) | Lock configuration is UI-only (R20); the rejection (403/1003) and admin exemption are PROVED, the range computation is not | P-LOCK-REG warns without date math; rejection mapping is precise (R15/R16) |
+| Locked-period date semantics (which ranges are locked) | Lock configuration is UI-only (R20); the rejection (403/1003) and admin exemption are PROVED; the operator confirms the 24-hour minimum lock date (R22) | P-LOCK-REG skips entries younger than 24 h and warns otherwise without date math; rejection mapping is precise (R15/R16) |
 | Required-CF-without-default create rejection code | A 6th visible CF cannot be created on this plan (4033, probe A7) | P-CF-REQ resolves at preflight; any rejection maps to FAILED with the code |
 | Missed deletions during prolonged addon downtime | Redelivery is at-least-once with unproven upper bound; no backfill exists (feeds banned) | Accepted risk; ingestion idempotent; no fictional reconciliation job |

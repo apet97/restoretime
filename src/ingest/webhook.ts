@@ -11,6 +11,9 @@ import { ingestDeletedEntry } from "../store/entries.js";
 export interface WebhookHandlingResult {
   readonly status: number;
   readonly body?: string;
+  /** Set only on a 204: whether this delivery inserted a new row (`recoverable_created`) or found
+   * an existing one and was a no-op (`webhook_duplicate`, W10) — docs/14 metrics. */
+  readonly inserted?: boolean;
 }
 
 /** Ack only after the row is persisted (2xx-after-persist, W10). Ingestion is
@@ -33,7 +36,7 @@ export function handleDeletedEntryWebhook(
   const normalized = normalizeDeletedEntry(guarded.payload);
   const source = { ...normalized, workspaceId: claims.workspaceId };
 
-  ingestDeletedEntry(db, {
+  const { inserted } = ingestDeletedEntry(db, {
     id: randomUUID(),
     workspaceId: claims.workspaceId,
     sourceEntryId: source.entryId,
@@ -42,5 +45,5 @@ export function handleDeletedEntryWebhook(
     source,
   });
 
-  return { status: 204 };
+  return { status: 204, inserted };
 }

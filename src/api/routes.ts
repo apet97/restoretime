@@ -21,7 +21,7 @@ import * as entries from "../store/entries.js";
 import * as plans from "../store/plans.js";
 import * as attempts from "../store/attempts.js";
 import { buildClockifyClient } from "../clockify/client.js";
-import { fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
+import { fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, createProjectTaskCache, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
 import {
   attemptRecreation,
   runReconcile,
@@ -33,10 +33,27 @@ import {
 } from "../clockify/recreate.js";
 import { isAddonTokenInvalid } from "../clockify/errors.js";
 import { getInstallationStatus, markInstallationBroken } from "../platform/installations.js";
+import type { Logger } from "../log.js";
+import { emitMetric } from "../metrics.js";
 
 const RECONCILE_THROTTLE_MS = 30_000;
 const MARK_NOT_CREATED_MIN_CHECKS = 3;
 const MARK_NOT_CREATED_WINDOW_MS = 10 * 60 * 1000;
+
+// User-facing failure text (docs/02 N8, docs/10 §8): every one answers what happened, whether
+// anything was created, and what to do next. `renderApiError` (src/ui/views/shared.ts) shows these
+// strings verbatim, so the sentence has to carry the whole answer — a "Try again" button alone
+// does not tell a user whether a mutation might already be in flight.
+const NO_CLIENT_MESSAGE =
+  "RestoreTime is not connected to this workspace's Clockify account. Nothing was created. Reinstall the addon from the Clockify Marketplace, then try again.";
+const TRANSPORT_FAILURE_MESSAGE = "Clockify could not be reached. Nothing was created. Try again in a moment.";
+/** Distinct from `TRANSPORT_FAILURE_MESSAGE` on purpose: this is `confirmPlan`'s "attempt-error"
+ * outcome (docs/07 §8, ADR-007) — a thrown error escaped the create attempt itself, so unlike a
+ * read failure, whether Clockify actually created the entry is unknown. Telling the user "nothing
+ * was created, try again" here would be a guess, and a wrong one could read as an invitation to
+ * blindly retry a mutation that may already have gone through — exactly what ADR-007 forbids. */
+const ATTEMPT_UNKNOWN_MESSAGE =
+  "RestoreTime sent this recreation to Clockify but did not get a clear answer. It is not yet known whether the entry was created. Do not create it by hand — wait a moment, then open this entry again to check its status.";
 
 interface HandlerRegistrar {
   registerHandler(path: string, method: string, handler: RequestHandler): void;
@@ -45,6 +62,7 @@ interface HandlerRegistrar {
 export interface ApiRouteDeps {
   readonly db: Database.Database;
   readonly installations: ClockifyInstallationStore;
+  readonly logger: Logger;
   readonly onError?: (error: unknown, context: { route: string }) => void;
 }
 
@@ -86,9 +104,18 @@ function loadOwnEntry(
   }
   const row = entries.getById(deps.db, viewer.workspaceId, entryId);
   const access = checkEntryAccess(row, viewer, deniedIsForbidden);
-  if (access.kind === "not-found") return { error: errorJson(404, "not found") };
-  if (access.kind === "forbidden") return { error: errorJson(403, "forbidden") };
-  if (requireAct && !canAct(access.entry, viewer)) return { error: errorJson(404, "not found") };
+  if (access.kind === "not-found") {
+    emitMetric(deps.logger, "authz_denied", { reason: "not-found" });
+    return { error: errorJson(404, "not found") };
+  }
+  if (access.kind === "forbidden") {
+    emitMetric(deps.logger, "authz_denied", { reason: "forbidden" });
+    return { error: errorJson(403, "forbidden") };
+  }
+  if (requireAct && !canAct(access.entry, viewer)) {
+    emitMetric(deps.logger, "authz_denied", { reason: "cannot-act" });
+    return { error: errorJson(404, "not found") };
+  }
   return { entry: access.entry };
 }
 
@@ -103,6 +130,19 @@ function isLifecycleState(value: string): value is LifecycleState {
 
 function preflightSummary(fidelity: ReturnType<typeof classifyFidelity>, blockerCount: number, actionRequiredCount: number) {
   return { fidelity, blockerCount, actionRequiredCount };
+}
+
+/** docs/14 metrics: fired once per preflight the USER asked for — the single-entry preflight route
+ * and each entry of a bulk preflight.
+ *
+ * Deliberately NOT fired from the two internal `runPreflight` call sites: the per-row summaries in
+ * `GET /api/entries` (which would count one blocker per list render, so a user refreshing a list
+ * would inflate the counter without anything happening) and the revalidation inside confirm (which
+ * re-derives an already-counted result). The counters measure user-visible preflight outcomes, not
+ * invocations of the function. */
+function emitPreflightMetrics(logger: Logger, result: { readonly blockers: readonly unknown[]; readonly actionRequired: readonly unknown[] }): void {
+  if (result.blockers.length > 0) emitMetric(logger, "preflight_blockers", { count: result.blockers.length });
+  if (result.actionRequired.length > 0) emitMetric(logger, "preflight_action_required", { count: result.actionRequired.length });
 }
 
 // --- GET /api/entries ------------------------------------------------------------------
@@ -142,13 +182,17 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     clockifyUnavailable = true;
   }
 
+  // One project/task cache for the whole request (PASS-04 perf fix): rows sharing a `projectId`
+  // reuse the same lookup instead of each re-fetching it — "one lookup set per request, not per
+  // row" (pass file scope).
+  const projectTaskCache = createProjectTaskCache();
   const summaries = await Promise.all(
     rows.map(async (row) => {
       const actionable = row.lifecycleState === "IDLE" || row.lifecycleState === "FAILED";
       let summary: ReturnType<typeof preflightSummary> | null = null;
       if (actionable && shared && clientResult) {
         try {
-          const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {});
+          const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {}, projectTaskCache);
           const result = runPreflight({ source: row.source, viewer, choices: {}, workspace: state, now: new Date() });
           summary = preflightSummary(result.fidelity, result.blockers.length, result.actionRequired.length);
         } catch {
@@ -231,7 +275,7 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   const choices = (isPlainObject(body.choices) ? body.choices : {}) as PreflightChoices;
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
   let result;
   try {
@@ -242,8 +286,9 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     deps.onError?.(err, { route: "preflight" });
-    return errorJson(502, "Clockify could not be reached; try again");
+    return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
   }
+  emitPreflightMetrics(deps.logger, result);
 
   const plan = plans.createActive(deps.db, {
     id: randomUUID(),
@@ -358,6 +403,7 @@ async function confirmPlan(
   }
 
   let result;
+  emitMetric(deps.logger, "recreate_attempt", { entryId: entry.id });
   try {
     result = await attemptRecreation({
       db: deps.db,
@@ -387,6 +433,12 @@ async function confirmPlan(
     return { kind: "attempt-error" };
   }
 
+  emitMetric(
+    deps.logger,
+    result.outcome === "RECREATED" ? "recreate_success" : result.outcome === "FAILED" ? "recreate_failed" : "recreate_ambiguous",
+    { entryId: entry.id },
+  );
+
   // ADR-007 / docs/07 §8: "Reconcile immediately once, then lazily." A create whose response was
   // lost may already have committed; the first check happens now, not on the next detail view.
   if (result.outcome === "AMBIGUOUS") {
@@ -410,21 +462,35 @@ async function confirmPlan(
 function confirmOutcomeToResponse(outcome: ConfirmOutcome): ReturnType<RequestHandler> {
   switch (outcome.kind) {
     case "no-client":
-      return errorJson(503, "Clockify connection is unavailable for this installation");
+      return errorJson(503, NO_CLIENT_MESSAGE);
     case "revalidate-truncated":
       return errorJson(503, outcome.message);
     case "revalidate-error":
-      return errorJson(502, "Clockify could not be reached; try again");
+      return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
     case "stale":
-      return json(409, { stale: true, plan: outcome.plan });
+      // The UI's fallback renderer reads `body.error` only, so without one a stale plan showed
+      // the bare "could not complete that request (status 409)" — answering none of N8's three
+      // questions, on the exact path docs/07 §7 revalidation exists to protect. `stale` and
+      // `plan` stay for the confirm view's forceResolve navigation.
+      return json(409, {
+        stale: true,
+        plan: outcome.plan,
+        error:
+          "This plan is no longer current — something it depended on changed. Nothing was sent to Clockify. Open this entry again to review the fresh plan.",
+      });
     case "already-claimed":
-      return json(409, { error: "already claimed", entry: outcome.entry });
+      return json(409, {
+        error: "Another attempt is already recreating this entry. Nothing new was created by this click. Wait a moment, then reopen this entry to see its current status.",
+        entry: outcome.entry,
+      });
     case "plan-consumed":
-      return json(409, { error: "plan already consumed" });
+      return json(409, {
+        error: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan.",
+      });
     case "baseline-truncated":
       return errorJson(503, outcome.message);
     case "attempt-error":
-      return errorJson(502, "Clockify could not be reached; try again");
+      return errorJson(502, ATTEMPT_UNKNOWN_MESSAGE);
     case "done":
       return outcome.entry !== undefined
         ? json(200, { result: outcome.result, entry: outcome.entry })
@@ -459,14 +525,17 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
-  if (!isAdmin(viewer)) return errorJson(403, "admin role required");
+  if (!isAdmin(viewer)) {
+    emitMetric(deps.logger, "authz_denied", { reason: "admin-required" });
+    return errorJson(403, "admin role required");
+  }
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const ids = body.ids;
   if (!isStringArray(ids)) return errorJson(400, "ids must be a non-empty array of entry ids");
   if (ids.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} entries per bulk request`);
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
   // One shared-data fetch for the whole batch (docs/07 §2 "fetch once, reuse for every entry") —
   // the same sharing preflight-data.ts already does for `GET /api/entries`.
@@ -477,9 +546,12 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     deps.onError?.(err, { route: "bulk-preflight" });
-    return errorJson(502, "Clockify could not be reached; try again");
+    return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
   }
 
+  // Same per-request project/task cache `GET /api/entries` uses: several ids in one bulk request
+  // commonly share a project.
+  const bulkProjectTaskCache = createProjectTaskCache();
   const results: unknown[] = [];
   for (const id of ids) {
     const row = entries.getById(deps.db, viewer.workspaceId, id);
@@ -488,8 +560,9 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
       continue;
     }
     try {
-      const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {});
+      const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {}, bulkProjectTaskCache);
       const result = runPreflight({ source: row.source, viewer, choices: {}, workspace: state, now: new Date() });
+      emitPreflightMetrics(deps.logger, result);
       const plan = plans.createActive(deps.db, {
         id: randomUUID(),
         recoverableEntryId: row.id,
@@ -512,7 +585,7 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
         continue;
       }
       deps.onError?.(err, { route: "bulk-preflight" });
-      results.push({ entryId: id, status: "error", message: "Clockify could not be reached; try again" });
+      results.push({ entryId: id, status: "error", message: TRANSPORT_FAILURE_MESSAGE });
     }
   }
   return json(200, { results });
@@ -526,26 +599,30 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
 function bulkResultItem(entryId: string, planId: string, outcome: ConfirmOutcome): Record<string, unknown> {
   switch (outcome.kind) {
     case "no-client":
-      return { entryId, planId, outcome: "ERROR", message: "Clockify connection is unavailable for this installation" };
+      return { entryId, planId, outcome: "ERROR", message: NO_CLIENT_MESSAGE };
     case "revalidate-truncated":
     case "baseline-truncated":
       return { entryId, planId, outcome: "ERROR", message: outcome.message };
     case "revalidate-error":
+      return { entryId, planId, outcome: "ERROR", message: TRANSPORT_FAILURE_MESSAGE };
     case "attempt-error":
-      return { entryId, planId, outcome: "ERROR", message: "Clockify could not be reached; try again" };
+      return { entryId, planId, outcome: "ERROR", message: ATTEMPT_UNKNOWN_MESSAGE };
     case "stale":
-      return { entryId, planId, outcome: "ERROR", message: "This plan is no longer current. Open this entry to try again." };
+      return { entryId, planId, outcome: "ERROR", message: "This plan is no longer current. Nothing was created. Open this entry to get a fresh plan and try again." };
     case "already-claimed":
-      return { entryId, planId, outcome: "ERROR", message: "This entry is already being recreated." };
+      return { entryId, planId, outcome: "ERROR", message: "This entry is already being recreated by another attempt. Nothing new was created by this click." };
     case "plan-consumed":
-      return { entryId, planId, outcome: "ERROR", message: "This plan was already used." };
+      return { entryId, planId, outcome: "ERROR", message: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan." };
     case "done":
       return { entryId, planId, ...outcome.result };
   }
 }
 
 async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
-  if (!isAdmin(viewer)) return errorJson(403, "admin role required");
+  if (!isAdmin(viewer)) {
+    emitMetric(deps.logger, "authz_denied", { reason: "admin-required" });
+    return errorJson(403, "admin role required");
+  }
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const planIds = body.planIds;
   if (!isStringArray(planIds)) return errorJson(400, "planIds must be a non-empty array of plan ids");
@@ -616,6 +693,7 @@ async function runOneReconcile(
   // adoption is a transition out of RECREATING's successor state, so the attempt row has to say
   // so — otherwise the audit (and PASS-03's success view) reads a contradiction.
   if (result.kind === "adopted") {
+    emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
     await finishAdoptedAttempt(deps, client, entry, attempt.id, plan, result.newEntryId);
   }
   return result;
@@ -668,7 +746,7 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   if (!latestAttempt || !plan) return errorJson(404, "no attempt to reconcile");
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
   const result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
   const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
@@ -692,6 +770,7 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
 
   const updated = entries.markNotCreated(deps.db, viewer.workspaceId, entry.id);
   if (!updated) return errorJson(409, "entry is no longer AMBIGUOUS");
+  emitMetric(deps.logger, "ambiguous_not_created", { entryId: entry.id });
   return json(200, { entry: updated });
 }
 
@@ -711,7 +790,7 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
   if (!plan) return errorJson(404, "no plan to resolve against");
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
   let candidate;
   try {
@@ -743,6 +822,7 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
       recreatedBy: viewer.userId,
     });
     if (!adopted) return errorJson(409, "entry is no longer AMBIGUOUS");
+    emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
     if (latestAttempt) {
       await finishAdoptedAttempt(deps, clientResult.client, entry, latestAttempt.id, plan, newEntryId);
     }
@@ -780,7 +860,7 @@ async function handleUndismiss(deps: ApiRouteDeps, viewer: Viewer, body: unknown
 async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearchParams) {
   const kind = query.get("kind");
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
   const { client } = clientResult;
 
   try {
@@ -826,7 +906,7 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
     deps.onError?.(err, { route: "options" });
-    return errorJson(502, "Clockify could not be reached; try again");
+    return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
   }
 }
 

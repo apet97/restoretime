@@ -326,6 +326,18 @@ export type AttemptRecreationResult =
   | { readonly outcome: "FAILED"; readonly status: number | undefined; readonly code: string | undefined; readonly message: string }
   | { readonly outcome: "AMBIGUOUS"; readonly baseline: readonly string[] };
 
+/**
+ * Test-only crash injection (IT-12 lease/fencing drill, PASS-04). When set, `attemptRecreation`
+ * throws immediately after the baseline snapshot is recorded and before the create call —
+ * modeling a process crash mid-attempt: the row stays RECREATING under the dead `claim_token`,
+ * with a started-but-never-finished attempt row, exactly what killing the process at that instant
+ * leaves behind. Never fires unless `NODE_ENV==="test"`, the same guard `RT_CHAOS_FETCH` (docs/13
+ * LV-10) uses, so this can never trigger in production regardless of how the env var is set.
+ */
+function shouldCrashMidAttempt(): boolean {
+  return process.env.NODE_ENV === "test" && process.env.RT_TEST_CRASH_MID_ATTEMPT === "1";
+}
+
 export async function attemptRecreation(input: AttemptRecreationInput): Promise<AttemptRecreationResult> {
   const startedAt = input.now.toISOString();
   const baseline = await fetchBaseline(
@@ -341,6 +353,10 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
     startedAt,
     baseline,
   });
+
+  if (shouldCrashMidAttempt()) {
+    throw new Error("RT_TEST_CRASH_MID_ATTEMPT: simulated crash after the baseline snapshot, before the create call");
+  }
 
   const outcome = await executeCreate(input.client, input.plannedRequest, input.onUnexpectedError);
   const finishedAt = new Date().toISOString();

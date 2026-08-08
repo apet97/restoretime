@@ -21,6 +21,27 @@ export function isAddonTokenInvalid(err: unknown): boolean {
   return err instanceof ClockifyApiError && err.statusCode === 401 && clockifyErrorCode(err) === "4017";
 }
 
+/**
+ * Log-safe summary of a caught error (docs/12 "Sensitive log leakage", docs/14 N3). The SDK's
+ * `ClockifyApiError.message` embeds the full response body verbatim (`"Body: " + JSON.stringify`,
+ * clockify-sdk-ts-115 `errors/ClockifyApiError.ts`) — logging it with a bare `String(error)`, as
+ * every `onError` hook in `src/server.ts` used to, would print whatever Clockify's error response
+ * happens to contain. Nothing here reads a webhook body or a Clockify response as "safe"; the rule
+ * is narrower and unconditional: a `ClockifyApiError` is summarized as status + normalized code
+ * only, never its `message` or `body`. Every other error's `.message` is developer-authored text
+ * from this codebase's own `throw` sites (docs/12 review confirms none of them interpolate
+ * descriptions, custom-field values, or tokens), so it is safe to log as-is.
+ */
+export function safeErrorSummary(err: unknown): Record<string, unknown> {
+  if (err instanceof ClockifyApiError) {
+    return { errorName: "ClockifyApiError", errorStatus: err.statusCode, errorCode: clockifyErrorCode(err) };
+  }
+  if (err instanceof Error) {
+    return { errorName: err.name, errorMessage: err.message };
+  }
+  return { errorName: "unknown" };
+}
+
 /** User-facing reason for a 4xx create rejection (docs/03 §6, docs/07 §8). Message text from
  * Clockify is never parsed for classification (R6) — this maps only on the normalized code and
  * status. */

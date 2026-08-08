@@ -32,6 +32,8 @@ import {
   updateInstallationStatus,
 } from "./platform/installations.js";
 import { handleDeletedEntryWebhook } from "./ingest/webhook.js";
+import { safeErrorSummary } from "./clockify/errors.js";
+import { emitMetric } from "./metrics.js";
 import { registerApiRoutes } from "./api/routes.js";
 import { componentShellHtml } from "./api/views.js";
 import {
@@ -101,7 +103,7 @@ export async function createServer(
     rawInstallations,
     codec,
     (error, workspaceId, addonId) => {
-      logger.error("installation decode failed", { workspaceId, addonId, error: String(error) });
+      logger.error("installation decode failed", { workspaceId, addonId, ...safeErrorSummary(error) });
     },
   );
 
@@ -113,7 +115,7 @@ export async function createServer(
 
   const addon = createValidatedClockifyAddon(manifest, undefined, {
     onError(error, context) {
-      logger.error("addon error", { source: context.source, error: String(error) });
+      logger.error("addon error", { source: context.source, ...safeErrorSummary(error) });
     },
   });
 
@@ -188,12 +190,17 @@ export async function createServer(
         // delivery would 401 in silence until Clockify's retry budget ran out. The SDK redacts
         // the request before calling this.
         onError(error) {
-          logger.error("webhook token lookup failed", { error: String(error) });
+          logger.error("webhook token lookup failed", safeErrorSummary(error));
         },
       },
       async (request, claims) => {
+        // Every delivery that reaches this callback passed SDK verification (JWT + per-installation
+        // token, docs/12 boundary 1) — "received" means "a verified webhook arrived", not "was
+        // accepted"; a rejected/malformed one below still counts here and separately as rejected.
+        emitMetric(logger, "webhook_received", { workspaceId: claims.workspaceId });
         if (claims.workspaceId === undefined) {
           logger.error("webhook claims missing workspaceId", {});
+          emitMetric(logger, "webhook_rejected", { reason: "missing-workspace-id" });
           return { status: 400, body: "missing workspaceId claim" };
         }
         const result = handleDeletedEntryWebhook(db, request.body, {
@@ -204,6 +211,9 @@ export async function createServer(
             workspaceId: claims.workspaceId,
             status: result.status,
           });
+          emitMetric(logger, "webhook_rejected", { workspaceId: claims.workspaceId, status: result.status });
+        } else {
+          emitMetric(logger, result.inserted ? "recoverable_created" : "webhook_duplicate", { workspaceId: claims.workspaceId });
         }
         return result.body === undefined
           ? { status: result.status }
@@ -268,8 +278,9 @@ export async function createServer(
   registerApiRoutes(addon, parser, {
     db,
     installations,
+    logger,
     onError(error, context) {
-      logger.error("api route error", { route: context.route, error: String(error) });
+      logger.error("api route error", { route: context.route, ...safeErrorSummary(error) });
     },
   });
 
@@ -280,7 +291,7 @@ async function main(): Promise<void> {
   const { addon, config, logger } = await createServer();
   createNodeHttpAddonServer(addon, {
     onError(error, context) {
-      logger.error("http error", { source: context.source, error: String(error) });
+      logger.error("http error", { source: context.source, ...safeErrorSummary(error) });
     },
   }).listen(config.port, () => {
     logger.info("listening", { port: config.port, baseUrl: config.publicBaseUrl });

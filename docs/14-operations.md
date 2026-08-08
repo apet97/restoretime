@@ -53,11 +53,16 @@ documented migration path in the release notes.
 once per request and reuses one project/task lookup per distinct `projectId` across every listed
 row (`src/clockify/preflight-data.ts` `ProjectTaskCache`), instead of once per row — the N+1 a
 PASS-02 row-by-row implementation would otherwise have (docs/13's `performance.test.ts` pins the
-exact call count: one lookup per distinct project, not per actionable row). Local, stub-backed p95
-budget for 5000 seeded rows (50 actionable across 5 projects), measured on the machine this pass was
-hardened on: **150 ms** (`tests/integration/performance.test.ts`, `LOCAL_P95_BUDGET_MS`). This is
-not a production SLA — there is no real Clockify network latency in that measurement — it exists so
-a regression has a concrete number to fail against.
+exact call count: one lookup per distinct project, not per actionable row). The suite also records a local,
+stub-backed p95 for `GET /api/entries` over 5000 seeded rows (50 actionable across 5 projects):
+typically 25–45 ms on a quiet machine.
+
+That number is **recorded, not gated**. It measures whatever CPU the machine has spare: the same
+commit produced under 150 ms and 2.3 s on the same laptop, the only difference being a container VM
+running alongside the suite. The test therefore asserts only a catastrophe ceiling
+(`LOCAL_P95_CATASTROPHE_MS`, `tests/integration/performance.test.ts`), and the load-independent
+guard against the N+1 returning is the call-count assertion described above. Neither number is a
+production SLA — there is no real Clockify network latency in either.
 
 ## Routine operations
 

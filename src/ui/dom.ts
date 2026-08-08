@@ -37,7 +37,3 @@ export function mount(root: Element, ...children: Child[]): void {
   clear(root);
   append(root, children);
 }
-
-export function text(value: string): Text {
-  return document.createTextNode(value);
-}

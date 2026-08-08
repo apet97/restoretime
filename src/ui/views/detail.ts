@@ -59,7 +59,7 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
   }
 
   const initialChoices: MutableChoices = data.plan ? { ...(data.plan.choices as MutableChoices) } : {};
-  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices);
+  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, data.disabled);
 }
 
 function renderRecreating(ctx: Ctx, entryId: string): void {
@@ -83,11 +83,11 @@ function renderDismissed(ctx: Ctx, entryId: string): void {
   mount(ctx.root, el("h2", {}, "Dismissed"), el("p", {}, "This entry is hidden from the default list."), undismiss, back);
 }
 
-function runPreflightAndRender(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices): void {
+function runPreflightAndRender(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices, disabled: boolean): void {
   void withLoading(
     ctx,
     () => ctx.api.post("/api/entries/preflight", { entryId, choices: toPreflightChoices(choices) }) as Promise<PreflightResponse>,
-    (res) => renderResolveBody(ctx, entryId, source, choices, res.plan),
+    (res) => renderResolveBody(ctx, entryId, source, choices, res.plan, disabled),
     "Checking what can be recreated…",
   );
 }
@@ -98,7 +98,7 @@ function effectiveProjectId(plan: RecreationPlan): string | null {
   return last?.refId ?? null;
 }
 
-function projectCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
+export function projectCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
   const entries = plan.resolution.filter((r) => r.kind === "project");
   const outcome = entries[entries.length - 1];
   if (!outcome || outcome.outcome === "kept") return source.projectName ?? "—";
@@ -106,7 +106,7 @@ function projectCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
   return "A replacement project (selected above)";
 }
 
-function taskCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
+export function taskCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
   const entries = plan.resolution.filter((r) => r.kind === "task");
   const outcome = entries[entries.length - 1];
   if (!outcome || outcome.outcome === "kept") return source.taskName ?? "—";
@@ -116,7 +116,7 @@ function taskCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
   return "A replacement task (selected above)";
 }
 
-function tagsCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
+export function tagsCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
   const tagEntries = plan.resolution.filter((r) => r.kind === "tag");
   const keptNames = source.tags.filter((t) => tagEntries.some((r) => r.refId === t.id && r.outcome === "kept")).map((t) => t.name);
   const droppedCount = tagEntries.filter((r) => r.outcome === "dropped").length;
@@ -131,7 +131,7 @@ function tagsCell(source: DeletedTimeEntry, plan: RecreationPlan): string {
 function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan, locale: string): HTMLElement {
   const planned = plan.plannedRequest;
   const rows: [string, string, string][] = [
-    ["Date and time", formatEntryHeader(source.start, source.end, locale), formatEntryHeader(planned.start, planned.end ?? null, locale)],
+    ["Date and time", formatEntryHeader(source.start, source.end, locale), formatEntryHeader(planned.start, planned.end ?? null, locale, "planned")],
     ["Description", source.description, planned.description ?? source.description],
     ["Project", source.projectName ?? "—", projectCell(source, plan)],
     ["Task", source.taskName ?? "—", taskCell(source, plan)],
@@ -148,8 +148,8 @@ function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan, locale
   );
 }
 
-function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices, plan: RecreationPlan): void {
-  const reflow = () => runPreflightAndRender(ctx, entryId, source, choices);
+function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices, plan: RecreationPlan, disabled: boolean): void {
+  const reflow = () => runPreflightAndRender(ctx, entryId, source, choices, disabled);
   const nodes: (Node | string)[] = [el("h2", {}, "Deleted time entry")];
 
   const blockerSection = renderBlockers(plan.blockers);
@@ -158,6 +158,17 @@ function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, 
   nodes.push(renderFactsTable(source, plan, ctx.locale));
   nodes.push(renderDifferences(plan));
 
+  // docs/10 §8: while the addon is disabled the notice replaces actions, but the entry stays
+  // readable. The facts and differences above are still rendered; only the form and the confirm
+  // button go away — matching what the server will accept (routes.ts `actionGuard`).
+  if (disabled) {
+    const back = el("button", { type: "button" }, "Back to deleted entries");
+    back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
+    nodes.push(el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."), back);
+    mount(ctx.root, ...nodes);
+    return;
+  }
+
   if (plan.actionRequired.length > 0) {
     nodes.push(renderResolutionWidgets(ctx, choices, reflow, plan.actionRequired, effectiveProjectId(plan), source));
   }
@@ -165,7 +176,7 @@ function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, 
   const canConfirm = plan.blockers.length === 0 && plan.actionRequired.length === 0;
   const continueButton = el("button", { type: "button" }, "Continue to confirm");
   continueButton.toggleAttribute("disabled", !canConfirm);
-  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan }));
+  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled }));
   const backButton = el("button", { type: "button" }, "Back to deleted entries");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));
   nodes.push(el("div", {}, continueButton, backButton));

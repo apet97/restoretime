@@ -53,6 +53,11 @@ export interface DetailResponse {
   readonly plan: RecreationPlan | null;
   readonly attempts: readonly RecreationAttempt[];
   readonly lineage: { readonly parent: RecoverableEntry | null; readonly child: RecoverableEntry | null };
+  /** The addon is INACTIVE for this workspace (docs/10 §8). Server fact, never derived here. */
+  readonly disabled: boolean;
+  /** docs/07 §8's bounded window has elapsed and enough checks have run. Server fact: computing it
+   * from the browser clock would offer "it was not created" for an entry that exists. */
+  readonly canMarkNotCreated: boolean;
 }
 
 export interface PreflightResponse {
@@ -114,5 +119,6 @@ export interface BulkPreflightRow {
 }
 
 export type BulkRecreateRow =
-  | { readonly entryId: string; readonly planId: string; readonly outcome: "ERROR"; readonly message: string }
+  // `entryId` is null when the plan id no longer resolves to an entry — there is nothing to open.
+  | { readonly entryId: string | null; readonly planId: string; readonly outcome: "ERROR"; readonly message: string }
   | ({ readonly entryId: string; readonly planId: string } & AttemptRecreationResult);

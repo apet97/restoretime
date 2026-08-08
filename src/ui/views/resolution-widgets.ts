@@ -6,6 +6,7 @@
 // its `ruleId`.
 
 import { el } from "../dom.js";
+import { formatTime } from "../format.js";
 import type { Ctx } from "../state.js";
 import type { ActionRequiredItem, CustomFieldOption, DeletedTimeEntry, OptionItem, PreflightChoices } from "../types.js";
 
@@ -30,33 +31,45 @@ function itemsFor(items: readonly ActionRequiredItem[], ruleId: string): ActionR
 }
 
 /** P-RUN / P-RUN-END: running-timer disposition (docs/10 §4 "Running entry"). */
-function renderRunningWidget(choices: MutableChoices, reflow: () => void, items: readonly ActionRequiredItem[]): HTMLElement | null {
-  const runItem = itemsFor(items, "P-RUN")[0];
+function renderRunningWidget(
+  choices: MutableChoices,
+  reflow: () => void,
+  items: readonly ActionRequiredItem[],
+  source: DeletedTimeEntry,
+  locale: string,
+): HTMLElement | null {
   const endItem = itemsFor(items, "P-RUN-END")[0];
-  if (!runItem && !endItem) return null;
+  // The radios exist because the SOURCE was running, not because P-RUN is currently open. P-RUN
+  // stops firing the moment `runningMode` is set (docs/07 §3), so keying the radios on the item
+  // made the first click permanent — a user who mis-clicked "Set an end time" could never get
+  // back to "Start a running timer" for that entry. docs/10 §4 specifies a persistent pair.
+  if (!source.wasRunning) return null;
 
   const container = el("fieldset", {}, el("legend", {}, "This entry was running when it was deleted"));
-  if (runItem) {
-    container.append(el("p", {}, runItem.message));
-    const name = "running-mode";
-    const runningRadio = el("input", { type: "radio", name });
-    runningRadio.checked = choices.runningMode === "running";
-    runningRadio.addEventListener("change", () => {
-      choices.runningMode = "running";
-      delete choices.completedEnd;
-      reflow();
-    });
-    const completedRadio = el("input", { type: "radio", name });
-    completedRadio.checked = choices.runningMode === "completed";
-    completedRadio.addEventListener("change", () => {
-      choices.runningMode = "completed";
-      reflow();
-    });
-    container.append(
-      el("label", {}, runningRadio, " Start a running timer (start time as recorded, no end)"),
-      el("label", {}, completedRadio, " Set an end time"),
-    );
-  }
+  const name = "running-mode";
+  const runningRadio = el("input", { type: "radio", name });
+  runningRadio.checked = choices.runningMode === "running";
+  runningRadio.addEventListener("change", () => {
+    choices.runningMode = "running";
+    delete choices.completedEnd;
+    reflow();
+  });
+  const completedRadio = el("input", { type: "radio", name });
+  completedRadio.checked = choices.runningMode === "completed";
+  completedRadio.addEventListener("change", () => {
+    choices.runningMode = "completed";
+    reflow();
+  });
+  container.append(
+    // docs/10 §4 names the start time in the label and states the single-timer consequence.
+    el("label", {}, runningRadio, ` Start a running timer (start time ${formatTime(source.start, locale)}, no end)`),
+    el("label", {}, completedRadio, " Set an end time"),
+    el(
+      "p",
+      {},
+      "Clockify allows one running timer per user. Starting this timer stops the timer that is running now.",
+    ),
+  );
   if (choices.runningMode === "completed") {
     const endInput = el("input", { type: "datetime-local" });
     endInput.addEventListener("change", () => {
@@ -201,32 +214,36 @@ function renderCustomFieldItem(
   const container = el("div", {}, el("p", {}, item.message));
 
   if (item.ruleId === "P-CF-OPT") {
-    const select = el(
-      "select",
-      {},
-      el("option", { value: "" }, "Choose…"),
-      el("option", { value: "__keep__" }, "Keep the original value"),
-      el("option", { value: "__drop__" }, "Drop this value"),
-    );
+    // The three actions are distinguished by a `data-kind` attribute, never by a magic value in
+    // the same space as the field's own options: a workspace option literally named "__drop__"
+    // would otherwise silently drop the value instead of setting it.
+    const placeholder = el("option", { value: "", "data-kind": "none" }, "Choose…");
+    const keepOption = el("option", { value: "", "data-kind": "keep" }, "Keep the original value");
+    const dropOption = el("option", { value: "", "data-kind": "drop" }, "Drop this value");
+    const select = el("select", {}, placeholder, keepOption, dropOption);
     select.addEventListener("change", () => {
-      if (select.value === "") return;
+      const chosen = select.options[select.selectedIndex];
+      const kind = chosen?.getAttribute("data-kind") ?? "value";
+      if (kind === "none") return;
       choices.dropCustomFieldIds = (choices.dropCustomFieldIds ?? []).filter((id) => id !== refId);
       choices.customFieldInputs = (choices.customFieldInputs ?? []).filter((c) => c.customFieldId !== refId);
-      if (select.value === "__drop__") {
+      if (kind === "drop") {
         choices.dropCustomFieldIds = [...(choices.dropCustomFieldIds ?? []), refId];
-      } else if (select.value === "__keep__") {
+      } else if (kind === "keep") {
         const sourceValue = source.customFieldValues.find((v) => v.customFieldId === refId)?.value ?? null;
         choices.customFieldInputs = [...(choices.customFieldInputs ?? []), { customFieldId: refId, value: sourceValue }];
       } else {
-        choices.customFieldInputs = [...(choices.customFieldInputs ?? []), { customFieldId: refId, value: select.value }];
+        choices.customFieldInputs = [...(choices.customFieldInputs ?? []), { customFieldId: refId, value: chosen?.value ?? "" }];
       }
       reflow();
     });
     fetchOptions(ctx, "customFields")
       .then((fields) => {
         const field = (fields as unknown as CustomFieldOption[]).find((f) => f.id === refId);
+        // Appended in order, before the two fixed actions — inserting each one at a fixed index
+        // reversed them.
         for (const value of field?.allowedValues ?? []) {
-          select.insertBefore(el("option", { value }, value), select.children[1] ?? null);
+          select.insertBefore(el("option", { value, "data-kind": "value" }, value), keepOption);
         }
       })
       .catch(() => undefined);
@@ -278,7 +295,7 @@ export function renderResolutionWidgets(
   source: DeletedTimeEntry,
 ): HTMLElement {
   const widgets = [
-    renderRunningWidget(choices, reflow, actionRequired),
+    renderRunningWidget(choices, reflow, actionRequired, source, ctx.locale),
     renderProjectWidget(ctx, choices, reflow, actionRequired),
     renderTaskWidget(ctx, choices, reflow, actionRequired, effectiveProjectId),
     renderTagsWidget(ctx, choices, reflow, actionRequired),

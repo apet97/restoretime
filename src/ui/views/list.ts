@@ -182,7 +182,10 @@ function renderRow(
 ): HTMLElement {
   const source = row.source;
   const header = formatEntryHeader(source.start, source.end, ctx.locale);
-  const projectLine = [source.projectName, source.taskName].filter((v): v is string => Boolean(v)).join(" — ") || source.description;
+  // docs/10 §1's row shows the description on its own line. Replacing it with "Project — Task"
+  // when a project exists made two entries in the same project indistinguishable, and hid the
+  // very text the admin free-text filter searches.
+  const projectLine = [source.projectName, source.taskName].filter((v): v is string => Boolean(v)).join(" — ");
   const tagNames = source.tags.map((t) => t.name).join(", ");
   const detected = formatDetected(row.detectedAt, ctx.locale);
   const status = statusLabel(row);
@@ -193,7 +196,8 @@ function renderRow(
 
   const lines = [
     el("div", {}, openButton),
-    el("div", {}, projectLine),
+    el("div", {}, source.description || "(no description)"),
+    ...(projectLine ? [el("div", {}, projectLine)] : []),
     el("div", {}, `Tags: ${tagNames || "none"}`, "  ", `Detected: ${detected}`),
     el("div", {}, `Status: ${status}`),
   ];

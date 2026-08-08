@@ -6,7 +6,7 @@ import { el, mount } from "../dom.js";
 import type { Ctx } from "../state.js";
 import type { AttemptRecreationResult, DetailResponse, ReconcileResponse, ReconcileResult, RecreationPlan } from "../types.js";
 import { fidelityLabel } from "../format.js";
-import { renderDifferences, runAction, withLoading } from "./shared.js";
+import { renderApiError, renderDifferences, runAction, withLoading } from "./shared.js";
 
 export function renderResult(ctx: Ctx, entryId: string, plan: RecreationPlan, result: AttemptRecreationResult): void {
   if (result.outcome === "RECREATED") {
@@ -69,9 +69,6 @@ function renderFailed(ctx: Ctx, entryId: string, result: Extract<AttemptRecreati
 
 // --- Unknown result / AMBIGUOUS (docs/10 §6) ------------------------------------------------
 
-const MARK_NOT_CREATED_MIN_CHECKS = 3;
-const MARK_NOT_CREATED_WINDOW_MS = 10 * 60 * 1000;
-
 function formatClock(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
@@ -91,14 +88,16 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
   const latestAttempt = data.attempts.find((a) => a.outcome === "AMBIGUOUS" || (a.outcome === null && a.finishedAt === null)) ?? data.attempts[0];
   const reconcile = latestAttempt?.reconcile ?? null;
   const checks = reconcile?.checks ?? 0;
-  const windowElapsed = reconcile ? Date.now() - new Date(reconcile.checkedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS : false;
-  const bounded = checks >= MARK_NOT_CREATED_MIN_CHECKS && windowElapsed;
+  // docs/00: the UI holds no business rules. The bounded window is the server's decision
+  // (docs/07 §8) — deriving it from the browser clock would let a fast clock offer "it was not
+  // created" while the server still refuses, and a slow one hide the choice after it is allowed.
+  const bounded = data.canMarkNotCreated;
 
   const nodes: (Node | string)[] = [];
 
   if (bounded) {
     nodes.push(
-      el("h2", {}, `We checked Clockify ${checks} times in 10 minutes.`),
+      el("h2", {}, `We checked Clockify ${checks} times.`),
       el("p", {}, "The entry does not appear there."),
       el("p", {}, 'If you can see the entry in Clockify, select "It exists". Otherwise select "It was not created".'),
     );
@@ -119,7 +118,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
         ctx,
         () => ctx.api.post("/api/entries/resolve-ambiguous", { entryId, newEntryId }),
         () => ctx.navigate({ kind: "detail", entryId }),
-        () => renderAmbiguousBody(ctx, entryId, data),
+        (err) => renderApiError(ctx.root, err, () => renderAmbiguous(ctx, entryId)),
       );
     });
     notCreatedButton.addEventListener("click", () => {
@@ -127,7 +126,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
         ctx,
         () => ctx.api.post("/api/entries/mark-not-created", { entryId }),
         () => ctx.navigate({ kind: "list" }),
-        () => renderAmbiguousBody(ctx, entryId, data),
+        (err) => renderApiError(ctx.root, err, () => renderAmbiguous(ctx, entryId)),
       );
     });
     nodes.push(el("div", {}, existsButton, notCreatedButton, idInput, confirmIdButton));
@@ -143,7 +142,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
         ctx,
         () => ctx.api.post("/api/entries/reconcile", { entryId }) as Promise<ReconcileResponse>,
         (res) => handleReconcileOutcome(ctx, entryId, res.result),
-        () => renderAmbiguousBody(ctx, entryId, data),
+        (err) => renderApiError(ctx.root, err, () => renderAmbiguous(ctx, entryId)),
       );
     });
     const lastChecked = reconcile ? el("span", {}, ` Last checked: ${formatClock(reconcile.checkedAt)}`) : null;
@@ -165,7 +164,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
                   ctx,
                   () => ctx.api.post("/api/entries/resolve-ambiguous", { entryId, newEntryId: id }),
                   () => ctx.navigate({ kind: "detail", entryId }),
-                  () => renderAmbiguousBody(ctx, entryId, data),
+                  (err) => renderApiError(ctx.root, err, () => renderAmbiguous(ctx, entryId)),
                 );
               });
               return el("li", {}, id, " ", adopt);

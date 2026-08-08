@@ -77,10 +77,20 @@ export function formatDuration(startIso: string, endIso: string): string {
  * when deleted)" when the source had no end. Date via the SDK's `formatClockifyDate` — its style is
  * fixed (`dateStyle: "medium"`); ECMA-402 forbids combining `dateStyle` with field options like
  * `weekday`, so this never passes any (that combination throws, not just gets ignored). */
-export function formatEntryHeader(start: string, end: string | null, locale: string): string {
+export function formatEntryHeader(
+  start: string,
+  end: string | null,
+  locale: string,
+  /** What an absent end time means. On the deleted entry it is history; on the planned entry it is
+   * an intention, and saying "still running when deleted" there would describe the wrong entry. */
+  openEnded: "deleted" | "planned" = "deleted",
+): string {
   const date = formatClockifyDate(new Date(start), locale);
   const startTime = formatTime(start, locale);
-  if (end === null) return `${date} · ${startTime}– (still running when deleted)`;
+  if (end === null) {
+    const suffix = openEnded === "deleted" ? "(still running when deleted)" : "(runs until you stop it)";
+    return `${date} · ${startTime}– ${suffix}`;
+  }
   const endTime = formatTime(end, locale);
   return `${date} · ${startTime}–${endTime} (${formatDuration(start, end)})`;
 }

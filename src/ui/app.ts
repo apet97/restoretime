@@ -39,7 +39,7 @@ function dispatch(ctx: Ctx, state: ViewState): void {
       renderDetail(ctx, state.entryId, state.forceResolve ?? false);
       return;
     case "confirm":
-      renderConfirm(ctx, state.entryId, state.plan);
+      renderConfirm(ctx, state.entryId, state.plan, state.source, state.disabled ?? false);
       return;
     case "result":
       renderResult(ctx, state.entryId, state.plan, state.result);

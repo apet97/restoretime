@@ -49,17 +49,19 @@ export function createTokenAuthority(bridge: ClockifyBridge, initialToken: strin
   function refresh(): Promise<string | undefined> {
     return new Promise((resolve) => {
       let settled = false;
+      // `waiter` is what goes into the list, so removing it on timeout actually finds it. The
+      // previous version filtered for `finish`, which was never the pushed value, so a timed-out
+      // waiter stayed in the list until some later reply flushed it.
       const finish = (token: string | undefined) => {
         if (settled) return;
         settled = true;
-        waiters = waiters.filter((w) => w !== finish);
+        clearTimeout(timer);
+        waiters = waiters.filter((w) => w !== waiter);
         resolve(token);
       };
+      const waiter = (token: string | undefined) => finish(token);
       const timer = setTimeout(() => finish(undefined), REFRESH_TIMEOUT_MS);
-      waiters.push((token) => {
-        clearTimeout(timer);
-        finish(token);
-      });
+      waiters.push(waiter);
       bridge.refreshAddonToken();
     });
   }

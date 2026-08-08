@@ -27,6 +27,17 @@ const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
 export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): void {
   const selected = new Set(rows.filter((r) => r.status === "ready" && r.plan).map((r) => r.entryId));
 
+  const recreateButton = el("button", { type: "button" }, "");
+  const readyPlanIds = () => rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
+  /** The label and the action have to agree: computing the count once left the button saying
+   * "Recreate 2 entries" after the admin unchecked one, and clicking with nothing checked
+   * silently did nothing. */
+  const syncRecreateButton = () => {
+    const count = readyPlanIds().length;
+    recreateButton.textContent = `Recreate ${count} ${count === 1 ? "entry" : "entries"}`;
+    recreateButton.toggleAttribute("disabled", count === 0);
+  };
+
   const listItems = rows.map((row) => {
     const line = [el("strong", {}, STATUS_LABEL[row.status]), ` — ${rowReason(row)}`];
     if (row.status === "ready" && row.plan) {
@@ -35,6 +46,7 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selected.add(row.entryId);
         else selected.delete(row.entryId);
+        syncRecreateButton();
       });
       return el("li", {}, checkbox, ...line);
     }
@@ -43,9 +55,9 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
     return el("li", {}, ...line, " ", openButton);
   });
 
-  const recreateButton = el("button", { type: "button" }, `Recreate ${selected.size} entries`);
+  syncRecreateButton();
   recreateButton.addEventListener("click", () => {
-    const planIds = rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
+    const planIds = readyPlanIds();
     if (planIds.length === 0) return;
     void runAction(
       ctx,
@@ -83,9 +95,16 @@ function rowMessage(row: BulkRecreateRow): string {
 
 export function renderBulkResults(ctx: Ctx, rows: readonly BulkRecreateRow[]): void {
   const listItems = rows.map((row) => {
+    const label = el("strong", {}, OUTCOME_LABEL[row.outcome] ?? row.outcome);
+    // A row can describe a plan that no longer resolves to an entry (its plan was pruned), in
+    // which case there is nothing to open — offering the button would navigate to `id=undefined`.
+    if (row.entryId === null || row.entryId === undefined) {
+      return el("li", {}, label, ` — ${rowMessage(row)}`);
+    }
+    const entryId = row.entryId;
     const openButton = el("button", { type: "button" }, "Open");
-    openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.entryId }));
-    return el("li", {}, el("strong", {}, OUTCOME_LABEL[row.outcome] ?? row.outcome), ` — ${rowMessage(row)} `, openButton);
+    openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId }));
+    return el("li", {}, label, ` — ${rowMessage(row)} `, openButton);
   });
 
   const backButton = el("button", { type: "button" }, "Back to deleted entries");

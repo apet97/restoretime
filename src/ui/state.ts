@@ -5,7 +5,7 @@
 
 import type { ClockifyBridge } from "@apet97/clockify-addon-sdk/ui";
 import type { ApiClient } from "./api.js";
-import type { AttemptRecreationResult, BulkPreflightRow, BulkRecreateRow, RecreationPlan } from "./types.js";
+import type { AttemptRecreationResult, BulkPreflightRow, BulkRecreateRow, DeletedTimeEntry, RecreationPlan } from "./types.js";
 
 export type ViewState =
   | { readonly kind: "list" }
@@ -17,7 +17,7 @@ export type ViewState =
        * this, the result view's own "Try again" button would just redisplay the same failure. */
       readonly forceResolve?: boolean;
     }
-  | { readonly kind: "confirm"; readonly entryId: string; readonly plan: RecreationPlan }
+  | { readonly kind: "confirm"; readonly entryId: string; readonly plan: RecreationPlan; readonly source: DeletedTimeEntry; readonly disabled?: boolean }
   | {
       readonly kind: "result";
       readonly entryId: string;

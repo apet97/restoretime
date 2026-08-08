@@ -197,12 +197,28 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   const parent = entry.parentRecoverableId ? entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId) : null;
   const child = entry.newEntryId ? entries.findByNewEntryId(deps.db, viewer.workspaceId, entry.newEntryId) : undefined;
 
+  // Both flags are server facts the UI renders rather than derives (docs/00: "the UI holds no
+  // business rules"). `canMarkNotCreated` in particular must never be recomputed on the browser
+  // clock: a fast clock would offer "it was not created" for an entry that exists.
+  const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
   return json(200, {
     entry,
     plan,
     attempts: attemptRows,
     lineage: { parent: parent ?? null, child: child ?? null },
+    disabled: getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId) === "INACTIVE",
+    canMarkNotCreated: entry.lifecycleState === "AMBIGUOUS" && markNotCreatedAllowed(latestAttempt),
   });
+}
+
+/** docs/07 §8: "a row whose latest reconcile is older than 10 minutes and has had >= 3 checks".
+ * One definition, used by the gate in `handleMarkNotCreated` and by the flag the detail view
+ * renders, so the button and the rule can never disagree. */
+function markNotCreatedAllowed(attempt: ReturnType<typeof attempts.latestForEntry>): boolean {
+  const reconcile = attempt?.reconcile;
+  if (!reconcile) return false;
+  if (reconcile.checks < MARK_NOT_CREATED_MIN_CHECKS) return false;
+  return Date.now() - new Date(reconcile.checkedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS;
 }
 
 // --- POST /api/entries/preflight ----------------------------------------------------------
@@ -539,7 +555,7 @@ async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unkn
   for (const planId of planIds) {
     const plan = plans.getById(deps.db, planId);
     if (!plan) {
-      results.push({ planId, outcome: "ERROR", message: "plan not found" });
+      results.push({ planId, entryId: null, outcome: "ERROR", message: "plan not found" });
       continue;
     }
     const entry = entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId);
@@ -668,15 +684,9 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
   const entry = loaded.entry;
   if (entry.lifecycleState !== "AMBIGUOUS") return errorJson(409, "entry is not AMBIGUOUS");
 
-  const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
-  const reconcile = latestAttempt?.reconcile;
-  const checks = reconcile?.checks ?? 0;
-  // docs/07 §8 gates this on the LATEST reconcile being older than the window, not on the attempt
-  // being old. Accepting an old attempt with three checks a second ago would let a user declare
-  // "not created" moments after the last look — and a wrongly declared "not created" leads
-  // straight to a duplicate entry, the one outcome ADR-007 exists to prevent.
-  const windowElapsed = reconcile ? Date.now() - new Date(reconcile.checkedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS : false;
-  if (checks < MARK_NOT_CREATED_MIN_CHECKS || !windowElapsed) {
+  // Same predicate the detail view's `canMarkNotCreated` flag reports, so the button the user
+  // sees and the rule the server enforces can never disagree.
+  if (!markNotCreatedAllowed(attempts.latestForEntry(deps.db, entry.id))) {
     return errorJson(409, "not enough reconcile checks yet — keep checking, or wait for the window to elapse");
   }
 

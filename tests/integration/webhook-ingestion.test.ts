@@ -162,6 +162,50 @@ describe("IT-02 wrong webhook token / unknown installation", () => {
   });
 });
 
+describe("IT-09 forged workspace identity in the webhook body", () => {
+  it("a body workspaceId that does not match the verified claims is rejected 400, no row", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+
+    const response = await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        validBody({ workspaceId: "forged-workspace" }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    expect(response.status).toBe(400);
+    const count = server.db.prepare("SELECT COUNT(*) AS n FROM recoverable_entries").get() as {
+      n: number;
+    };
+    expect(count.n).toBe(0);
+  });
+
+  it("when the body workspaceId matches, the persisted row carries the verified claims workspaceId", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", validBody(), {
+        path: "/webhooks/time-entry-deleted",
+      }),
+    );
+    const row = server.db
+      .prepare("SELECT workspace_id FROM recoverable_entries WHERE source_entry_id = ?")
+      .get("entry-a") as { workspace_id: string };
+    expect(row.workspace_id).toBe(WORKSPACE_ID);
+  });
+});
+
 describe("IT-10 dismissed entry absorbs redelivery", () => {
   it("a duplicate delivery after dismissal does not resurrect the row", async () => {
     const server = await boot();

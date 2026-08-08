@@ -65,7 +65,7 @@ export type Fidelity = (typeof FIDELITY_LEVELS)[number];
 
 /** Per-dependency resolution outcome recorded on a plan (docs/06). */
 export interface PlanResolution {
-  readonly kind: "project" | "task" | "tag" | "customField";
+  readonly kind: "project" | "task" | "tag" | "customField" | "runningMode";
   readonly refId: string | null;
   readonly outcome: "kept" | "substituted" | "dropped" | "missing";
   readonly detail?: string;

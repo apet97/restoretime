@@ -15,7 +15,7 @@ type TimeEntry = ClockifyApi.TimeEntry;
 import type Database from "better-sqlite3";
 import type { PlannedRequest, VerificationDiff } from "../domain/entry.js";
 import { looselyEqual } from "../domain/values.js";
-import { clockifyErrorCode, describeClockifyCreateFailure, isAddonTokenInvalid } from "./errors.js";
+import { clockifyErrorCode, describeClockifyCreateFailure } from "./errors.js";
 import * as entries from "../store/entries.js";
 import * as attempts from "../store/attempts.js";
 
@@ -52,7 +52,7 @@ async function listForUserPaged(
 
 /** Baseline truncation is fatal (docs/07 §8: "treated as a failed preflight … never a partial
  * baseline") — thrown, not returned, so the caller never proceeds to create. */
-export async function fetchBaseline(
+async function fetchBaseline(
   client: ClockifyClient,
   workspaceId: string,
   userId: string,
@@ -88,6 +88,10 @@ function epochSeconds(iso: string | null | undefined): number | null {
   if (iso === null || iso === undefined) return null;
   return Math.floor(new Date(iso).getTime() / 1000);
 }
+
+/** Recorded on the diff when the post-create (or post-adoption) read could not be made. The
+ * create/adoption itself is still definitive — the diff is a report, never a gate (fact 11). */
+export const VERIFICATION_READ_UNAVAILABLE = "verification read unavailable";
 
 /** Compare `plannedRequest` with the fetched new entry (docs/07 §9). `duration` is never
  * compared (recomputed by Clockify, W5). `verificationNote` records "verification read
@@ -153,7 +157,11 @@ export type CreateOutcome =
  * A 201 is definitive: `timeEntries.get` verifies it, but a failed verification read still
  * yields RECREATED — the diff falls back to the 201 body (fact 11, IT-13).
  */
-export async function executeCreate(client: ClockifyClient, plannedRequest: PlannedRequest): Promise<CreateOutcome> {
+async function executeCreate(
+  client: ClockifyClient,
+  plannedRequest: PlannedRequest,
+  onUnexpectedError?: (error: unknown) => void,
+): Promise<CreateOutcome> {
   let created: TimeEntry;
   try {
     created = await client.timeEntries.createForUser(buildCreateBody(plannedRequest));
@@ -164,6 +172,9 @@ export async function executeCreate(client: ClockifyClient, plannedRequest: Plan
       const code = clockifyErrorCode(err);
       return { kind: "FAILED", status: err.statusCode, code, message: describeClockifyCreateFailure(err.statusCode, code) };
     }
+    // docs/03 §3: not an SDK error, so this is a bug. The create may still have committed, so the
+    // outcome stays AMBIGUOUS — but it must never disappear without a trace.
+    onUnexpectedError?.(err);
     return { kind: "AMBIGUOUS" };
   }
 
@@ -172,7 +183,7 @@ export async function executeCreate(client: ClockifyClient, plannedRequest: Plan
   try {
     actual = await client.timeEntries.get({ workspaceId: plannedRequest.workspaceId, timeEntryId: created.id });
   } catch {
-    verificationNote = "verification read unavailable";
+    verificationNote = VERIFICATION_READ_UNAVAILABLE;
   }
   return { kind: "RECREATED", newEntry: actual, diffs: diffPlannedVsActual(plannedRequest, actual, verificationNote) };
 }
@@ -240,6 +251,10 @@ export interface ReconcileInput {
   readonly userId: string;
   readonly plannedRequest: PlannedRequest;
   readonly baseline: readonly string[];
+  /** The viewer performing the check — recorded as `recreated_by` on adoption. Distinct from
+   * `userId`, which selects whose entry list is read: an admin can reconcile another user's
+   * entry, and the audit must name the actor, not the owner. */
+  readonly recreatedBy: string;
   readonly now: Date;
 }
 
@@ -275,7 +290,7 @@ export async function runReconcile(input: ReconcileInput): Promise<ReconcileResu
       workspaceId: input.workspaceId,
       newEntryId: decision.id,
       recreatedAt: nowIso,
-      recreatedBy: input.userId,
+      recreatedBy: input.recreatedBy,
     });
     if (!adopted) return { kind: "adopt-conflict" };
     return { kind: "adopted", newEntryId: decision.id };
@@ -297,6 +312,10 @@ export interface AttemptRecreationInput {
   readonly claimToken: string;
   readonly recreatedBy: string;
   readonly now: Date;
+  /** Called with a thrown value that is not an SDK error. docs/03 §3: "Any other thrown value is
+   * a bug: crash-log it and treat the attempt as AMBIGUOUS." Without this the one error class the
+   * contract demands be logged is the only one that vanishes silently. */
+  readonly onUnexpectedError?: (error: unknown) => void;
   /** Called when the create failed because the addon token itself was rejected (401/4017, R11) —
    * the caller marks the installation broken (IT-08). Never called for any other outcome. */
   readonly onAddonTokenInvalid?: () => void;
@@ -323,7 +342,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
     baseline,
   });
 
-  const outcome = await executeCreate(input.client, input.plannedRequest);
+  const outcome = await executeCreate(input.client, input.plannedRequest, input.onUnexpectedError);
   const finishedAt = new Date().toISOString();
 
   if (outcome.kind === "RECREATED") {
@@ -377,5 +396,3 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
   entries.setAmbiguous(input.db, { id: input.entryId, workspaceId: input.workspaceId, claimToken: input.claimToken });
   return { outcome: "AMBIGUOUS", baseline };
 }
-
-export { isAddonTokenInvalid };

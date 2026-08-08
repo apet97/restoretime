@@ -49,6 +49,7 @@ beforeEach(async () => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -124,6 +125,9 @@ function baseStub(): typeof fetch {
     return jsonResponse({ message: "unstubbed", code: 0 }, 404);
   };
 }
+
+/** Mirrors RECONCILE_THROTTLE_MS in src/api/routes.ts. */
+const RECONCILE_THROTTLE_MS = 30_000;
 
 describe("scripted walkthrough: webhook -> list -> preflight -> confirm -> RECREATED", () => {
   it("drives the full success path", async () => {
@@ -281,6 +285,11 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
     });
     expect(recreateResponse.status).toBe(200);
     expect((recreateResponse.body as { result: { outcome: string } }).result.outcome).toBe("AMBIGUOUS");
+    // ADR-007 / docs/07 §8: "Reconcile immediately once, then lazily." The create's response was
+    // lost, so the first check runs inside the recreate call — before the user does anything. It
+    // finds nothing yet (the committed entry is not visible to this stub), so the row stays
+    // AMBIGUOUS, which is the truthful state.
+    expect((recreateResponse.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("AMBIGUOUS");
 
     // The Clockify entry actually committed — now findable. Re-stub, then prove the lazy
     // reconcile (ADR-010: a detail view on an AMBIGUOUS row triggers one reconcile pass) adopts
@@ -294,6 +303,12 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
         return baseStub()(input, init);
       }) as typeof fetch,
     );
+
+    // Move past the 30 s reconcile throttle the immediate check just consumed. Without this the
+    // detail view would correctly decline to re-check, and the test would be asserting the
+    // throttle rather than the adoption.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(Date.now() + RECONCILE_THROTTLE_MS + 1_000));
 
     const detailRecreated = await server.addon.handle({
       method: "GET",
@@ -342,5 +357,212 @@ describe("policy negatives through the API surface", () => {
     const token = await componentToken();
     const response = await server.addon.handle(createTestComponentRequest(token, { path: "/component" }));
     expect(response.status).toBe(200);
+  });
+});
+
+// --- Route-level guards on the confirm path -------------------------------------------------
+//
+// These exercise `POST /api/entries/recreate` through the router, not the store helpers, because
+// the failure modes below are all in the route's own sequencing: claim, consume, baseline, create.
+describe("POST /api/entries/recreate — guards", () => {
+  async function seedAndPlan(server: Awaited<ReturnType<typeof boot>>, token: string) {
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    const listResponse = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (listResponse.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const preflightResponse = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const planId = (preflightResponse.body as { plan: { id: string } }).plan.id;
+    return { entryId, planId };
+  }
+
+  // The baseline read runs after the claim is won and the plan consumed, but before the create.
+  // Hitting the page bound there must surface the documented message and hand the row back — not
+  // return a bare 500 and leave the entry stuck in RECREATING for the whole lease.
+  it("a page-bound baseline read releases the claim and reports the documented reason", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+
+    // Every page of the owner's entry list comes back full, so the walk can only stop at the bound.
+    vi.stubGlobal(
+      "fetch",
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          return jsonResponse(
+            Array.from({ length: 200 }, (_, i) => ({
+              id: `filler-${i}`,
+              description: "hello",
+              billable: true,
+              timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
+              userId: OWNER_ID,
+              workspaceId: WORKSPACE_ID,
+            })),
+          );
+        }
+        return baseStub()(input, init);
+      }) as typeof fetch,
+    );
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+
+    expect(response.status).toBe(503);
+    expect((response.body as { error: string }).error).toBe("workspace too large to verify; try again");
+
+    const row = server.db
+      .prepare("SELECT lifecycle_state, claim_token FROM recoverable_entries WHERE id = ?")
+      .get(entryId) as { lifecycle_state: string; claim_token: string | null };
+    expect(row.lifecycle_state).toBe("IDLE");
+    expect(row.claim_token).toBeNull();
+    // docs/08 invariant 4: no attempt row, because nothing was attempted.
+    const attemptCount = server.db
+      .prepare("SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id = ?")
+      .get(entryId) as { n: number };
+    expect(attemptCount.n).toBe(0);
+  });
+
+  // IT-03 at the route level (the store-level race lives in claim.test.ts): two confirms of the
+  // same plan must not both reach Clockify.
+  it("two concurrent confirms produce exactly one create", async () => {
+    let creates = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
+        if (method === "POST" && path.endsWith("/time-entries")) {
+          creates += 1;
+          return jsonResponse({
+            id: "new-entry-1",
+            description: "hello",
+            billable: true,
+            timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" },
+            userId: OWNER_ID,
+            workspaceId: WORKSPACE_ID,
+          }, 201);
+        }
+        if (method === "GET" && path.includes("/time-entries/")) {
+          return jsonResponse({
+            id: "new-entry-1",
+            description: "hello",
+            billable: true,
+            timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" },
+            userId: OWNER_ID,
+            workspaceId: WORKSPACE_ID,
+          });
+        }
+        return baseStub()(input, init);
+      }) as typeof fetch,
+    );
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+
+    const confirm = () =>
+      server.addon.handle({
+        method: "POST",
+        path: "/api/entries/recreate",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: { entryId, planId },
+      });
+    const [a, b] = await Promise.all([confirm(), confirm()]);
+
+    expect(creates).toBe(1);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 409]);
+  });
+});
+
+// A truncated reconcile saw a partial list, so it is not evidence about anything. Counting it
+// toward the mark-not-created gate would let three bound-hitting checks license the user to
+// declare "not created" about an entry that exists — and then recreate it a second time.
+describe("POST /api/entries/reconcile — a truncated check is not a check", () => {
+  it("does not increment the reconcile check count", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+
+    const listResponse = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (listResponse.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const preflightResponse = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const plan = (preflightResponse.body as { plan: { id: string } }).plan;
+
+    // Put the row in AMBIGUOUS with an attempt, the state reconcile operates on.
+    server.db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(entryId);
+    server.db
+      .prepare(
+        `INSERT INTO recreation_attempts (id, plan_id, recoverable_entry_id, started_at, outcome, baseline_json)
+         VALUES ('att-1', ?, ?, '2026-08-08T10:00:00Z', 'AMBIGUOUS', '[]')`,
+      )
+      .run(plan.id, entryId);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          return jsonResponse(
+            Array.from({ length: 200 }, (_, i) => ({
+              id: `filler-${i}`,
+              description: "hello",
+              billable: true,
+              timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
+              userId: OWNER_ID,
+              workspaceId: WORKSPACE_ID,
+            })),
+          );
+        }
+        return baseStub()(input, init);
+      }) as typeof fetch,
+    );
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/reconcile",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    expect(response.status).toBe(200);
+    expect((response.body as { result: { kind: string } }).result.kind).toBe("truncated");
+
+    const row = server.db.prepare("SELECT reconcile_json FROM recreation_attempts WHERE id='att-1'").get() as {
+      reconcile_json: string;
+    };
+    const summary = JSON.parse(row.reconcile_json) as { checks: number; truncated: boolean };
+    expect(summary.truncated).toBe(true);
+    expect(summary.checks).toBe(0);
+
+    // And the row is still AMBIGUOUS — a bound-hitting read never concludes anything.
+    const entryRow = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as {
+      lifecycle_state: string;
+    };
+    expect(entryRow.lifecycle_state).toBe("AMBIGUOUS");
   });
 });

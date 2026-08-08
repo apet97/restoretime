@@ -311,7 +311,7 @@ describe("UT-P12 P-CF-GONE", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "x" }] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: false, required: false, type: "TXT", allowedValues: null, defaultValue: null }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: false, required: false, type: "TXT", allowedValues: null, defaultValue: null }],
       }),
     });
     expect(result.warnings.some((w) => w.code === "CF_FIELD_GONE")).toBe(true);
@@ -355,7 +355,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "default" }] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "TXT", allowedValues: null, defaultValue: "default" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "TXT", allowedValues: null, defaultValue: "default" }],
       }),
     });
     expect(result.plannedRequest.customFields).toBeUndefined();
@@ -366,7 +366,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "custom" }] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "TXT", allowedValues: null, defaultValue: "default" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "TXT", allowedValues: null, defaultValue: "default" }],
       }),
     });
     expect(result.plannedRequest.customFields).toEqual([{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: "custom" }]);
@@ -379,7 +379,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "777.5" }] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "NUMBER", allowedValues: null, defaultValue: 777.5 }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "NUMBER", allowedValues: null, defaultValue: 777.5 }],
       }),
     });
     expect(result.plannedRequest.customFields).toBeUndefined();
@@ -389,7 +389,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "STALE_OPTION" }] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
       }),
     });
     const item = result.actionRequired.find((a) => a.ruleId === "P-CF-OPT");
@@ -397,17 +397,54 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     expect(item?.options).toEqual(["replace", "keep", "drop"]);
   });
 
-  it("P-CF-OPT resolved by explicit user input equal to the stale value -> warning CF_OPTION_STALE, value preserved, ADJUSTED", () => {
+  // docs/07 §10 reserves ADJUSTED for an input "that changes values". The P-CF-OPT "keep the
+  // original value" choice re-sends the source value byte for byte, so nothing is substituted and
+  // nothing is lost: the plan is FULL with a CF_OPTION_STALE warning. (This assertion previously
+  // read ADJUSTED; that pinned a behavior §10 does not describe.)
+  it("P-CF-OPT resolved by keeping the stale value -> warning CF_OPTION_STALE, value preserved, FULL", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "STALE_OPTION" }] }),
       choices: { customFieldInputs: [{ customFieldId: "cf-1", value: "STALE_OPTION" }] },
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
       }),
     });
     expect(result.warnings.some((w) => w.code === "CF_OPTION_STALE")).toBe(true);
     expect(result.plannedRequest.customFields).toEqual([{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: "STALE_OPTION" }]);
+    expect(result.fidelity).toBe("FULL");
+  });
+
+  it("P-CF-OPT resolved by picking a different current option -> ADJUSTED", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "STALE_OPTION" }] }),
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value: "B" }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
+      }),
+    });
+    expect(result.plannedRequest.customFields).toEqual([{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: "B" }]);
     expect(result.fidelity).toBe("ADJUSTED");
+  });
+
+  it("P-CF-OPT on a DROPDOWN_MULTIPLE with one stale element -> ACTION_REQUIRED", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: ["A", "GONE"] }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "DROPDOWN_MULTIPLE", allowedValues: ["A", "B"], defaultValue: null }],
+      }),
+    });
+    expect(result.actionRequired.some((a) => a.ruleId === "P-CF-OPT")).toBe(true);
+  });
+
+  it("P-CF-WRITE rejects a non-numeric value for a NUMBER field instead of letting the create fail", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "not-a-number" }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "NUMBER", allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(result.actionRequired.some((a) => a.message.includes("needs a number"))).toBe(true);
+    expect(result.plannedRequest.customFields).toBeUndefined();
   });
 
   it("P-CF-OPT dropped -> warning, PARTIAL", () => {
@@ -415,7 +452,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "STALE_OPTION" }] }),
       choices: { dropCustomFieldIds: ["cf-1"] },
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type: "DROPDOWN_SINGLE", allowedValues: ["A", "B"], defaultValue: "A" }],
       }),
     });
     expect(result.plannedRequest.customFields).toBeUndefined();
@@ -426,7 +463,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: null }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: null }],
       }),
     });
     expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
@@ -436,7 +473,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     const result = preflight({
       source: source({ customFieldValues: [] }),
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: "workspace-default" }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: "workspace-default" }],
       }),
     });
     expect(ruleIds(result.actionRequired)).not.toContain("P-CF-REQ");
@@ -448,7 +485,7 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
       source: source({ customFieldValues: [] }),
       choices: { customFieldInputs: [{ customFieldId: "cf-1", value: "user-entered" }] },
       workspace: workspace({
-        customFields: [{ id: "cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: null }],
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: null }],
       }),
     });
     expect(ruleIds(result.actionRequired)).not.toContain("P-CF-REQ");
@@ -466,5 +503,38 @@ describe("P-PERM defense in depth", () => {
   it("a non-admin viewer who is not the owner -> blocker NOT_PERMITTED", () => {
     const result = preflight({ viewer: { userId: "user-2", workspaceId: "ws-1", workspaceRole: "member" } });
     expect(result.blockers.some((b) => b.code === "NOT_PERMITTED")).toBe(true);
+  });
+});
+
+// docs/07 §10: ADJUSTED covers "≥1 explicit user substitution/drop/input that changes values
+// (project, task, …)". A removal is a drop, so labelling it FULL would tell the user nothing
+// changed while the new entry loses the project the deleted one had.
+describe("fidelity of explicit removals (docs/07 §10)", () => {
+  it("removing the source project is ADJUSTED, not FULL", () => {
+    const result = preflight({
+      source: source({ projectId: "proj-1" }),
+      choices: { projectId: null },
+      workspace: workspace({ forceProjects: false, effectiveProject: null }),
+    });
+    expect(result.blockers).toEqual([]);
+    expect(result.fidelity).toBe("ADJUSTED");
+  });
+
+  it("removing the source task is ADJUSTED, not FULL", () => {
+    const result = preflight({
+      source: source({ projectId: "proj-1", taskId: "task-1" }),
+      choices: { taskId: null },
+      workspace: workspace({ effectiveProject: { id: "proj-1", archived: false } }),
+    });
+    expect(result.blockers).toEqual([]);
+    expect(result.fidelity).toBe("ADJUSTED");
+  });
+
+  it("a plan with no substitutions and no drops stays FULL", () => {
+    const result = preflight({
+      source: source({ projectId: "proj-1" }),
+      workspace: workspace({ effectiveProject: { id: "proj-1", archived: false } }),
+    });
+    expect(result.fidelity).toBe("FULL");
   });
 });

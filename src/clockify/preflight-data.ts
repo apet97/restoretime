@@ -22,7 +22,10 @@ export class PreflightTruncatedError extends Error {
   }
 }
 
-async function collectPaged<TReq extends { page?: number; "page-size"?: number }, TItem>(
+/** The one bounded list read. Every paginated Clockify read in the app goes through this so the
+ * page bound is detected identically everywhere (docs/03 note 5) — a silently truncated picker is
+ * exactly the kind of unreported partial result the design forbids. */
+export async function collectPaged<TReq extends { page?: number; "page-size"?: number }, TItem>(
   fetcher: (request: TReq) => PromiseLike<readonly TItem[]>,
   baseRequest: Omit<TReq, "page" | "page-size">,
 ): Promise<TItem[]> {
@@ -74,6 +77,7 @@ export async function fetchSharedWorkspaceData(client: ClockifyClient, workspace
     .filter((f): f is typeof f & { id: string } => f.id !== undefined)
     .map((f) => ({
       id: f.id,
+      name: f.name ?? f.id,
       active: f.status !== "INACTIVE",
       required: f.required ?? false,
       type: f.type ?? "TXT",

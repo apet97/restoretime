@@ -1,13 +1,19 @@
-// IT-14 (docs/13), preflight half: a stub transport that returns full pages past `maxPages: 10`
-// makes `fetchWorkspaceState` fail with "workspace too large to verify; try again" — never a
-// partial result. The reconcile half of IT-14 (an AMBIGUOUS reconcile staying AMBIGUOUS and
-// reporting the bound) lives in tests/integration/mutation.test.ts, once the reconcile path
-// exists (layer 4) — this file is the preflight side, testable now that
-// src/clockify/preflight-data.ts exists.
+// IT-14 (docs/13). Both halves live here: the preflight read and the AMBIGUOUS reconcile read.
+// A stub transport returns full pages past `maxPages: 10`, so the page-bound condition
+// (`page === maxPages && hasNextPage`) is the only thing that can stop the walk. Preflight then
+// fails with "workspace too large to verify; try again", and a reconcile stays AMBIGUOUS and
+// reports the bound — never a partial result, never a guess (docs/03 note 5, docs/07 §8).
 //
 // Per docs/13's mock-transport contract: "a stub fetch injected into createClockifyClient...the
 // Clockify SDK stays real; only the network is stubbed." No fake client object.
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDatabase } from "../../src/store/db.js";
+import { ingestDeletedEntry, getById } from "../../src/store/entries.js";
+import { runReconcile } from "../../src/clockify/recreate.js";
+import type { PlannedRequest } from "../../src/domain/entry.js";
 import { buildClockifyClient } from "../../src/clockify/client.js";
 import { fetchWorkspaceState, PreflightTruncatedError } from "../../src/clockify/preflight-data.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
@@ -102,5 +108,83 @@ describe("IT-14 page bound reached (preflight)", () => {
     const state = await fetchWorkspaceState(client, WORKSPACE_ID, SOURCE, {});
     expect(state.ownerStatus).toBe("ACTIVE");
     expect(state.currentTags.get("tag-x")).toEqual({ id: "tag-x", archived: false });
+  });
+});
+
+// --- IT-14, reconcile half -----------------------------------------------------------------
+//
+// The dangerous failure here is the quiet one: a truncated read sees a partial list, finds no
+// match, and looks exactly like "Clockify never created it". That is the reasoning the user
+// relies on to press "it was not created", which leads to a duplicate entry. So a truncated
+// reconcile must stay AMBIGUOUS, report the bound, and not count as a check.
+describe("IT-14 page bound reached (reconcile)", () => {
+  const PLANNED: PlannedRequest = {
+    workspaceId: WORKSPACE_ID,
+    userId: "user-1",
+    start: "2026-08-08T10:00:00Z",
+    end: "2026-08-08T11:00:00Z",
+    description: "Quarterly report",
+    billable: true,
+  };
+
+  function stubUnboundedUserEntries(): typeof fetch {
+    return async (input) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+      if (url.pathname.endsWith("/time-entries") && url.pathname.includes("/user/")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return jsonResponse(
+          Array.from({ length: 200 }, (_, i) => ({
+            id: `other-${page}-${i}`,
+            description: "Quarterly report",
+            billable: true,
+            timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
+            userId: "user-1",
+            workspaceId: WORKSPACE_ID,
+          })),
+        );
+      }
+      return jsonResponse({ message: "not stubbed" }, 404);
+    };
+  }
+
+  it("stays AMBIGUOUS and reports the bound instead of concluding nothing was created", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "restoretime-reconcile-bound-"));
+    try {
+      const db = openDatabase(join(dir, "restoretime.sqlite"));
+      const { entry } = ingestDeletedEntry(db, {
+        id: "re-1",
+        workspaceId: WORKSPACE_ID,
+        sourceEntryId: "entry-a",
+        ownerId: "user-1",
+        detectedAt: "2026-08-08T09:00:00Z",
+        source: SOURCE,
+      });
+      db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(entry.id);
+
+      const client = buildClockifyClient(
+        { apiUrl: "https://developer.clockify.me/api", authToken: "tok" },
+        { fetch: stubUnboundedUserEntries() },
+      );
+
+      const result = await runReconcile({
+        db,
+        client,
+        entryId: entry.id,
+        workspaceId: WORKSPACE_ID,
+        userId: "user-1",
+        plannedRequest: PLANNED,
+        baseline: [],
+        recreatedBy: "user-1",
+        now: new Date("2026-08-08T10:05:00Z"),
+      });
+
+      expect(result.kind).toBe("truncated");
+      const after = getById(db, WORKSPACE_ID, entry.id);
+      expect(after?.lifecycleState).toBe("AMBIGUOUS");
+      expect(after?.newEntryId).toBeNull();
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

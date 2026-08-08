@@ -76,3 +76,10 @@ CREATE TABLE recreation_attempts (
 );
 
 CREATE INDEX recreation_attempts_entry_idx ON recreation_attempts(recoverable_entry_id);
+
+-- The installation's Clockify token was rejected (401 body code "4017", R11). This is NOT the same
+-- condition as a user disabling the addon (STATUS_CHANGED -> status 'INACTIVE'): docs/14 and
+-- docs/10 §8 prescribe different notices — "disabled" versus "reinstall to reconnect" — and one
+-- column cannot carry both. Set when a call fails with 4017; cleared by the next INSTALLED
+-- payload, which replaces the row.
+ALTER TABLE installations ADD COLUMN broken_at TEXT;

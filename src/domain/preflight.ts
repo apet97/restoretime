@@ -19,12 +19,30 @@ import { looselyEqual } from "./values.js";
 
 export interface CustomFieldDef {
   readonly id: string;
+  /** The field's display name. User-facing messages must never print the raw id (docs/10). */
+  readonly name: string;
   /** `status !== "INACTIVE"` (S6, L6). */
   readonly active: boolean;
   readonly required: boolean;
   readonly type: "TXT" | "NUMBER" | "DROPDOWN_SINGLE" | "DROPDOWN_MULTIPLE" | "CHECKBOX" | "LINK";
   readonly allowedValues: readonly string[] | null;
   readonly defaultValue: unknown;
+}
+
+function isDropdown(field: CustomFieldDef): boolean {
+  return field.type === "DROPDOWN_SINGLE" || field.type === "DROPDOWN_MULTIPLE";
+}
+
+/** True when every element of a dropdown value is still an offered option. A multi-select value
+ * arrives as an array; a single-select as a scalar. */
+function allOptionsAllowed(value: unknown, allowed: readonly string[]): boolean {
+  const values = Array.isArray(value) ? value : [value];
+  return values.every((v) => allowed.includes(String(v)));
+}
+
+function isNumericValue(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  return typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value));
 }
 
 export interface LookupResult {
@@ -194,11 +212,15 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     resolveEffectiveIds(source, choices);
 
   if (effectiveProjectId === null || effectiveProjectId === undefined) {
+    const projectDropped = projectChoiceProvided && source.projectId !== null;
     resolution.push({
       kind: "project",
       refId: null,
       outcome: projectChoiceProvided ? "dropped" : "kept",
     });
+    // docs/07 §10: ADJUSTED covers an explicit "drop … that changes values". Removing a project
+    // the source had changes the new entry, so the plan must not be labelled FULL.
+    if (projectDropped) hasAdjustment = true;
     if (workspace.forceProjects && modeResolved && mode === "completed") {
       actionRequired.push({ ruleId: "P-PROJ-REQ", message: "Select a project." });
     }
@@ -227,13 +249,14 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     actionRequired.push({ ruleId: "P-TASK-GONE", message: "This workspace requires a task. Select a replacement task." });
   } else if (effectiveTaskId === null || effectiveTaskId === undefined) {
     const droppedByProjectChange = projectSubstituted && !taskChoiceProvided && source.taskId !== null;
+    const droppedByChoice = taskChoiceProvided && choices.taskId === null && source.taskId !== null;
     resolution.push({
       kind: "task",
       refId: null,
       outcome: source.taskId === null ? "kept" : "dropped",
       ...(droppedByProjectChange ? { detail: "project changed" } : {}),
     });
-    if (droppedByProjectChange) hasAdjustment = true;
+    if (droppedByProjectChange || droppedByChoice) hasAdjustment = true;
   } else if (
     workspace.effectiveTask === null ||
     workspace.effectiveTask === undefined ||
@@ -323,7 +346,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     if (!field.active) {
       if (hasUsableValue(sourceValue)) {
-        warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${field.id}" no longer exists. Its value is not sent.` });
+        warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${field.name}" no longer exists. Its value is not sent.` });
         resolution.push({ kind: "customField", refId: field.id, outcome: "dropped", detail: "field inactive" });
         hasPartialLoss = true;
       }
@@ -332,7 +355,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     if (dropped) {
       resolution.push({ kind: "customField", refId: field.id, outcome: "dropped" });
-      warnings.push({ ruleId: "P-CF-OPT", code: "CF_VALUE_DROPPED", message: `The value for "${field.id}" was dropped.` });
+      warnings.push({ ruleId: "P-CF-OPT", code: "CF_VALUE_DROPPED", message: `The value for "${field.name}" was dropped.` });
       hasPartialLoss = true;
       continue;
     }
@@ -350,7 +373,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       if (hasUsableValue(field.defaultValue)) {
         effectiveValue = field.defaultValue;
       } else {
-        actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.id}" is required. Enter a value.` });
+        actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.name}" is required. Enter a value.` });
         continue;
       }
     }
@@ -360,22 +383,27 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       continue;
     }
 
-    // P-CF-OPT: a dropdown value outside the current allowed options.
-    if (
-      field.type === "DROPDOWN_SINGLE" &&
-      field.allowedValues !== null &&
-      !field.allowedValues.includes(String(effectiveValue)) &&
-      !fromUserInput
-    ) {
+    // P-CF-OPT: a dropdown value outside the current allowed options. Both dropdown types are
+    // checked — a DROPDOWN_MULTIPLE value is an array, so every element must still be an option.
+    if (isDropdown(field) && field.allowedValues !== null && !fromUserInput && !allOptionsAllowed(effectiveValue, field.allowedValues)) {
       actionRequired.push({
         ruleId: "P-CF-OPT",
-        message: `The value for "${field.id}" is no longer a valid option. Pick a current option, keep the original value, or drop it.`,
+        message: `The value for "${field.name}" is no longer a valid option. Pick a current option, keep the original value, or drop it.`,
         options: ["replace", "keep", "drop"],
       });
       continue;
     }
-    if (field.type === "DROPDOWN_SINGLE" && field.allowedValues !== null && fromUserInput && !field.allowedValues.includes(String(effectiveValue))) {
-      warnings.push({ ruleId: "P-CF-OPT", code: "CF_OPTION_STALE", message: `The value for "${field.id}" is not a current option. Clockify still accepts it.` });
+    if (isDropdown(field) && field.allowedValues !== null && fromUserInput && !allOptionsAllowed(effectiveValue, field.allowedValues)) {
+      warnings.push({ ruleId: "P-CF-OPT", code: "CF_OPTION_STALE", message: `The value for "${field.name}" is not a current option. Clockify still accepts it.` });
+    }
+    // P-CF-WRITE requires the value to be valid for the field type (docs/07 §3). A NUMBER field
+    // holding a non-numeric value would be rejected at create; resolve it at preflight instead.
+    if (field.type === "NUMBER" && !isNumericValue(effectiveValue)) {
+      actionRequired.push({
+        ruleId: "P-CF-REQ",
+        message: `"${field.name}" needs a number. Enter a value.`,
+      });
+      continue;
     }
 
     if (looselyEqual(effectiveValue, field.defaultValue)) {
@@ -383,9 +411,12 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       resolution.push({ kind: "customField", refId: field.id, outcome: "kept" });
     } else {
       // P-CF-WRITE
+      const changesSourceValue = fromUserInput && !looselyEqual(effectiveValue, sourceValue);
       plannedCustomFields.push({ customFieldId: field.id, sourceType: "WORKSPACE", value: effectiveValue });
-      resolution.push({ kind: "customField", refId: field.id, outcome: fromUserInput ? "substituted" : "kept" });
-      if (fromUserInput) hasAdjustment = true;
+      resolution.push({ kind: "customField", refId: field.id, outcome: changesSourceValue ? "substituted" : "kept" });
+      // The P-CF-OPT "keep the original value" choice re-sends exactly the source value, so it
+      // preserves and does not adjust (docs/07 §10 + P-CF-OPT's own "value preserved").
+      if (changesSourceValue) hasAdjustment = true;
     }
   }
   // Source values for fields that no longer exist in the workspace list at all.

@@ -10,7 +10,7 @@ import { createClockifyClient } from "clockify-sdk-ts-115";
 import { openDatabase } from "../../src/store/db.js";
 import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
-import { updateInstallationStatus } from "../../src/platform/installations.js";
+import { createSqliteInstallationStore, markInstallationBroken } from "../../src/platform/installations.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
 
@@ -200,7 +200,7 @@ describe("IT-05 dependency deleted between plan and create", () => {
 });
 
 describe("IT-08 addon token rejected (401 code 4017)", () => {
-  it("the installation is marked broken (status INACTIVE)", async () => {
+  it("marks the installation broken without disturbing the user-facing status", async () => {
     const db = freshDb();
     db.prepare(
       `INSERT INTO installations (workspace_id, addon_id, addon_user_id, as_user, api_url, auth_token, installed_at)
@@ -232,16 +232,47 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
       claimToken: "tok-1",
       recreatedBy: USER_ID,
       now: new Date("2026-08-08T09:02:00Z"),
+      // The production callback, not a test double: routes.ts wires exactly this.
       onAddonTokenInvalid: () => {
         markedBroken = true;
-        updateInstallationStatus(db, WORKSPACE_ID, "addon-1", "INACTIVE");
+        markInstallationBroken(db, WORKSPACE_ID, "addon-1", "2026-08-08T09:02:00Z");
       },
     });
 
     expect(result.outcome).toBe("FAILED");
     expect(markedBroken).toBe(true);
-    const row = db.prepare("SELECT status FROM installations WHERE workspace_id = ?").get(WORKSPACE_ID) as { status: string };
-    expect(row.status).toBe("INACTIVE");
+    const row = db
+      .prepare("SELECT status, broken_at FROM installations WHERE workspace_id = ?")
+      .get(WORKSPACE_ID) as { status: string; broken_at: string | null };
+    expect(row.broken_at).toBe("2026-08-08T09:02:00Z");
+    // A rejected token is not the same condition as a user disabling the addon: docs/14 and
+    // docs/10 §8 prescribe different notices, so `status` must stay untouched.
+    expect(row.status).toBe("ACTIVE");
+  });
+
+  it("a reinstall clears the broken flag", async () => {
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO installations (workspace_id, addon_id, addon_user_id, as_user, api_url, auth_token, installed_at)
+       VALUES (?, 'addon-1', 'addon-user-1', 'user-1', 'https://developer.clockify.me/api', 'tok', 1000)`,
+    ).run(WORKSPACE_ID);
+    markInstallationBroken(db, WORKSPACE_ID, "addon-1", "2026-08-08T09:02:00Z");
+
+    const store = createSqliteInstallationStore(db);
+    await store.save({
+      workspaceId: WORKSPACE_ID,
+      addonId: "addon-1",
+      addonUserId: "addon-user-1",
+      asUser: "user-1",
+      apiUrl: "https://developer.clockify.me/api",
+      authToken: "fresh-token",
+      installedAt: 2000,
+    });
+
+    const row = db
+      .prepare("SELECT broken_at FROM installations WHERE workspace_id = ?")
+      .get(WORKSPACE_ID) as { broken_at: string | null };
+    expect(row.broken_at).toBeNull();
   });
 });
 
@@ -296,6 +327,7 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "adopted", newEntryId: "new-entry-1" });
@@ -326,6 +358,7 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "none" });
@@ -360,6 +393,7 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "many", candidateIds: ["cand-1", "cand-2"] });

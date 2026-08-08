@@ -21,10 +21,18 @@ import * as entries from "../store/entries.js";
 import * as plans from "../store/plans.js";
 import * as attempts from "../store/attempts.js";
 import { buildClockifyClient } from "../clockify/client.js";
-import { fetchSharedWorkspaceData, fetchEntryWorkspaceState, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
-import { attemptRecreation, runReconcile, fingerprintFromPlanned, fingerprintMatches } from "../clockify/recreate.js";
+import { fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
+import {
+  attemptRecreation,
+  runReconcile,
+  fingerprintFromPlanned,
+  fingerprintMatches,
+  diffPlannedVsActual,
+  BaselineTruncatedError,
+  VERIFICATION_READ_UNAVAILABLE,
+} from "../clockify/recreate.js";
 import { isAddonTokenInvalid } from "../clockify/errors.js";
-import { updateInstallationStatus } from "../platform/installations.js";
+import { markInstallationBroken } from "../platform/installations.js";
 
 const RECONCILE_THROTTLE_MS = 30_000;
 const MARK_NOT_CREATED_MIN_CHECKS = 3;
@@ -58,8 +66,11 @@ async function loadClient(deps: ApiRouteDeps, viewer: Viewer) {
   return { installation, client: buildClockifyClient(installation) };
 }
 
+/** docs/03 §6: a 401 body code "4017" means the installation's own token is rejected. Record it as
+ * `broken_at`, not as status INACTIVE — the component has to tell the user to reinstall, which it
+ * cannot do if a broken installation is indistinguishable from one the user disabled. */
 function markInstallationBrokenOnAddonTokenFailure(deps: ApiRouteDeps, viewer: Viewer) {
-  return () => updateInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId, "INACTIVE");
+  return () => markInstallationBroken(deps.db, viewer.workspaceId, viewer.addonId, new Date().toISOString());
 }
 
 /** Row lookup scoped by claims workspace + id (docs/09), then canRead/canAct. */
@@ -79,6 +90,15 @@ function loadOwnEntry(
   if (access.kind === "forbidden") return { error: errorJson(403, "forbidden") };
   if (requireAct && !canAct(access.entry, viewer)) return { error: errorJson(404, "not found") };
   return { entry: access.entry };
+}
+
+const LIFECYCLE_STATES = ["IDLE", "RECREATING", "RECREATED", "FAILED", "AMBIGUOUS", "DISMISSED"] as const;
+type LifecycleState = (typeof LIFECYCLE_STATES)[number];
+
+/** docs/09: admin filters are validated, never trusted. An unknown `status` is dropped rather than
+ * cast into the query, where it would silently match nothing and read as "no entries exist". */
+function isLifecycleState(value: string): value is LifecycleState {
+  return (LIFECYCLE_STATES as readonly string[]).includes(value);
 }
 
 function preflightSummary(fidelity: ReturnType<typeof classifyFidelity>, blockerCount: number, actionRequiredCount: number) {
@@ -102,7 +122,7 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     ...(projectId ? { projectId } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
-    ...(status ? { status: status as NonNullable<entries.ListFilters["status"]> } : {}),
+    ...(status && isLifecycleState(status) ? { status } : {}),
     ...(search ? { search } : {}),
     ...(query.get("dismissed") === "true" ? { dismissed: true } : {}),
   };
@@ -160,7 +180,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
       const plan = plans.getById(deps.db, latestAttempt.planId);
       if (clientResult && plan) {
         try {
-          await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan);
+          await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
           entry = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
         } catch {
           // Best-effort: the detail view still renders with the pre-reconcile state.
@@ -280,32 +300,78 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
     return json(409, { stale: true, plan: freshPlan });
   }
 
+  // `claim()` returns the row AFTER the update, so the pre-claim state has to be read here — a
+  // release path needs to restore exactly what was there (IDLE or FAILED; those are the only two
+  // states the claim predicate admits for a fresh claim).
+  const priorState = entry.lifecycleState === "FAILED" ? "FAILED" : "IDLE";
   const claimToken = randomUUID();
   const claimed = entries.claim(deps.db, { id: entry.id, workspaceId: viewer.workspaceId, claimToken, now: new Date() });
   if (!claimed) {
     const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
     return json(409, { error: "already claimed", entry: current ?? entry });
   }
+  const release = () =>
+    entries.releaseClaim(deps.db, {
+      id: entry.id,
+      workspaceId: viewer.workspaceId,
+      claimToken,
+      restoreState: priorState,
+    });
 
   const consumed = plans.consumeActive(deps.db, plan.id);
   if (!consumed) {
-    // Another confirm won the plan first; release this claim back.
-    entries.setFailed(deps.db, { id: entry.id, workspaceId: viewer.workspaceId, claimToken });
+    // Another confirm won the plan first. Nothing was sent to Clockify, so restore the pre-claim
+    // state rather than inventing a FAILED with no attempt row (docs/08 invariant 4).
+    release();
     return json(409, { error: "plan already consumed" });
   }
 
-  const result = await attemptRecreation({
-    db: deps.db,
-    client: clientResult.client,
-    entryId: entry.id,
-    workspaceId: viewer.workspaceId,
-    planId: plan.id,
-    plannedRequest: plan.plannedRequest,
-    claimToken,
-    recreatedBy: viewer.userId,
-    now: new Date(),
-    onAddonTokenInvalid: markInstallationBrokenOnAddonTokenFailure(deps, viewer),
-  });
+  let result;
+  try {
+    result = await attemptRecreation({
+      db: deps.db,
+      client: clientResult.client,
+      entryId: entry.id,
+      workspaceId: viewer.workspaceId,
+      planId: plan.id,
+      plannedRequest: plan.plannedRequest,
+      claimToken,
+      recreatedBy: viewer.userId,
+      now: new Date(),
+      onAddonTokenInvalid: markInstallationBrokenOnAddonTokenFailure(deps, viewer),
+      onUnexpectedError: (err) => deps.onError?.(err, { route: "recreate.attempt" }),
+    });
+  } catch (err) {
+    if (err instanceof BaselineTruncatedError) {
+      // The baseline read is the first Clockify call of the attempt and runs before the create,
+      // so nothing was sent: releasing the claim is safe. The plan stays CONSUMED — the user
+      // re-runs preflight, exactly as after a STALE plan.
+      release();
+      return errorJson(503, err.message);
+    }
+    // Anything else escaping `attemptRecreation` happens at or after the create, so the outcome is
+    // NOT known to be "nothing happened". Never release the claim here: the lease expires and the
+    // row becomes reclaimable on its own, which is the honest state (ADR-007).
+    deps.onError?.(err, { route: "recreate.attempt" });
+    return errorJson(502, "Clockify could not be reached; try again");
+  }
+
+  // ADR-007 / docs/07 §8: "Reconcile immediately once, then lazily." A create whose response was
+  // lost may already have committed; the first check happens now, not on the next detail view.
+  if (result.outcome === "AMBIGUOUS") {
+    const attempt = attempts.latestForEntry(deps.db, entry.id);
+    const current = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
+    if (attempt) {
+      try {
+        await runOneReconcile(deps, clientResult.client, current, attempt, plan, viewer.userId);
+      } catch (err) {
+        // A failed first check leaves the row AMBIGUOUS, which is already the truthful state.
+        deps.onError?.(err, { route: "recreate.reconcile" });
+      }
+    }
+    const after = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? current;
+    return json(200, { result, entry: after });
+  }
 
   return json(200, { result });
 }
@@ -318,6 +384,9 @@ async function runOneReconcile(
   entry: RecoverableEntry,
   attempt: ReturnType<typeof attempts.latestForEntry>,
   plan: RecreationPlan,
+  /** The viewer performing the check. Distinct from `entry.ownerId`, which selects whose entry
+   * list is read: an admin can reconcile another user's entry, and the audit must name the actor. */
+  actingUserId: string,
 ) {
   if (!attempt) return;
   const result = await runReconcile({
@@ -328,19 +397,62 @@ async function runOneReconcile(
     userId: entry.ownerId,
     plannedRequest: plan.plannedRequest,
     baseline: attempt.baseline ?? [],
+    recreatedBy: actingUserId,
     now: new Date(),
   });
 
   const priorChecks = attempt.reconcile?.checks ?? 0;
+  const truncated = result.kind === "truncated";
   const summary = {
     checkedAt: new Date().toISOString(),
-    checks: priorChecks + 1,
+    // A truncated read never saw the whole list, so it is not evidence of anything. Counting it
+    // would let three bound-hitting checks satisfy the mark-not-created gate and invite the user
+    // to declare "not created" about an entry that exists — the one outcome ADR-007 forbids.
+    checks: truncated ? priorChecks : priorChecks + 1,
     matchCount: result.kind === "adopted" ? 1 : result.kind === "many" ? result.candidateIds.length : 0,
     candidateIds: result.kind === "many" ? result.candidateIds : result.kind === "adopted" ? [result.newEntryId] : [],
-    truncated: result.kind === "truncated",
+    truncated,
   };
   attempts.updateReconcile(deps.db, attempt.id, summary);
+
+  // docs/08 invariant 2: RECREATED implies one SUCCESS attempt pointing at the new entry. An
+  // adoption is a transition out of RECREATING's successor state, so the attempt row has to say
+  // so — otherwise the audit (and PASS-03's success view) reads a contradiction.
+  if (result.kind === "adopted") {
+    await finishAdoptedAttempt(deps, client, entry, attempt.id, plan, result.newEntryId);
+  }
   return result;
+}
+
+/** Closes the attempt row for an adopted entry and records the verification diff (docs/07 §8-§9).
+ * The adoption is definitive, exactly as a 201 is: a failed verification read never undoes it — it
+ * records "verification read unavailable" (fact 11), the same rule IT-13 pins for the create path. */
+async function finishAdoptedAttempt(
+  deps: ApiRouteDeps,
+  client: Awaited<ReturnType<typeof loadClient>> extends { client: infer C } | undefined ? C : never,
+  entry: RecoverableEntry,
+  attemptId: string,
+  plan: RecreationPlan,
+  newEntryId: string,
+) {
+  let diffs;
+  try {
+    const actual = await client.timeEntries.get({ workspaceId: entry.workspaceId, timeEntryId: newEntryId });
+    diffs = diffPlannedVsActual(plan.plannedRequest, actual);
+  } catch (err) {
+    deps.onError?.(err, { route: "reconcile.verify" });
+    diffs = [{ field: "_verification", planned: null, actual: VERIFICATION_READ_UNAVAILABLE }];
+  }
+  attempts.finish(deps.db, {
+    id: attemptId,
+    finishedAt: new Date().toISOString(),
+    outcome: "SUCCESS",
+    newEntryId,
+    errorStatus: null,
+    errorCode: null,
+    errorMessage: null,
+    diffs,
+  });
 }
 
 async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
@@ -361,7 +473,7 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
 
-  const result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan);
+  const result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
   const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
   return json(200, { result, entry: current ?? entry });
 }
@@ -378,9 +490,12 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
   const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
   const reconcile = latestAttempt?.reconcile;
   const checks = reconcile?.checks ?? 0;
+  // docs/07 §8 gates this on the LATEST reconcile being older than the window, not on the attempt
+  // being old. Accepting an old attempt with three checks a second ago would let a user declare
+  // "not created" moments after the last look — and a wrongly declared "not created" leads
+  // straight to a duplicate entry, the one outcome ADR-007 exists to prevent.
   const windowElapsed = reconcile ? Date.now() - new Date(reconcile.checkedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS : false;
-  const startedElapsed = latestAttempt ? Date.now() - new Date(latestAttempt.startedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS : false;
-  if (checks < MARK_NOT_CREATED_MIN_CHECKS || !(windowElapsed || startedElapsed)) {
+  if (checks < MARK_NOT_CREATED_MIN_CHECKS || !windowElapsed) {
     return errorJson(409, "not enough reconcile checks yet — keep checking, or wait for the window to elapse");
   }
 
@@ -417,6 +532,16 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
   if (!fingerprintMatches(fp, candidate)) {
     return errorJson(400, "that entry does not match this recreation's fingerprint");
   }
+  // The fingerprint compares values, not identity, so a look-alike entry that already existed
+  // matches it. Two extra checks keep an adoption meaning "this is the entry the create made":
+  // it must not be in the attempt's baseline (docs/07 §8 — "new" means "not in the baseline"),
+  // and it must belong to the entry's owner, since every recreation targets that owner (ADR-004).
+  if ((latestAttempt?.baseline ?? []).includes(newEntryId)) {
+    return errorJson(400, "that entry already existed before this recreation was attempted");
+  }
+  if (candidate.userId !== entry.source.ownerId) {
+    return errorJson(400, "that entry belongs to a different user");
+  }
 
   try {
     const adopted = entries.adopt(deps.db, {
@@ -427,6 +552,9 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
       recreatedBy: viewer.userId,
     });
     if (!adopted) return errorJson(409, "entry is no longer AMBIGUOUS");
+    if (latestAttempt) {
+      await finishAdoptedAttempt(deps, clientResult.client, entry, latestAttempt.id, plan, newEntryId);
+    }
     return json(200, { entry: adopted });
   } catch (err) {
     if (typeof err === "object" && err !== null && "code" in err && String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")) {
@@ -465,22 +593,26 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
   const { client } = clientResult;
 
   try {
+    // These feed the replacement pickers, so a truncated list is worse than an error: the user
+    // cannot find the right project and substitutes a wrong one. docs/03 note 5 lists all three
+    // as iterPages reads; `collectPaged` raises rather than returning a partial page.
     if (kind === "projects") {
-      const items = await client.projects.list({ workspaceId: viewer.workspaceId, "page-size": 200 });
+      const items = await collectPaged(client.projects.list.bind(client.projects), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });
     }
     if (kind === "tasks") {
       const projectId = query.get("projectId");
       if (!projectId) return errorJson(400, "projectId is required for kind=tasks");
-      const items = await client.tasks.list({ workspaceId: viewer.workspaceId, projectId, "page-size": 200 });
+      const items = await collectPaged(client.tasks.list.bind(client.tasks), { workspaceId: viewer.workspaceId, projectId });
       return json(200, { items: items.map((t) => ({ id: t.id, name: t.name, status: t.status })) });
     }
     if (kind === "tags") {
-      const items = await client.tags.list({ workspaceId: viewer.workspaceId, "page-size": 200 });
+      const items = await collectPaged(client.tags.list.bind(client.tags), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((t) => ({ id: t.id, name: t.name, archived: t.archived })) });
     }
     return errorJson(400, "kind must be one of projects, tasks, tags");
   } catch (err) {
+    if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
     deps.onError?.(err, { route: "options" });
     return errorJson(502, "Clockify could not be reached; try again");

@@ -232,6 +232,34 @@ export function setRecreated(
   return row ? rowToEntry(row) : undefined;
 }
 
+/**
+ * Fenced release of a claim that never reached Clockify: restores the exact pre-claim state and
+ * clears the lease.
+ *
+ * A confirm can win the claim and then abort before any Clockify write — a racing confirm consumed
+ * the plan first, or the baseline read hit the page bound. Neither case is a failure of a
+ * recreation, so the row must not become FAILED: docs/08 invariant 4 says every transition out of
+ * RECREATING has an attempt row, and there is no attempt here. It must not stay RECREATING either,
+ * or the entry looks busy for the whole 60 s lease.
+ *
+ * Only ever call this on a path where no create was issued. After a create, the outcome is
+ * unknown and ADR-007 governs.
+ */
+export function releaseClaim(
+  db: Database.Database,
+  input: FencedInput & { restoreState: "IDLE" | "FAILED" },
+): RecoverableEntry | undefined {
+  const row = db
+    .prepare<FencedInput & { restoreState: string }, EntryRow>(
+      `UPDATE recoverable_entries
+       SET lifecycle_state=@restoreState, claim_token=NULL, claim_expires_at=NULL
+       WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
+       RETURNING *`,
+    )
+    .get(input);
+  return row ? rowToEntry(row) : undefined;
+}
+
 /** RECREATING -> FAILED, fenced (§8). */
 export function setFailed(db: Database.Database, input: FencedInput): RecoverableEntry | undefined {
   const row = db

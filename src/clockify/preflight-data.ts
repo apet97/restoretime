@@ -94,7 +94,11 @@ export async function fetchSharedWorkspaceData(client: ClockifyClient, workspace
     defaultBillableProjects: settings?.defaultBillableProjects ?? false,
     timeTrackingMode: settings?.timeTrackingMode ?? "DEFAULT",
     lockTimeEntries: settings?.lockTimeEntries ?? null,
-    automaticLockSet: settings?.automaticLock !== undefined,
+    // Real Clockify sends `automaticLock: null` when no automatic lock is configured — not an
+    // absent field. `!== undefined` therefore read every unlocked workspace as locked, firing
+    // P-LOCK-REG at every regular user on any entry 24 h or older (docs/07 §3 requires the setting
+    // to be *set*). Live-observed on the developer workspace 2026-08-08.
+    automaticLockSet: (settings?.automaticLock ?? null) !== null,
     users: userStatus,
     currentTags,
     customFields,

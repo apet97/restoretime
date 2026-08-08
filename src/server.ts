@@ -24,13 +24,14 @@ import { createNodeHttpAddonServer } from "@apet97/clockify-addon-sdk/adapters/n
 import { loadConfig, type AppConfig } from "./config.js";
 import { createLogger, type Logger } from "./log.js";
 import { openDatabase } from "./store/db.js";
-import { deleteWorkspaceDomainData } from "./store/cascade.js";
+import { uninstallWorkspace } from "./store/cascade.js";
 import {
   createSqliteInstallationStore,
   importTokenEncryptionKey,
   normalizeWebhookPath,
   updateInstallationStatus,
 } from "./platform/installations.js";
+import { handleDeletedEntryWebhook } from "./ingest/webhook.js";
 import { registerApiRoutes } from "./api/routes.js";
 import { componentShellHtml } from "./api/views.js";
 import {
@@ -154,15 +155,10 @@ export async function createServer(
   addon.registerLifecycleEvent(
     lifecycle.deleted,
     withClockifyDeletedLifecycleRequest(parser, async (_request, _payload, claims) => {
-      // The DELETED payload carries no generation: unconditional delete (docs/08).
-      const result = await installations.delete({
-        workspaceId: claims.workspaceId,
-        addonId: claims.addonId,
-      });
-      // Domain tables arrive in PASS-02; the cascade is a no-op placeholder until then. PASS-02
-      // must merge these two deletes into one transaction (docs/08 "Retention and deletion") —
-      // see the note in store/cascade.ts.
-      deleteWorkspaceDomainData(db, claims.workspaceId);
+      // The DELETED payload carries no generation: unconditional delete (docs/08). One
+      // synchronous transaction removes the installation row and every domain-table row for the
+      // workspace (store/cascade.ts) — IT-11.
+      const result = uninstallWorkspace(db, claims.workspaceId, claims.addonId);
       logger.info("installation deleted", {
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,
@@ -194,14 +190,23 @@ export async function createServer(
           logger.error("webhook token lookup failed", { error: String(error) });
         },
       },
-      async (_request, claims) => {
-        // Ingestion (guard, normalize, insert-if-absent — ADR-003) is PASS-02 scope. This proves
-        // the verification boundary end-to-end; 500 makes Clockify retry the delivery until
-        // ingestion exists, so no delivery is silently lost between now and PASS-02.
-        logger.warn("webhook verified, ingestion not implemented", {
+      async (request, claims) => {
+        if (claims.workspaceId === undefined) {
+          logger.error("webhook claims missing workspaceId", {});
+          return { status: 400, body: "missing workspaceId claim" };
+        }
+        const result = handleDeletedEntryWebhook(db, request.body, {
           workspaceId: claims.workspaceId,
         });
-        return { status: 500, body: "Not Implemented" };
+        if (result.status >= 400) {
+          logger.warn("webhook rejected", {
+            workspaceId: claims.workspaceId,
+            status: result.status,
+          });
+        }
+        return result.body === undefined
+          ? { status: result.status }
+          : { status: result.status, body: result.body };
       },
     ),
   );

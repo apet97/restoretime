@@ -1,15 +1,30 @@
-// Uninstall cascade (docs/08 "Retention and deletion", AGENTS.md rule 14). PASS-02 adds
-// recoverable_entries, recreation_plans, and recreation_attempts; this function will delete every
-// row for the workspace from those tables. No domain tables exist yet, so it is a no-op — wired
-// now so the DELETED lifecycle path already calls it and the call site is tested from PASS-01 on.
+// Uninstall cascade (docs/08 "Retention and deletion", AGENTS.md rule 14). Hard-deletes the
+// installation row and every workspace row across the three domain tables in ONE transaction.
 //
-// PASS-02 must also RESTRUCTURE the DELETED handler, not only fill this body: docs/08 requires
-// the installation row and the domain rows to go in ONE transaction, and the handler currently
-// awaits the async encrypted store's `delete` and then calls this synchronously, which
-// better-sqlite3 cannot hold inside a single transaction.
+// Deleting an installation row never needs the SDK's AES-GCM codec: a DELETE keyed by
+// (workspace_id, addon_id) touches no ciphertext, it only removes a row. So this writes the raw
+// `installations` table directly instead of going through the async
+// `wrapClockifyInstallationStoreWithEncryption` store — that is what makes a single synchronous
+// better-sqlite3 transaction possible (the wrapped store's `delete()` is async; better-sqlite3
+// transactions are not). `recreation_plans` and `recreation_attempts` cascade automatically via
+// `ON DELETE CASCADE` (migration 0002) when `recoverable_entries` rows are removed.
 
 import type Database from "better-sqlite3";
 
-export function deleteWorkspaceDomainData(_db: Database.Database, _workspaceId: string): void {
-  // Intentionally empty until PASS-02 adds domain tables.
+export type UninstallResult = "deleted" | "missing";
+
+export function uninstallWorkspace(
+  db: Database.Database,
+  workspaceId: string,
+  addonId: string,
+): UninstallResult {
+  const run = db.transaction((ws: string, aid: string): UninstallResult => {
+    const existing = db
+      .prepare("SELECT 1 FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get(ws, aid);
+    db.prepare("DELETE FROM recoverable_entries WHERE workspace_id = ?").run(ws);
+    db.prepare("DELETE FROM installations WHERE workspace_id = ? AND addon_id = ?").run(ws, aid);
+    return existing ? "deleted" : "missing";
+  });
+  return run(workspaceId, addonId);
 }

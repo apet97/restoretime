@@ -14,3 +14,6 @@ coverage/
 
 # install-capture tool runtime state (encrypted installation records, key)
 tools/install-capture/var/
+
+# Planning session transcripts (not blueprint inputs)
+omp-session-*.html

@@ -28,9 +28,14 @@ zod/io-ts (hand-rolled guard, pinned by fixtures) · React/Vue/Svelte (vanilla T
 views) · Redis (ADR-005) · any job queue (ADR-010) · any logging framework (JSON lines to stdout) ·
 dotenv (process env only) · npm-run-all/concurrently (plain npm scripts).
 
-## Registry note
+## Registry note — decided
 
-Both SDK packages are consumed from the npm registry if published versions match the pinned source
-commits (docs/04); otherwise they are vendored as exact tarballs (`npm pack` from the read-only
-repos, committed checksums in the pass report). PASS-01 decides and records which; it never edits
-the SDK repos.
+Both SDK packages come from the **npm registry**. This is settled, not an open question:
+`npm view` resolves `@apet97/clockify-addon-sdk@1.2.0` and `clockify-sdk-ts-115@2.0.0`, and
+`tools/install-capture/` installed both from the registry and ran live against Clockify's
+developer environment on 2026-08-08 (evidence/install-capture-2026-08-08.md). Vendored tarballs
+are rejected: they add a manual refresh step for no proven benefit.
+
+PASS-01 records, in its report: the resolved versions, the `integrity` hashes of both packages
+from `package-lock.json`, and `git status --porcelain` output for both read-only SDK repos
+(must be empty). It never edits the SDK repos.

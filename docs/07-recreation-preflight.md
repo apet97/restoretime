@@ -20,14 +20,18 @@ After authorization, fetch in parallel via the installation's client (docs/04):
 1. `workspaces.get` → `workspaceSettings` (forceProjects/forceTasks/forceTags/forceDescription,
    onlyAdminsCanChangeBillableStatus where present, lock fields) (R12).
 2. `users.list` with the exact request `{ workspaceId, status: "ALL", "include-roles": false,
-   "page-size": 200 }` (paginated via `iterAll`, `maxPages: 10`) → owner record. On this route
+   "page-size": 200 }` (paginated via `iterPages`, `maxPages: 10`) → owner record. On this route
    `user.status` is the workspace membership status; the owner is unavailable when the user is
    absent from the list or `status !== "ACTIVE"` (docs/03 note 1).
 3. `projects.get(source.projectId)` if set — 404 means gone.
 4. `tasks.list(source.projectId)` if `source.taskId` set — or, when the project was substituted,
    `tasks.list(choices.projectId)`.
 5. `tags.list` → current workspace tags.
-6. `customFields.listForWorkspace(entity-type=TIMEENTRY)` → current definitions and defaults.
+6. `customFields.listForWorkspace({ workspaceId, "entity-type": ["TIMEENTRY"], "page-size": 200 })`
+   → current definitions and defaults. The request field is an **array** (docs/03 note 6). A field
+   counts as **active** when `status !== "INACTIVE"` (the enum has no `"ACTIVE"` member: values are
+   `INACTIVE`/`VISIBLE`/`INVISIBLE`, and both visible and invisible fields auto-attach — S6, L6).
+   The default value is `field.workspaceDefaultValue`, not `defaultValue`.
 
 Lookups are reads: SDK retry policy applies (N7). A lookup that fails after retries fails the
 preflight with "Clockify could not be reached; try again" — preflight never guesses.
@@ -55,11 +59,11 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-TAG-REQ | all source tags dropped AND `forceTags` AND `addTagIds` empty | ACTION_REQUIRED: select at least one current tag |
 | P-TAG-ARCH | effective tag exists but `archived` | ACTION_REQUIRED: archived tags reject creation (400 code 501, R18) — confirm removal or pick a replacement, same as P-TAG-GONE |
 | P-DESC | `forceDescription` AND effective description empty | ACTION_REQUIRED: user enters a description |
-| P-CF-KEEP | source CF value non-null; field exists and is active; value equals the current default | send nothing — the value auto-attaches (R5). No warning |
-| P-CF-WRITE | field exists and is active; value differs from the current default; value valid for the field type (dropdown: in `allowedValues`; NUMBER: numeric) | include `{customFieldId, sourceType:"WORKSPACE", value}` in `plannedRequest.customFields` (R5) |
+| P-CF-KEEP | source CF value non-null; field exists and is active (`status !== "INACTIVE"`); value equals `field.workspaceDefaultValue` | send nothing — the value auto-attaches (R5). No warning |
+| P-CF-WRITE | field exists and is active; value differs from `field.workspaceDefaultValue`; value valid for the field type (dropdown: in `allowedValues`; NUMBER: numeric) | include `{customFieldId, sourceType:"WORKSPACE", value}` in `plannedRequest.customFields` (R5) |
 | P-CF-OPT | dropdown value not in current `allowedValues`, no choice made | ACTION_REQUIRED with three choices: pick a current option (substitute → ADJUSTED), keep the original value (server accepts any string, R19 → warning `CF_OPTION_STALE`, value preserved), or drop the value (→ warning, PARTIAL) |
-| P-CF-GONE | field missing or no longer active | warning `CF_FIELD_GONE`; the value is not sent; fidelity → PARTIAL |
-| P-CF-REQ | a required CF has no usable value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`). A value is mandatory at create (R22). Resolution order before asking: source value → current default → user input |
+| P-CF-GONE | field absent from the list, or `status === "INACTIVE"` | warning `CF_FIELD_GONE`; the value is not sent; fidelity → PARTIAL |
+| P-CF-REQ | an active field with `required === true` has no usable value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`). A value is mandatory at create (R22). Resolution order before asking: source value → `workspaceDefaultValue` → user input |
 | P-BILL | (`onlyAdminsCanChangeBillableStatus` OR `defaultBillableProjects`) set AND viewer not admin AND source `billable` differs from what the workspace defaults imply | warning `BILLABLE_MAY_CHANGE` — silent override is PROVED (a regular user's `billable:false` was stored as `true`, R12); the post-create diff reports the actual stored value |
 | P-LOCK | viewer is admin/owner | rule does not apply — admins are lock-exempt on route B (R16, PROVED) |
 | P-LOCK-REG | viewer is regular AND any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) AND `source.start` is 24 hours old or older | warning `PERIOD_MAY_BE_LOCKED` — finer lock-range semantics are not verified, so the rule never parses dates and never blocks; entries younger than 24 hours can never be locked (R22) and skip this rule. The rejection mapping is precise: 403 code 1003 → "The entry's date is in a locked period. An admin can recreate this entry, or unlock the period." (R15, R16) |
@@ -133,9 +137,11 @@ claim (§6) → baseline snapshot → createForUser → branch:
 
 **Baseline snapshot**: immediately before the create, list the owner's entries with the
 **description filter** (`listForUser` with `description` = source description; fallback when the
-description is empty: the unfiltered list). Both reads paginate via `iterAll`
-(`pageSize: 200, maxPages: 10`; a baseline that hits the page bound is treated as a failed
-preflight — "workspace too large to verify; try again" — never a partial baseline). Record the
+description is empty: the unfiltered list). Both reads paginate via `iterPages`
+(`pageSize: 200, maxPages: 10`; the bound is hit when a yielded page has
+`page === maxPages && hasNextPage` — docs/03 note 5, the reason `iterAll` cannot be used. A
+baseline that hits the bound is treated as a failed preflight — "workspace too large to verify;
+try again" — never a partial baseline). Record the
 matching entry IDs as the attempt's baseline. Never use the `start`/`end`-windowed query: it is
 eventually consistent and unreliable for fresh entries (R10 — a new entry stayed invisible >45 s
 in the windowed variant, while description-filtered and unfiltered lists reflect creates
@@ -151,13 +157,13 @@ Branches:
 | Outcome | Transition | Behavior |
 |---|---|---|
 | 201 with body | RECREATING → (verify) | The 201 alone is definitive: the entry exists with that ID. `timeEntries.get(newId)`; diff planned vs actual (§9); store attempt SUCCESS, new id, diffs; state RECREATED. If the verification read fails after SDK read-retries, the state is still RECREATED: the diff falls back to the 201 body (it is the created entry) and records "verification read unavailable" — the diff is a report, never a gate |
-| 4xx | RECREATING → FAILED | Map reason via status + body `code` (R15; codes compare as strings); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
+| 4xx | RECREATING → FAILED | Map reason via `statusCode` + `clockifyErrorCode(err)` (docs/03 §6 — the app normalizer, never the SDK `getErrorCode`; a 4xx with no body code maps on status alone); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
 | 5xx, timeout, connection reset | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Reconcile immediately once (below), then lazily |
 
 **Reconcile (AMBIGUOUS)** — runs inline once, on each detail view while AMBIGUOUS (max once per
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
 and has had ≥3 checks shows the "not found" choice. List reads use the same description-filtered
-read as the baseline, `iterAll`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
+read as the baseline, `iterPages`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
 stays AMBIGUOUS and reports the bound.
 
 ```text

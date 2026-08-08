@@ -323,8 +323,12 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 
 ### R15 — Error codes (status + body code)
 
-- FACT: Clockify errors carry an HTTP status AND a numeric body `code`; classification keys on the
-  code (via SDK `getErrorCode`), never on message text. Verified mapping: 403 + code `4030` =
+- FACT: Clockify errors carry an HTTP status AND a body `code`; classification keys on the code,
+  never on message text. **The body `code` is a JSON number, and some 4xx bodies carry no `code`
+  at all** (fresh-pass probes FP-1/FP-2, 2026-08-08: `400 {"message":…,"code":501}`,
+  `401 {…,"code":4017}`, `404` with no `code` key). The SDK helper `getErrorCode` returns only
+  **string** body codes, so it returns `undefined` for every Clockify numeric code — the app reads
+  the code itself and normalizes with `String()` (docs/03 §6). Verified mapping: 403 + code `4030` =
   force-timer rejection ("Manual time tracking disabled…"); 403 + code `1003` = locked-period
   rejection ("Can't edit locked time entry."); 400 + body code `501` = domain validation (project
   required, `<`/`>` — this reconciles earlier reports that said "400" and "501": both were right);
@@ -337,7 +341,7 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
   not codes.
 - CONSEQUENCE: 4xx → FAILED with the code-mapped reason (docs/07 §8, UT-M01). 5xx/transport →
   AMBIGUOUS. Codes 4030 and 1003 map to specific user-facing explanations with the admin-bypass
-  path (R16).
+  path (R16). A 4xx with no body code maps on status alone (UT-M01 code-absent case).
 
 ### R16 — Force-timer and locked-period enforcement, with admin bypass
 
@@ -413,6 +417,24 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONSEQUENCE: Recreation never carries invoice linkage and can never detect one from entry data.
   The UI's invoice difference line is unconditional (R9).
 
+### R23 — The addon token reaches every preflight read route
+
+- FACT: The SDK warns that Clockify walls some endpoint families off from addon tokens regardless
+  of manifest scopes (`mapAddonTokenRestriction` docstring names webhooks, custom-field
+  management, and account-level `GET /workspaces`). Two preflight reads sat inside that risk and
+  were never probed. Fresh-pass probes on the developer environment with the captured addon token:
+  `workspaces.get` → 200 with 69 `workspaceSettings` keys (`forceProjects:true`,
+  `timeTrackingMode:"DEFAULT"`, `lockTimeEntries:null`, `automaticLock:null`,
+  `onlyAdminsCanChangeBillableStatus:false`, `defaultBillableProjects:true`);
+  `customFields.listForWorkspace` (`entity-type: ["TIMEENTRY"]`) → 200 with a bare array.
+- EVIDENCE: `evidence/fresh-pass-2026-08-08.md` FP-3/FP-4.
+- CONFIDENCE: PROVED (reachability, developer environment 2026-08-08). The custom-field **item
+  shape** (`type`, `allowedValues`, `required`, `status`, `workspaceDefaultValue`) is SDK-typed
+  only — the dev workspace holds zero custom fields, so no live item was seen. LV-08 pins it.
+- CONSEQUENCE: Preflight's settings and custom-field lookups are not addon-token restricted.
+  The read-only account-level `workspaces.list` is never called; `workspaces.get` is
+  workspace-scoped and reachable. All P-CF-* rules rest on the SDK item shape until LV-08.
+
 ## S-series — SDK facts
 
 See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
@@ -452,6 +474,30 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
 - FACT: The developer environment (`developer.clockify.me`) signs addon JWTs with the same pinned platform key as production: the INSTALLED lifecycle and webhook verification passed with `createClockifySignatureParser(addonKey)` defaults (install-capture 2026-08-08).
 - CONFIDENCE: PROVED (one install).
 - CONSEQUENCE: One parser works in both environments; only `CLOCKIFY_PARENT_ORIGIN` differs (production `https://app.clockify.me`, developer `https://developer.clockify.me`).
+
+### S6 — Clockify REST SDK type facts the app must match exactly
+
+- FACT (source-verified at the pinned commit, 2026-08-08):
+  - `getErrorCode(err)` accepts only **string** body codes (`errors.ts`: `typeof direct === "string"`).
+    Clockify sends numbers → it returns `undefined`. The app uses its own normalizer (R15, docs/03 §6).
+  - `CustomFieldStatus = "INACTIVE" | "VISIBLE" | "INVISIBLE"` — there is **no** `"ACTIVE"` member.
+    "Active field" means `status !== "INACTIVE"` (matches L6: VISIBLE and INVISIBLE fields both
+    auto-attach).
+  - `ListForWorkspaceCustomFieldsRequest["entity-type"]` is `CustomFieldEntityType[]`
+    (`"TIMEENTRY" | "USER"`), so the call passes `["TIMEENTRY"]`. The wire form is repeated
+    `entity-type=TIMEENTRY` query params.
+  - `CustomField` carries `workspaceDefaultValue` (not `defaultValue`) and every property except
+    none is optional — under `exactOptionalPropertyTypes` each read needs an explicit undefined branch.
+  - `TaskStatus = "ACTIVE" | "DONE" | "ALL"`; `Tag.archived: boolean`; `UserDtoV1.status` is typed
+    `AccountStatus` (drift, docs/03 note 1) but `"ACTIVE"` is a member, so `=== "ACTIVE"` typechecks.
+  - `CreateForUserTimeEntriesRequest` is a **union** of a flattened shape and a `{body: …}`
+    envelope. The app always builds the flattened variant (`CreateForUserTimeEntriesRequestFlattened`).
+  - `iterAll` yields items only; `iterPages` yields `{items, page, pageSize, hasNextPage}`. Only
+    `iterPages` can detect the page bound the design requires (docs/03 note 5).
+  - `iterAll`/`iterPages`/`getErrorCode` are exported from the package root (`wrapper/index.ts`).
+- EVIDENCE: `evidence/fresh-pass-2026-08-08.md` §SDK source re-verification.
+- CONSEQUENCE: docs/03, docs/04, docs/07 and PASS-02 state these shapes verbatim. A weaker
+  implementation model must not infer them.
 
 ## Evidence hierarchy (standing rule)
 

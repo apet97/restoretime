@@ -16,7 +16,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Task deleted or project substituted | 400 "Task doesn't belong to Project" (R3) | P-TASK-GONE / P-TASK-CTX | Task picker or remove | UT-P04 |
 | Tag deleted | 400 "Tag doesn't belong to Workspace" (R3) | P-TAG-GONE per tag | Confirm removal; optional add-picker | UT-P05 |
 | Tag archived | 400 code 501 "You can not create entities for archived tag" (R18) | P-TAG-ARCH: ACTION_REQUIRED, same resolution as a missing tag | Confirm removal or pick replacement | UT-P06 |
-| Owner left / membership inactive | Create-for-user for such a user: UNVERIFIED | P-OWNER blocker; no owner substitution offered | Blocked view with explanation | UT-P07 |
+| Owner left / membership inactive | Create-for-user for such a user: UNVERIFIED, and it stays that way — P-OWNER blocks before any create, so the platform behavior is never exercised. Accepted risk, no LV row needed | P-OWNER blocker; no owner substitution offered | Blocked view with explanation | UT-P07 |
 | Workspace requires project (`forceProjects`) | 501 without project; running entries bypass (R4) | P-PROJ-REQ | Project picker or running mode | UT-P08 |
 | Workspace requires description | Not directly probed; settings readable (R12) | P-DESC | Text input | UT-P09 |
 | `onlyAdminsCanChangeBillableStatus` / `defaultBillableProjects` | Regular user's `billable:false` silently stored as `true` (R12, probe A5) | P-BILL warning; post-create diff reports the stored value | Warning + success-view diff line | UT-P10, LV-07 |
@@ -39,7 +39,9 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Admin demoted between view and confirm | Role in fresh claims | P-PERM on fresh claims fails | 403 → notice | IT-07 |
 | Approval-enabled workspace | Approved entries CANNOT be deleted (403 code 4005) until withdrawn (R9); entry DTOs expose no approval fields | Approval state can never be lost by deletion; the new entry is never part of an approval request | System difference line | UT-M01 (4005 mapping) |
 | Invoiced deleted entry | Invoiced entries delete normally (204); webhook fires with no invoice marker; entry DTOs expose no invoice field (R21) | Recreation proceeds normally; the new entry is never invoice-linked | System difference line | — |
-| Addon token rejected (401 code 4017) | Distinct auth error (R11) | Mark installation broken; component shows reinstall notice | Notice view | IT-08 |
+| Addon token rejected (401 code 4017) | Distinct auth error (R11); the body code arrives as the **number** `4017` | `clockifyErrorCode` normalizes to `"4017"`; mark installation broken; component shows reinstall notice | Notice view | IT-08, UT-M01 |
+| Clockify 4xx with no body `code` | Live: 404 unknown workspace returns `{message}` only (R15, FP-2) | Map on `statusCode` alone; never guess a code | Failure view with the status-only reason | UT-M01 |
+| Workspace larger than the page bound | `iterPages` yields a final page with `page === maxPages && hasNextPage` (docs/03 note 5) | Preflight fails with "workspace too large to verify; try again"; an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound | Failure view; "Check now" stays available | IT-14 |
 | Cross-workspace ID guessing | 404 on fake workspace (R15); rows scoped by claims workspace | 404, no existence leak | — | IT-09 |
 | Webhook redelivery after dismissal | Genuine duplicates observed (W10) | DISMISSED row absorbs redelivery | Entry stays hidden | IT-10 |
 

@@ -5,7 +5,7 @@ Two read-only source SDKs. Pinned commits at planning time:
 | SDK | Package | Version | Commit |
 |---|---|---|---|
 | `~/Downloads/working/addons-me/addon-ts-sdk` (`addon-sdk/` workspace) | `@apet97/clockify-addon-sdk` | 1.2.0 | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` |
-| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 2.0.0 | `b33e5b0227ece3de613adf6071039cc648bc35c8` (inspected); HEAD later advanced externally to `8cac46e9…` then `f2d82d1…` (docs-only + one error-name JSON claim fix; zero diff in the load-bearing paths — the app never matches error names, only `getErrorCode`/`statusCode` — verified 2026-08-08) |
+| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 2.0.0 | `b33e5b0227ece3de613adf6071039cc648bc35c8` (inspected); HEAD later advanced externally to `8cac46e9…` then `f2d82d1…` (docs-only + one error-name JSON claim fix; zero diff in the load-bearing paths — the app never matches error names, only `statusCode` and its own `clockifyErrorCode` — verified 2026-08-08) |
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work
 around a defect in the app — fix upstream first (AGENTS.md).
@@ -48,15 +48,15 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 
 | Product need | SDK method | Route | Request model | Response model | Notes |
 |---|---|---|---|---|---|
-| Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequest` | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
+| Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequestFlattened` (the request type is a **union** with a `{body: …}` envelope — always build the flattened variant) | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
 | Post-create fetch | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` | — | `TimeEntry` | Verification diff input (F12) |
 | Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `description` (never `start`/`end` windows — proved laggy for fresh entries, R10) | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
-| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `UserDtoV1[]` | Exact request: `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `iterAll` pagination. `"include-roles"` is REQUIRED by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
+| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `UserDtoV1[]` | Exact request: `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `iterPages` pagination. `"include-roles"` is REQUIRED by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
 | Project check/options | `projects.get` / `projects.list` | `GET …/projects[/{id}]` | — | `Project` | 404 = gone; `archived` flag present |
 | Task check/options | `tasks.get` / `tasks.list` | `GET …/projects/{pid}/tasks[/{id}]` | — | `Task` | `status` field |
 | Tag check/options | `tags.list` | `GET /workspaces/{ws}/tags` | — | `Tag[]` | `archived` flag present |
-| Custom-field definitions | `customFields.listForWorkspace` | `GET /workspaces/{ws}/custom-fields` | query `entity-type=TIMEENTRY` | `CustomField[]` | Type/allowedValues/required/status/default; `entityType` value is `TIMEENTRY` not `TIME_ENTRY` (DSWH2: wrong value → 501) |
-| Workspace settings | `workspaces.get` | `GET /workspaces/{ws}` | — | `Workspace` (`workspaceSettings`) | `forceProjects`, `forceTasks`, `forceTags`, `forceDescription`, lock fields, billable permission (R12) |
+| Custom-field definitions | `customFields.listForWorkspace` | `GET /workspaces/{ws}/custom-fields` | request field `"entity-type": ["TIMEENTRY"]` (**array** of `CustomFieldEntityType`; wire form is repeated `entity-type=TIMEENTRY`) | `CustomField[]` | `type`, `allowedValues`, `required`, `status`, `workspaceDefaultValue` (**not** `defaultValue`). `status` is `"INACTIVE" \| "VISIBLE" \| "INVISIBLE"` — no `"ACTIVE"`; active means `status !== "INACTIVE"` (S6, L6). All properties optional. `entityType` value is `TIMEENTRY` not `TIME_ENTRY` (DSWH2: wrong value → 501). Addon-token reachable (R23) |
+| Workspace settings | `workspaces.get` | `GET /workspaces/{ws}` | — | `Workspace` (`workspaceSettings`) | `forceProjects`, `forceTasks`, `forceTags`, `forceDescription`, lock fields, billable permission (R12). Addon-token reachable — live-probed, 69 settings keys (R23). The account-level `workspaces.list` is addon-token restricted and is never called |
 
 **Transport behavior relied on**: reads retry 408/429/500/502/503/504 (GET/HEAD/OPTIONS only,
 `maxRetries: 2` = up to 3 attempts, exponential backoff, `Retry-After`/`X-RateLimit-Reset`
@@ -64,9 +64,22 @@ honored); POST/PATCH are never retried by either retry layer (the composed-fetch
 POST in `retryableMethods` at construction). Errors are `ClockifyApiError` with `statusCode` +
 parsed body; timeouts are `ClockifyApiTimeoutError` — which only fires when the app sets
 `timeoutInSeconds` (the default is no timeout; the app passes `timeoutInSeconds: 30`).
-`getErrorCode(err)` extracts body `code` as a **string** (compare `"4030"` etc., never numbers).
-`iterAll`/`iterPages` (package root) auto-paginate any list method (`page`/`page-size`) with
-`{ pageSize, maxPages }` bounds.
+`iterAll`/`iterPages` (package root, `wrapper/index.ts`) auto-paginate any list method
+(`page`/`page-size`) with `{ pageSize, maxPages }` bounds. The app uses **`iterPages` only**: its
+`{items, page, pageSize, hasNextPage}` envelope is the sole way to detect that the page bound was
+hit, which the design requires (docs/03 note 5). `iterAll` yields items and cannot express it.
+
+**Error-code extraction — do not use `getErrorCode`.** `getErrorCode(err)` returns the body `code`
+only when it is a **string** (`errors.ts`: `typeof direct === "string"`). Clockify sends numbers.
+Live-probed 2026-08-08: `400 → code 501` (number), `401 → code 4017` (number), `404 → no code` —
+`getErrorCode` returned `undefined` in all three. The app owns a four-line normalizer
+(`src/clockify/errors.ts` `clockifyErrorCode`, source in docs/03 §6) that reads `err.body.code`
+(then `err.body.error.code`) and returns `String(code)`. This is not an SDK workaround
+(AGENTS.md rule 5): the helper is correct for its documented string-code contract, and Clockify's
+time-entry endpoints fall outside it.
+
+**Upstream suggestion (non-blocking, do not wait on it)**: widen `getErrorCode` to accept numeric
+body codes. Record it against `clockify-ts-sdk`; the app ships its own normalizer either way.
 
 **Known SDK drift, not blocking**: `entityChangesExperimental.listDeleted` return type mismatches
 live (wrapper object vs bare array); `listCreated`/`listUpdated` typed `string`. The product never

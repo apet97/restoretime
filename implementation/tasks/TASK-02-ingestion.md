@@ -14,4 +14,6 @@
   enforces `body.workspaceId === claims.workspaceId` (fact 8); ingestion is status-independent.
 - Failure behavior: DB error → 500 (redelivery retries; insert is idempotent).
 - Tests: CT-01…CT-05, UT-N01, UT-N02, UT-L01, IT-01, IT-02, IT-10.
+- Wiring reference: `tools/install-capture/server.mjs` — the normalized-path webhook-token lookup
+  and the verifier wiring it uses are live-proven (evidence/install-capture-2026-08-08.md).
 - Acceptance: fixtures pass; duplicate deliveries are no-ops; dismissed rows absorb redelivery.

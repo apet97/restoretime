@@ -9,13 +9,28 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 |---|---|---|
 | UT-N01 | Webhook guard: rejects malformed bodies (missing id/workspaceId/timeInterval.start; wrong types) | Contract violation handling |
 | UT-N02 | Normalization: flat payload → DeletedTimeEntry; embedded task/tags IDs; running shape (`end:null`) | Boundary model correctness |
-| UT-P01…P16 | Preflight rules P-RUN, P-PROJ-*, P-TASK-*, P-TAG-*, P-DESC, P-CF-*, P-BILL, P-LOCK*, P-TYPE, P-TIMER, collision cases | Deterministic plan decisions |
+| UT-P01 | P-RUN / P-RUN-END: running source without `runningMode` → ACTION_REQUIRED with the single-timer auto-stop warning; `completed` mode with `completedEnd ≤ start` → ACTION_REQUIRED | docs/07 §3 |
+| UT-P02 | P-PROJ-GONE: source project 404 and no choice → ACTION_REQUIRED replacement picker; "No project" offered only when `!forceProjects` | docs/07 §3 |
+| UT-P03 | P-PROJ-ARCH: effective project `archived` → warning `ARCHIVED_PROJECT`, never a blocker (R6) | docs/07 §3 |
+| UT-P04 | P-TASK-GONE / P-TASK-CTX: task missing or `status !== "ACTIVE"`; project substituted while a source task is set | docs/07 §3 |
+| UT-P05 | P-TAG-GONE / P-TAG-REQ: missing tag → per-tag ACTION_REQUIRED; all tags dropped with `forceTags` and no `addTagIds` → ACTION_REQUIRED | docs/07 §3 |
+| UT-P06 | P-TAG-ARCH: archived tag → ACTION_REQUIRED (archived tags reject creation, R18), not a warning | docs/07 §3 |
+| UT-P07 | P-OWNER: owner absent from `users.list` or membership `status !== "ACTIVE"` → blocker `OWNER_UNAVAILABLE`; no owner picker | docs/07 §3 |
+| UT-P08 | P-PROJ-REQ: `forceProjects` and no effective project in completed mode → ACTION_REQUIRED; running mode resolves it (R4) | docs/07 §3 |
+| UT-P09 | P-DESC: `forceDescription` and empty effective description → ACTION_REQUIRED | docs/07 §3 |
+| UT-P10 | P-BILL: `onlyAdminsCanChangeBillableStatus` or `defaultBillableProjects` set, viewer not admin, source `billable` differs → warning `BILLABLE_MAY_CHANGE` (R12 probe A5) | docs/07 §3 |
+| UT-P11 | P-LOCK / P-LOCK-REG: admin viewer → rule does not apply; regular viewer with a lock setting and `source.start` ≥ 24 h old → warning; younger than 24 h → no warning (R22). The rule never parses lock dates and never blocks | docs/07 §3 |
+| UT-P12 | P-CF-GONE: field absent or `status === "INACTIVE"` → warning `CF_FIELD_GONE`, value not sent, fidelity PARTIAL | docs/07 §3 |
+| UT-P13 | Reconcile fingerprint collisions: two identical candidates → stay AMBIGUOUS, user picks; a manual copy inside the window yields ≥2 | docs/07 §8 |
+| UT-P14 | P-TYPE: `source.type !== "REGULAR"` → blocker `TYPE_NOT_SUPPORTED` (R17) | docs/07 §3 |
+| UT-P15 | P-TIMER: `timeTrackingMode === "STOPWATCH_ONLY"`, plan sends `end`, viewer not admin → blocker `TIMER_REQUIRED` with the admin handoff; admin viewer or running-mode plan → no blocker (R16) | docs/07 §3 |
+| UT-P16 | P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ: value equal to `workspaceDefaultValue` → nothing sent; differing value → one `customFields` item `{customFieldId, sourceType:"WORKSPACE", value}`; dropdown value outside `allowedValues` → three-choice ACTION_REQUIRED (R19); `required` field with no usable value → ACTION_REQUIRED after source→`workspaceDefaultValue` resolution (R22). The `customFieldValues` key is never produced | docs/07 §3 |
 | UT-F01 | Fidelity classification matrix (FULL/ADJUSTED/PARTIAL/IMPOSSIBLE from rule outcomes) | Honest fidelity labels |
 | UT-S01 | Plan `sourceHash` mismatch → STALE | Tamper/drift guard |
 | UT-S02 | Revalidation detects changed dependency → STALE | TOCTOU guard |
 | UT-A01 | Policy: admin vs regular vs wrong-owner vs wrong-workspace | Authorization |
 | UT-X01 | HTML escaping of descriptions/names with entities and markup-looking text | XSS |
-| UT-M01 | Clockify error mapping: HTTP status + body code → user-facing reason (400/501, 401/4017, 403/4030 force-timer, 403/1003 locked) | Failure honesty (error codes compare as strings — `getErrorCode` returns `"4030"` etc., never numbers — fact 7) |
+| UT-M01 | Clockify error mapping through `clockifyErrorCode` (docs/03 §6): body `{"code": 501}` (a JSON **number**) → `"501"`; 400/`"501"`, 401/`"4017"`, 403/`"4030"` force-timer, 403/`"1003"` locked → their user-facing reasons; **code-absent 404** → status-only reason; non-`ClockifyApiError` → `undefined`. A test asserting the SDK `getErrorCode` returns these codes must fail — it returns `undefined` for numeric codes (R15, FP-1/FP-2) | Failure honesty |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
 
 ## Contract (fixture-pinned) — `tests/contract/`
@@ -48,10 +63,29 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-11 | Uninstall purges all workspace rows |
 | IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens |
 | IT-13 | Create returns 201 but the verification `get` fails after read-retries → still RECREATED, diff falls back to the 201 body, "verification read unavailable" recorded (fact 11) |
+| IT-14 | Page bound reached: the stub transport returns full pages past `maxPages: 10` → preflight fails with "workspace too large to verify; try again", and an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound. Never a partial baseline (docs/03 note 5, docs/07 §8) |
 
 Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by recorded response
 shapes (create 201, get, listForUser, errors). The Clockify SDK stays real; only the network is
 stubbed.
+
+## Developer-environment smoke (PASS-02, additive) — `tests/live/dev-smoke/`
+
+Three REST-only checks that need no deployed addon and no tunnel: they run against Clockify's
+developer environment with a captured installation token. They exist because PASS-02 builds the
+Clockify read/write client months before PASS-05 can run, and a wrong request shape should surface
+then, not at release. They are **additive**: they add no release gate, replace no `LV-` row, and
+change nothing in docs/16. A run without `CK_DEV_*` credentials reports "blocked — no developer
+credentials" and does not fail the pass (ROADMAP rule 4).
+
+| ID | Scenario | Closes |
+|---|---|---|
+| DS-01 | `workspaces.get` and `customFields.listForWorkspace` (`"entity-type": ["TIMEENTRY"]`) succeed with the addon token and deserialize into the SDK models the preflight reads | R23 stays true for the app's own client |
+| DS-02 | A deliberate 4xx (create without `projectId` in a `forceProjects` workspace) maps through `clockifyErrorCode` to `"501"`, and a 404 maps with `undefined` | R15 / UT-M01 against live bodies, not fixtures |
+| DS-03 | `users.list` + `projects.list` + `timeEntries.createForUser` + `timeEntries.get` + `timeEntries.delete` round-trip with the exact request shapes docs/03 §2–§3 mandate. Probe descriptions are prefixed `RT-PROBE-` and every created entry is deleted | R11 request shapes as the app builds them |
+
+Gate: DS-01…DS-03 pass, or the pass report records "blocked" with the exact missing credential.
+`LV-01…LV-10` and the docs/16 release gates are unchanged.
 
 ## Live suite (sacrificial workspace, release gate) — `tests/live/`
 

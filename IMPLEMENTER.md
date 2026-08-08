@@ -24,11 +24,19 @@ campaigns. Your job is to write the code and prove it — not to rediscover what
 
 | SDK | Path | Pinned commit |
 |---|---|---|
-| addon platform | `~/Downloads/working/addons-me/addon-ts-sdk` | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` |
-| Clockify REST | `~/Downloads/working/addons-me/clockify-ts-sdk` | `b33e5b0227ece3de613adf6071039cc648bc35c8` |
+| addon platform | `~/Downloads/working/addons-me/addon-ts-sdk` | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` (= HEAD) |
+| Clockify REST | `~/Downloads/working/addons-me/clockify-ts-sdk` | inspected `b33e5b0227ece3de613adf6071039cc648bc35c8`; HEAD advanced to `f2d82d17b04131968f5ee3138f040cafa27ad29b` (docs-only + one error-name JSON fix; zero diff in load-bearing paths — docs/04) |
 
 Use them. Do not modify them, do not duplicate their behavior, do not work around a defect in the
-app — report the defect as a blocker (none were known at planning time; docs/04).
+app — report the defect as a blocker. One exception is already decided and must not stop you: the
+app-owned `clockifyErrorCode` normalizer (AGENTS.md rule 5, docs/03 §6).
+
+## Evidence citation convention
+
+`docs/01-evidence-baseline.md` owns W/R/S facts. `evidence/webhook-validation.md` §3 owns L/E
+probes. A bare **`fact N`** citation anywhere in this repo means row `N` of the Findings table in
+`evidence/sdk-verification-2026-08-08.md`. Fresh-pass probes use **`FP-n`**
+(`evidence/fresh-pass-2026-08-08.md`).
 
 ## Critical invariants (violating one is a failed pass)
 

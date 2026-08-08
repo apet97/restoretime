@@ -47,15 +47,15 @@ reads on 408/429/5xx with backoff by default; that behavior is kept (N7).
 | Replacement project options | `projects.list` | `GET /workspaces/{ws}/projects` |
 | Task current state + options | `tasks.list` / `tasks.get` | `GET /workspaces/{ws}/projects/{pid}/tasks[/{id}]` |
 | Tag current state + options | `tags.list` | `GET /workspaces/{ws}/tags` |
-| Custom-field definitions (type, defaults, status) | `customFields.listForWorkspace` (`entity-type=TIMEENTRY`) | `GET /workspaces/{ws}/custom-fields` |
+| Custom-field definitions (type, defaults, status) | `customFields.listForWorkspace` with `"entity-type": ["TIMEENTRY"]` (the request field is an **array**, see note 6) | `GET /workspaces/{ws}/custom-fields` |
 | Post-create verification | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` |
 | Ambiguity reconciliation (baseline + delta) | `timeEntries.listForUser` (`start`, `end`, `description`) | `GET /workspaces/{ws}/user/{uid}/time-entries` |
 
 Notes:
 
 1. `users.list`: the generated request type marks `"include-roles": boolean` as **required** —
-   always pass `false`. `"page-size": 200` is the API maximum; paginate with the SDK `iterAll`
-   helper (`pageSize: 200, maxPages: 10`). On this workspace-scoped route the returned user's
+   always pass `false`. `"page-size": 200` is the API maximum; paginate with the SDK `iterPages`
+   helper (`pageSize: 200, maxPages: 10`; see note 5). On this workspace-scoped route the returned user's
    `status` field carries the **membership** status (values `PENDING`/`ACTIVE`/`DECLINED`/
    `INACTIVE`; live capture `agent-3/g0-users.json` shows `"ACTIVE"`, and the 2026-08-08
    install-capture probe returned `ACTIVE` for all ten dev-workspace users). The SDK types it
@@ -73,13 +73,34 @@ Notes:
    also known-wrong vs live (wrapper vs bare array); irrelevant because the feed is banned.
 5. Every list read that can exceed one page (`users.list`, `tags.list`, `projects.list`,
    `tasks.list`, `customFields.listForWorkspace`, reconcile/baseline `timeEntries.listForUser`)
-   paginates via the SDK `iterAll` helper with `pageSize: 200` and a page bound (`maxPages: 10`);
-   a read that hits the bound fails the preflight with "workspace too large to verify; try
-   again" rather than guessing.
+   paginates via the SDK **`iterPages`** helper (package root) with `{ pageSize: 200, maxPages: 10 }`.
+   `iterPages` is mandatory, not `iterAll`: it yields `{items, page, pageSize, hasNextPage}`, and
+   the design requires detecting that the bound was hit — which `iterAll` (items only) cannot
+   express. Exact stop condition:
+
+   ```ts
+   const items = [];
+   let truncated = false;
+   for await (const p of iterPages(fetcher, request, { pageSize: 200, maxPages: 10 })) {
+     items.push(...p.items);
+     if (p.page === 10 && p.hasNextPage) truncated = true;   // bound reached, more remain
+   }
+   ```
+
+   `truncated === true` fails the preflight with "workspace too large to verify; try again"
+   rather than guessing, and keeps an AMBIGUOUS reconcile AMBIGUOUS (docs/07 §8).
+6. `customFields.listForWorkspace` takes `"entity-type"` as `CustomFieldEntityType[]`
+   (`"TIMEENTRY" | "USER"`), so the app passes `["TIMEENTRY"]`; the wire form is repeated
+   `entity-type=TIMEENTRY` params. A `CustomField` item exposes `workspaceDefaultValue` (not
+   `defaultValue`), and `status` is `"INACTIVE" | "VISIBLE" | "INVISIBLE"` — there is no
+   `"ACTIVE"` value, so "the field is active" means `status !== "INACTIVE"` (S6, L6). Every
+   `CustomField` property is optional; read each with an explicit undefined branch.
 
 ## 3. Outbound write (recreation)
 
 - Method: `timeEntries.createForUser` → `POST /workspaces/{ws}/user/{userId}/time-entries` (R1).
+  `CreateForUserTimeEntriesRequest` is a union; the app always builds the flattened variant
+  (`CreateForUserTimeEntriesRequestFlattened`), never the `{body: …}` envelope (S6).
 - Client construction (docs/04): `createClockifyClient({ addonToken, baseUrl, timeoutInSeconds: 30 })`.
   The `timeoutInSeconds: 30` is mandatory: the SDK default has no timeout, and the AMBIGUOUS class
   depends on timeouts firing. A request that outlives the 60 s claim lease is a bug, not a case.
@@ -98,8 +119,9 @@ Notes:
     AMBIGUOUS.
   - `ClockifyApiError` with `statusCode >= 500` → AMBIGUOUS.
   - `ClockifyApiError` with a 4xx `statusCode` → FAILED with a mapped reason (R15). The reason
-    keys on the parsed body code via `getErrorCode(err)`, which returns a **string** — compare
-    against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`, `"4005"`), never numbers.
+    keys on the body code read through the app's `clockifyErrorCode(err)` normalizer (§6), which
+    returns a string (`"4030"`, `"1003"`, `"501"`, `"4017"`, `"4005"`) or `undefined` when the
+    body carries no code. A 4xx without a code maps on `statusCode` alone.
   - Any other thrown value is a bug: crash-log it and treat the attempt as AMBIGUOUS (the create
     may have committed; never guess).
 - Response: created entry. Verification still fetches it with `timeEntries.get` and diffs against
@@ -160,11 +182,36 @@ Notes:
 - Status classes per R15: 4xx = rejected (validation is atomic, R3) → FAILED with mapping;
   5xx/timeout/transport = unknown → AMBIGUOUS. Exact classification: `ClockifyApiTimeoutError`;
   `ClockifyApiError` with `statusCode === undefined`; `ClockifyApiError` with `statusCode >= 500`.
-- Parsed body `code` via SDK `getErrorCode` when present — it returns a **string**; compare
-  against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`, `"4005"`, `"3000"`). Message
-  text is never parsed for classification (R6: messages are generic).
+- **Body-code normalizer (app-owned, `src/clockify/errors.ts`)**. Clockify sends the body `code`
+  as a JSON **number**, and some 4xx bodies carry no `code` at all (R15, live-probed). The SDK
+  `getErrorCode` only returns string codes, so it yields `undefined` for every Clockify code. The
+  app therefore reads the body itself and normalizes to a string — one function, used everywhere;
+  `getErrorCode` is never imported:
+
+  ```ts
+  import { ClockifyApiError } from "clockify-sdk-ts-115";
+
+  /** Clockify's body `code` as a string ("501", "4030", …), or undefined when absent. */
+  export function clockifyErrorCode(err: unknown): string | undefined {
+    if (!(err instanceof ClockifyApiError)) return undefined;
+    const body = err.body as { code?: unknown; error?: { code?: unknown } } | null | undefined;
+    const raw = body?.code ?? body?.error?.code;
+    if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+    if (typeof raw === "string" && raw.length > 0) return raw;
+    return undefined;
+  }
+  ```
+
+  This is not an SDK workaround (AGENTS.md rule 5): `getErrorCode` is correct for its documented
+  contract — string codes — and Clockify's time-entry endpoints are outside that contract. The
+  upstream suggestion is recorded in docs/04 as non-blocking.
+- Compare the normalized code against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`,
+  `"4005"`, `"3000"`). Message text is never parsed for classification (R6: messages are generic).
 - Auth errors: 401 code `"4017"` (addon token invalid) → installation is marked broken; component
   shows a reinstall notice. 401 code `"1000"` = both/no auth sent → client configuration bug;
   crash-log, never reach in normal operation.
+- Code-absent 4xx (live: 404 unknown workspace) maps on `statusCode` alone: 404 → "Clockify does
+  not have this workspace or route"; any other code-less 4xx → the generic FAILED reason plus the
+  status. Never guess a code.
 - The Clockify client is constructed with `timeoutInSeconds: 30` (the SDK default has no timeout;
   the AMBIGUOUS protocol needs timeouts to fire).

@@ -28,7 +28,7 @@ mechanically implementable by a weaker implementation model.
 | 4 | `withClockifyVerifiedComponentRequest(parser, handler, options?)` — handler second (argument order differs from the webhook wrapper) | docs/04, PASS-01 |
 | 5 | `verifyClockifyToken(parser, token, {requireExpiration: true})`; jose `jwtVerify` enforces `exp` in `parseClaims`; the app extracts the Bearer token itself | docs/03 §5, PASS-01 |
 | 6 | `users.list` request type has REQUIRED `"include-roles"`; on the workspace-scoped route the user's `status` field carries membership status, typed `AccountStatus` in the SDK (drift; app compares `=== "ACTIVE"` only) | docs/03 note 1, docs/04, docs/07 §2, PASS-02 |
-| 7 | `createClockifyClient` has no default timeout; exact outcome classes: `ClockifyApiTimeoutError`, `ClockifyApiError` with `statusCode === undefined` or `>= 500` → AMBIGUOUS; 4xx → FAILED; `getErrorCode` returns strings | docs/03 §3/§6, docs/04, docs/07 §8, PASS-02, docs/13 UT-M01 |
+| 7 | `createClockifyClient` has no default timeout; exact outcome classes: `ClockifyApiTimeoutError`, `ClockifyApiError` with `statusCode === undefined` or `>= 500` → AMBIGUOUS; 4xx → FAILED. ~~`getErrorCode` returns strings~~ — **CORRECTED 2026-08-08 by the fresh pass**: `getErrorCode` returns only *string* body codes, and Clockify sends *numbers*, so it returns `undefined` for every Clockify code. The app owns `clockifyErrorCode` instead. See `fresh-pass-2026-08-08.md` FP-1/FP-2 and docs/03 §6 | docs/03 §3/§6, docs/04, docs/07 §8, PASS-02, docs/13 UT-M01 |
 | 8 | The SDK webhook verifier never compares body vs claims `workspaceId`; the app must (400 on mismatch; store `claims.workspaceId`) | docs/03 §1, docs/12, PASS-02, TASK-02 |
 | 9 | `installedAt` is a number set by the app (`{...payload, installedAt: Date.now()}`); DELETED payload has no generation → unconditional delete; store guard is store-level | docs/08, PASS-01, TASK-01 |
 | 10 | Read retries: 408/429/500/502/503/504, GET/HEAD/OPTIONS, `maxRetries: 2` = 3 attempts total; POST/PATCH never retried (both retry layers) | docs/04 |
@@ -52,7 +52,9 @@ mechanically implementable by a weaker implementation model.
 - `timeEntries.createForUser` is the only create method modeling `customFields`
   (`Record<string, unknown>[]` items, app-constructed per R5); `timeEntries.get`; `listForUser`
   supports `description` + `page`/`page-size`; `iterAll`/`iterPages` pagination helpers exported
-  from the package root.
+  from the package root (`wrapper/index.ts`). Fresh-pass refinement: the app uses `iterPages`
+  only — `iterAll` yields items and cannot report that the page bound was hit, which docs/03
+  note 5 requires.
 - `ClockifyLifecycleWebhookToken = {path, webhookType: "ADDON", authToken}`; INSTALLED payload
   shape `{addonId, authToken, workspaceId, asUser, apiUrl, addonUserId, webhooks?}`.
 - Testing subpath exports: `generateTestKeys`, `signTestToken`, `createTestComponentRequest`,

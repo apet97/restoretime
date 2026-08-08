@@ -22,6 +22,19 @@ recovery behavior exists after this pass — the engine is PASS-02.
 5. `docs/08-data-model.md` — `installations` table only this pass
 6. `docs/12-security.md`, `docs/13-testing.md`
 7. `implementation/DEPENDENCIES.md` — the closed dependency list
+8. `tools/install-capture/server.mjs` — **the proven wiring reference**. This dev tool installed
+   live on the Clockify developer environment on 2026-08-08 (evidence/install-capture-2026-08-08.md).
+   Copy its patterns, not its file layout. It shows, already working:
+   the `ClockifyManifest.v1_5Builder()` / `ClockifyComponent.v1_5Builder()` /
+   `ClockifyWebhook.v1_5Builder()` / `ClockifyLifecycleEvent.v1_5Builder()` chains that produced
+   the final manifest; the build-without-entities-then-register pattern
+   (`registerComponent` / `registerWebhook` / `registerLifecycleEvent`);
+   the verifier argument orders (`withClockifyVerifiedWebhookRequest(parser, options, handler)`
+   vs `withClockifyVerifiedComponentRequest(parser, handler)`);
+   `wrapClockifyInstallationStoreWithEncryption` + `createClockifyAesGcmTokenCodec` over a durable
+   backend (`tools/install-capture/store.mjs`); `createClockifyHtmlResponse` with
+   `frameAncestors`; and `createNodeHttpAddonServer`. It is superseded by this pass and is never
+   shipped.
 
 ## Current expected state
 
@@ -34,8 +47,10 @@ Planning blueprint only: `docs/`, `adr/`, `implementation/`, `evidence/`, empty 
   `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`), npm scripts:
   `build`, `start`, `dev`, `test`, `typecheck`, `lint` (tsc-based lint is enough; add no linter
   package unless you justify it in the report).
-- Dependency decision per `implementation/DEPENDENCIES.md` §Registry note: registry vs vendored
-  tarballs. Record the decision + checksums in the final report.
+- Install both SDKs from the npm registry (`implementation/DEPENDENCIES.md` §Registry note — the
+  decision is closed, do not re-open it). Record in the final report: resolved versions, both
+  `integrity` hashes from `package-lock.json`, and `git status --porcelain` for each read-only SDK
+  repo (must be empty).
 - `src/server.ts` composition root; `src/manifest.ts`:
   - schema 1.5 via `ClockifyManifest.v1_5Builder()` (there is NO `builder()` — fact 1); key
     from `ADDON_KEY`; `baseUrl` from `PUBLIC_BASE_URL`; manifest `iconPath` `/icon.svg`

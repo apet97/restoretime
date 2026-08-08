@@ -16,6 +16,12 @@ current rates).
 4. Use `clockify-sdk-ts-115` for all Clockify REST operations.
 5. Do not duplicate SDK behavior. Do not wrap SDK calls in app-level abstractions that add no
    behavior. Do not work around an SDK defect in app code — report it as a blocking dependency.
+   **One recorded exception, already decided — do not stop on it**: the app owns
+   `clockifyErrorCode` (`src/clockify/errors.ts`, docs/03 §6) instead of the SDK `getErrorCode`.
+   `getErrorCode` is correct for its documented contract (string body codes); Clockify's
+   time-entry endpoints send numeric codes, which is outside that contract, so this is a gap the
+   helper never claimed to cover — not a defect to fix upstream first. The upstream suggestion is
+   recorded in docs/04 as non-blocking.
 6. Never expose workspace-wide deleted data to regular users. List queries filter by
    `owner_id = viewer` for non-admins.
 7. Enforce permissions server-side on every request, from verified component claims only. Identity

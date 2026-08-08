@@ -13,6 +13,11 @@ The product is done when every statement is true and verified.
 - [ ] Concurrent recreation of the same source is impossible (IT-03).
 - [ ] An unknown-outcome create becomes AMBIGUOUS and resolves per docs/07 §8; no automatic retry
       exists anywhere (IT-04).
+- [ ] Every Clockify 4xx maps to a user-facing reason through `clockifyErrorCode`, including
+      numeric body codes and code-absent bodies; the SDK `getErrorCode` is not imported anywhere
+      (UT-M01, grep of `src/`).
+- [ ] Bounded list reads use `iterPages` and surface the page bound instead of returning a partial
+      result (IT-14).
 - [ ] Recreated-deleted-recreated chains show lineage (IT-06).
 - [ ] Uninstall purges the workspace's data (IT-11).
 

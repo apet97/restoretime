@@ -23,6 +23,14 @@ untouched.
 6. `docs/09-permissions.md`, `docs/03-api-and-webhook-contract.md`
 7. `docs/13-testing.md` — the UT/CT/IT matrix you must satisfy
 8. `evidence/webhook-validation.md` — including the custom-field conclusion
+9. `tools/install-capture/server.mjs` + `probe-addon-token.mjs` — **the proven wiring reference**
+   (live on the developer environment 2026-08-08). For this pass they show: the webhook-token
+   lookup keyed by **normalized** path (live INSTALLED payloads carry `//webhooks/...`);
+   `withClockifyVerifiedWebhookRequest(parser, options, handler)` with
+   `getExpectedWebhookAuthToken`; `createClockifyClient({addonToken, baseUrl, timeoutInSeconds: 30})`
+   built from `resolveClockifyApiBaseUrl(installation.apiUrl)`; and the exact `users.list` /
+   `projects.list` / `timeEntries.createForUser` request shapes that returned 201 with the addon
+   token. Copy the patterns; the tool itself is superseded by this pass.
 
 ## Current expected state
 
@@ -62,15 +70,25 @@ PASS-01 merged: platform boundaries, installations store, `requireViewer`, compo
   decision rules P-* exactly as tabled), `fidelity.ts` (§10), `plan.ts` (hash, staleness compare).
 - `src/clockify/client.ts`: build `createClockifyClient({addonToken, baseUrl})` from the
   installation (`apiUrl` via `resolveClockifyApiBaseUrl`); injected `fetch` for tests.
+- `src/clockify/errors.ts`: the `clockifyErrorCode(err)` normalizer, source verbatim in docs/03 §6.
+  Clockify sends the body `code` as a JSON **number** and some 4xx bodies carry none, so the SDK
+  `getErrorCode` returns `undefined` for every Clockify code (R15, live-probed). Never import
+  `getErrorCode`; the carve-out from AGENTS.md rule 5 is already granted for this one function.
 - `src/clockify/preflight-data.ts`: the six-lookup fetch set (docs/07 §2); `users.list` uses the
   exact request `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }`
-  paginated via `iterAll` (`pageSize: 200, maxPages: 10`) — `include-roles` is REQUIRED by the
-  generated type (fact 6).
+  (`include-roles` is REQUIRED by the generated type — fact 6);
+  `customFields.listForWorkspace` passes `"entity-type": ["TIMEENTRY"]` (an **array**) and treats
+  a field as active when `status !== "INACTIVE"`, reading its default from `workspaceDefaultValue`
+  (S6). Every bounded list read uses `iterPages` (`pageSize: 200, maxPages: 10`) and raises the
+  truncation error when a page has `page === maxPages && hasNextPage` — `iterAll` cannot express
+  that, so it is not used anywhere (docs/03 note 5).
 - `src/clockify/recreate.ts`: baseline snapshot → `createForUser` → branch per docs/07 §8;
-  verification diff per §9; reconcile (baseline-delta + fingerprint) per §8. Construct the client
-  with `timeoutInSeconds: 30` (fact 7). Outcome classification: `ClockifyApiTimeoutError` OR
-  `ClockifyApiError` with `statusCode === undefined` OR `statusCode >= 500` → AMBIGUOUS; 4xx →
-  FAILED with `getErrorCode(err)` compared as a STRING ("4030", "1003", "501", "4017"). A 201
+  verification diff per §9; reconcile (baseline-delta + fingerprint) per §8. Build the request as
+  `CreateForUserTimeEntriesRequestFlattened` (the request type is a union — S6). Construct the
+  client with `timeoutInSeconds: 30` (fact 7). Outcome classification: `ClockifyApiTimeoutError`
+  OR `ClockifyApiError` with `statusCode === undefined` OR `statusCode >= 500` → AMBIGUOUS; 4xx →
+  FAILED with `clockifyErrorCode(err)` compared against the string literals `"4030"`, `"1003"`,
+  `"501"`, `"4017"`; `undefined` (no body code) → map on `statusCode` alone. A 201
   determines RECREATED even if the verification read fails — the diff falls back to the 201 body
   and records "verification read unavailable" (fact 11).
 
@@ -96,6 +114,14 @@ Copy the webhook campaign sanitized payloads into `tests/fixtures/webhook/` from
 s9; DSWH2 S2 + one tie-break running payload; DSWH3 S2). Verify each file contains no credential
 material (grep for key patterns) before committing.
 
+### Developer-environment smoke (additive)
+
+`tests/live/dev-smoke/` implementing DS-01…DS-03 (docs/13). REST only — no tunnel, no deployed
+addon, no webhook. It runs with `CK_DEV_*` credentials from the operator's environment and proves
+that the request shapes this pass builds are the ones Clockify accepts. Without credentials it
+reports "blocked — no developer credentials" and does not fail the pass. It adds **no** release
+gate and replaces no `LV-` row.
+
 ## Explicit out of scope
 
 UI rendering, bulk execution (PASS-03 wires the loop; the per-entry engine you build here is what
@@ -110,7 +136,7 @@ it calls), live API calls, metrics polish, dismiss-undismiss UI.
 - CF values go out only as `customFields` items `{customFieldId, sourceType:"WORKSPACE", value}`
   per P-CF (R5); the `customFieldValues` key is never sent. Only `REGULAR` sources reach the
   mutation path (P-TYPE). No update/delete of Clockify entries anywhere.
-- Reconcile/baseline list reads paginate via `iterAll` with `maxPages: 10`; hitting the bound
+- Reconcile/baseline list reads paginate via `iterPages` with `maxPages: 10`; hitting the bound
   stays AMBIGUOUS and reports the bound (docs/07 §8).
 - `/api/*` derives identity from claims only (docs/09).
 

@@ -6,7 +6,7 @@
 // The source entry here is fabricated, not captured from a real Clockify delete (unlike LV-03/04):
 // what this row proves is that the REAL project/tag lookups the app makes during preflight — a
 // deliberately non-existent projectId, and a REAL archived tag created for this test — resolve
-// exactly as docs/07 specifies against production Clockify. Fabricating `source` directly is how
+// exactly as docs/07 specifies against real Clockify. Fabricating `source` directly is how
 // tests/unit/preflight.test.ts already builds every P-* scenario offline; the only thing this row
 // adds is that the *lookups* are real network calls instead of a stub (see tests/live/support.ts
 // module header for why this is not a weaker substitute).

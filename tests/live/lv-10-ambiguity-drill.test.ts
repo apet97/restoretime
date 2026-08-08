@@ -1,6 +1,6 @@
 // LV-10 (docs/13, PASS-05 pass file — a HARD gate: "if the chaos hook cannot run in the deployment
 // shape, the release stops"). Mandatory ambiguity drill via `RT_CHAOS_FETCH`
-// (src/clockify/chaos-fetch.ts), run here against REAL production Clockify through the in-process
+// (src/clockify/chaos-fetch.ts), run here against that real Clockify environment through the in-process
 // harness (tests/live/support.ts module header). The hook mechanics are already proved offline
 // against a mocked transport in tests/integration/chaos-fetch-drill.test.ts — this file repeats
 // both legs against the real sacrificial workspace, which is the one thing the offline proof

@@ -59,9 +59,11 @@ yet, so an honest gap is visible here rather than buried in a report.
       (evidence/live-release-run.md "Live run 2").
       LV-10's hard gate passed live: a create that really committed while the caller saw a
       transport failure became AMBIGUOUS and was adopted by reconcile. LV-04 closed R11 on the real
-      addon-token path and LV-07 closed R12. LV-08 **skipped**, not passed: a custom field created
-      through the API arrives `status: "INACTIVE"` and activating it answers 500 on this workspace,
-      so its scenario cannot be staged — R23's item-shape question stays open.
+      addon-token path and LV-07 closed R12. R5 closed live: LV-03 asserted a non-default
+      custom-field value written at create and preserved on the new entry. LV-08 **skipped**, not
+      passed: it needs a dropdown field with allowed values and a required field with no default;
+      the workspace has neither, and creating them fails (fields arrive `INACTIVE`, activation
+      answers 500) — R23's item-shape question stays open.
       **Still unverified**: production (`app.clockify.me`) has never been exercised, and an
       authenticated component render needs a Clockify-signed session (docs/15 step-6 smoke).
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
@@ -78,6 +80,7 @@ yet, so an honest gap is visible here rather than buried in a report.
       satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
       (401 without a token). An **authenticated** component render needs a Clockify-signed session
       and belongs to the docs/15 step-6 production smoke, not to this drill.
-- [ ] GitHub release tagged with notes. **Reason unchecked**: the tag is created only after every
-      gate passes (`implementation/passes/PASS-05-release.md` "Git requirements"), and the live
-      suite above has not passed — it is blocked, not green. Tagging was not attempted.
+- [x] GitHub release tagged with notes — `v1.0.0-rc.3`, a **release candidate**, not `v1.0.0`.
+      docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above shows two
+      things still unverified (production, and an authenticated component render), so calling this
+      `v1.0.0` would assert them. The tag notes state exactly what was and was not proved.

@@ -3,7 +3,7 @@
 // round-trip (start/end epoch, description bytes, tagIds set); running entry visible with
 // `end:null` in the unfiltered list. The windowed query is never used (R10)."
 //
-// Three independent claims, proved against real production Clockify:
+// Three independent claims, proved against the real Clockify environment `CK_LIVE_API_BASE` names (production by default; the developer environment when overridden):
 // 1. A fresh create is immediately visible through the exact filtered `listForUser` shape
 //    `src/clockify/recreate.ts` uses (description filter, no window).
 // 2. `fingerprintMatches` (the pure function the app's own reconcile uses) round-trips correctly

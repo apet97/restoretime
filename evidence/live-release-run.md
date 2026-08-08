@@ -286,3 +286,47 @@ found **zero** remaining `RT-PROBE-` artefacts.
   session, so LV-01 proves the boundary rejects unverified callers, not that a signed load renders.
   That stays the docs/15 step-6 production smoke.
 - **R23's custom-field item shape**, blocked by finding 2 above.
+
+---
+
+# Live run 3 — 2026-08-08, operator-provisioned custom field
+
+The operator added one TIMEENTRY custom field to the workspace: `asdadsdad`, type `TXT`,
+`status: VISIBLE` (so active per S6), `required: false`, no `workspaceDefaultValue`.
+
+## R5 is now closed live
+
+LV-03 no longer reports PARTIAL. Its custom-field assertion ran and passed: a value differing from
+the field's default was sent in the `customFields` key at create, and the value came back on the
+recreated entry. That is R5 proved end to end on a real workspace through the addon path — not a
+fixture.
+
+```
+$ npm run test:live
+ Test Files  10 passed (10)
+      Tests  10 passed | 1 skipped (11)
+```
+
+## LV-08 still skips, and now says exactly what it needs
+
+LV-08 was changed to prefer custom fields the workspace **already** has, the way LV-03 does, instead
+of insisting on creating its own — creation cannot work here (fields arrive `INACTIVE` and
+activation answers 500). It looks for two shapes and finds neither:
+
+| Needed | Why | Present? |
+|---|---|---|
+| A `DROPDOWN_SINGLE` field with at least one allowed value | The source carries a value that is no longer in `allowedValues`, which is what makes P-CF-OPT fire | no |
+| A field with `required: true` and **no** `workspaceDefaultValue` | A required field with nothing to fall back to is what makes P-CF-REQ fire (docs/07 §3) | no |
+
+The one provided field is `TXT`, optional, so it matches neither. With both shapes present the row
+runs and R23's custom-field item shape closes.
+
+Teardown was tightened at the same time: the row now deletes only fields it created itself, tracked
+explicitly. Deleting an operator's own workspace configuration would be the opposite of "leave the
+workspace as you found it".
+
+## Wording corrected
+
+Several live files claimed they ran against "real production Clockify". They run against whichever
+environment `CK_LIVE_API_BASE` names — production by default, the developer environment here. The
+headers now say that instead of overstating which environment was exercised.

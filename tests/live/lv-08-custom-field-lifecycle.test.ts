@@ -50,6 +50,8 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
     let dropdownFieldId: string | undefined;
     let requiredFieldId: string | undefined;
     let recreatedEntryId: string | undefined;
+    /** Ids this test provisioned itself — the only ones it is allowed to delete. */
+    const createdFieldIds: string[] = [];
     try {
       const users = await restClient.users.list({ workspaceId: env.workspaceId, status: "ALL", "include-roles": false, "page-size": 200 });
       const owner = users.find((u) => u.status === "ACTIVE");
@@ -58,7 +60,32 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
 
       let dropdownField: ClockifyApi.CustomField | undefined;
       let requiredField: ClockifyApi.CustomField | undefined;
+
+      // Prefer fields the workspace ALREADY has and that the app can actually see, the way LV-03
+      // picks a usable field. Creating them here is the fallback, and on some workspaces it cannot
+      // work at all: a created field arrives `status: "INACTIVE"` and activating it is rejected
+      // (see the catch below). An operator who provisions the two shapes by hand makes this row
+      // runnable without the suite needing write access to workspace configuration.
+      const existing = await restClient.customFields.listForWorkspace({
+        workspaceId: env.workspaceId,
+        "entity-type": ["TIMEENTRY"],
+        "page-size": 200,
+      });
+      const active = existing.filter((f) => f.status !== "INACTIVE" && f.id !== undefined);
+      dropdownField = active.find((f) => f.type === "DROPDOWN_SINGLE" && (f.allowedValues?.length ?? 0) > 0);
+      requiredField = active.find((f) => f.required === true && f.workspaceDefaultValue == null);
+      if (dropdownField && requiredField) {
+        dropdownFieldId = dropdownField.id;
+        requiredFieldId = requiredField.id;
+        console.log(
+          `LV-08: using the workspace's existing active fields — dropdown "${dropdownField.name}" and required "${requiredField.name}". Neither is created or deleted by this test.`,
+        );
+      }
+
       try {
+        if (dropdownField && requiredField) {
+          // Both shapes already exist; nothing to provision.
+        } else {
         dropdownField = await restClient.customFields.createForWorkspace({
           workspaceId: env.workspaceId,
           name: `${RT_PROBE_PREFIX}LV08-dropdown-${randomUUID().slice(0, 8)}`,
@@ -68,6 +95,7 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           required: false,
         });
         dropdownFieldId = dropdownField.id;
+        if (dropdownField.id) createdFieldIds.push(dropdownField.id);
         // Live finding (2026-08-08): a field created through `customFields.createForWorkspace`
         // comes back `status: "INACTIVE"`. The app treats `status === "INACTIVE"` as "field gone"
         // (S6, docs/07 P-CF-GONE), so without activating it here no P-CF-* rule can fire and this
@@ -93,6 +121,7 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           // to fall back to (P-CF-REQ, docs/07 §3).
         });
         requiredFieldId = requiredField.id;
+        if (requiredField.id) createdFieldIds.push(requiredField.id);
         // Same activation step: created fields arrive INACTIVE (see above).
         await restClient.customFields.updateForWorkspace({
           workspaceId: env.workspaceId,
@@ -102,6 +131,7 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           required: true,
           status: "VISIBLE",
         });
+        }
       } catch (err) {
         // This block only builds fixtures with the API key — no product code runs inside it — so a
         // failure here says the workspace cannot host the scenario, never that the recreation
@@ -214,11 +244,11 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
       if (recreatedEntryId) {
         await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
       }
-      if (dropdownFieldId) {
-        await restClient.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId: dropdownFieldId }).catch(() => undefined);
-      }
-      if (requiredFieldId) {
-        await restClient.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId: requiredFieldId }).catch(() => undefined);
+      // Only ever delete fields THIS test created. When the workspace already provided the two
+      // shapes, they belong to the operator and deleting them would destroy real configuration —
+      // the opposite of "leave the workspace as you found it".
+      for (const id of createdFieldIds) {
+        await restClient.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId: id }).catch(() => undefined);
       }
     }
   }, 60_000);

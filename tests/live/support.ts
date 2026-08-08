@@ -1,5 +1,7 @@
 // Shared support for tests/live/* (docs/13 "Live suite"). Runs LV-01…LV-10 against the sacrificial
-// workspace on real production Clockify. With any required env var missing, every LV test reports
+// workspace on whichever real Clockify environment `CK_LIVE_API_BASE` names — production by
+// default, the developer environment when overridden. Nothing here is a simulation: every call
+// leaves this machine. With any required env var missing, every LV test reports
 // "blocked — no valid live installation (missing <VAR>)" and does **not** fail the pass — same
 // convention as tests/dev-smoke/support.ts — and it is never silently skipped (`--passWithNoTests`
 // is off for `npm run test:live`, so the files must exist and each must run and log its status).
@@ -10,8 +12,9 @@
 // tests/integration/lease-fencing-drill.test.ts). This is legitimate, not a weaker substitute: the
 // platform-JWT boundary's behavior is unchanged from what those passes already prove correct with
 // the same mechanism; the only thing this suite adds on top is that the installation's Clockify
-// REST client is pointed at the REAL production API with the REAL `CK_LIVE_API_KEY`, so every
-// Clockify call the app makes goes out over the real network to the real sacrificial workspace.
+// REST client is pointed at the target environment's real Clockify API and authenticates with the
+// installation's own addon token, so every Clockify call the app makes goes out over the real
+// network to the real sacrificial workspace.
 // That is what proves R11 (API-key/addon-token REST equivalence) and R10 (`listForUser` field
 // coverage) live — see docs/13.
 //
@@ -89,8 +92,7 @@ export function checkLiveEnv(): EnvCheck {
  *
  * That token only exists once the addon is installed on the sacrificial workspace — it arrives in
  * the INSTALLED lifecycle payload. Requiring it here is what makes LV-04 mean what docs/13 says it
- * means: proof that the addon token works on the real production path, not proof that an API key
- * does.
+ * means: proof that the addon token works on the real addon path, not proof that an API key does.
  */
 export function checkLiveAddonToken(env: LiveEnv): EnvCheck {
   if (!env.addonToken) {
@@ -183,7 +185,7 @@ export interface LiveHarness {
 }
 
 /** Boots the real `createServer()` against a throwaway local SQLite file and installs it with a
- * test-signed lifecycle event carrying the REAL production API base and the REAL installation
+ * test-signed lifecycle event carrying the real Clockify API base for the target environment and the REAL installation
  * addon token. From this point every Clockify call the booted server makes goes out over the real
  * network, authenticated exactly as the shipped product authenticates — as an addon.
  *

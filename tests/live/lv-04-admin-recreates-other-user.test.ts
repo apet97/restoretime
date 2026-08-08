@@ -9,7 +9,7 @@
 // test-signed claims (tests/live/support.ts module header), same as every other in-process LV row.
 // What is NOT already proved offline, and what this row exists to close, is the REST-level
 // question: does `createForUser` for a userId that is NOT the token owner actually succeed against
-// REAL production Clockify with `CK_LIVE_API_KEY` sent as the addon token (R11)? That requires two
+// that real Clockify environment with `CK_LIVE_API_KEY` sent as the addon token (R11)? That requires two
 // genuinely distinct real workspace members.
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";

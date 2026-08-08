@@ -23,3 +23,6 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+      # After build: the E2E suite's last test boots the real dist/static/app.js, so the artifact
+      # has to exist. Everything before it runs against source.
+      - run: npm run test:e2e

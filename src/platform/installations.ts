@@ -195,6 +195,23 @@ export function updateInstallationStatus(
   return result.changes > 0;
 }
 
+/** Reads the installation's `status` column (docs/10 §8 "disabled addon" notice). Not part of
+ * `ClockifyInstallationContext` — see the comment on `upsert` above — so the component route reads
+ * it directly rather than through `ClockifyInstallationStore.load`. Returns `undefined` when there
+ * is no row (never installed, or uninstalled — the notice does not apply to either). */
+export function getInstallationStatus(
+  db: Database.Database,
+  workspaceId: string,
+  addonId: string,
+): InstallationStatus | undefined {
+  const row = db
+    .prepare<[string, string], { status: InstallationStatus }>(
+      "SELECT status FROM installations WHERE workspace_id = ? AND addon_id = ?",
+    )
+    .get(workspaceId, addonId);
+  return row?.status;
+}
+
 /** Imports the 32-byte AES-256-GCM token-encryption key from its hex env-var encoding. */
 export async function importTokenEncryptionKey(hex: string): Promise<webcrypto.CryptoKey> {
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {

@@ -3,10 +3,15 @@
 
 import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL as NodeURL } from "node:url";
 import { join } from "node:path";
 
-const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations", import.meta.url));
+// `node:url`'s `URL` explicitly, not the ambient global: a DOM test environment (happy-dom, used
+// by tests/e2e/) replaces `globalThis.URL` with its own implementation, which `fileURLToPath`
+// rejects ("The URL must be of scheme file") even though `import.meta.url` is a real file: URL.
+// This runs at module load, before any test body — using the real Node class regardless of which
+// environment imported this module is what makes it environment-independent.
+const MIGRATIONS_DIR = fileURLToPath(new NodeURL("./migrations", import.meta.url));
 const MIGRATION_FILE_PATTERN = /^(\d{4})_.+\.sql$/;
 
 function migrate(db: Database.Database): void {

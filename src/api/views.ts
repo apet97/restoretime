@@ -16,15 +16,26 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
 }
 
-/** The verified component shell. The real UI is PASS-03; this proves the component boundary. */
-export function componentShellHtml(parentOrigin: string, staticAppJsPath: string): string {
+/** The verified component shell (docs/10). `theme`/`language` are the display-safe claim fields
+ * (docs/04 §Component verification) — carried as data attributes for `src/ui/app.ts` to read and
+ * apply via the SDK's `applyClockifyTheme`/`applyClockifyLanguage`. The auth token is never
+ * embedded here: the shell reads it from `?auth_token` client-side (docs/10 §8) and keeps it in
+ * memory only — it never touches the DOM or this markup. */
+export function componentShellHtml(
+  parentOrigin: string,
+  staticAppJsPath: string,
+  claims: { readonly theme?: string; readonly language?: string; readonly workspaceRole?: string } = {},
+): string {
   const safeOrigin = escapeHtml(parentOrigin);
   const safeScriptPath = escapeHtml(staticAppJsPath);
+  const safeTheme = escapeHtml(claims.theme ?? "");
+  const safeLanguage = escapeHtml(claims.language ?? "");
+  const safeRole = escapeHtml(claims.workspaceRole ?? "");
   return `<!doctype html>
 <html>
 <head><meta charset="utf-8"><title>Time Entry Recovery</title></head>
-<body data-parent-origin="${safeOrigin}">
-<main><h1>RestoreTime</h1><p id="status">Loading…</p></main>
+<body data-parent-origin="${safeOrigin}" data-theme="${safeTheme}" data-language="${safeLanguage}" data-role="${safeRole}">
+<main id="app"><h1>RestoreTime</h1><p>Loading…</p></main>
 <script src="${safeScriptPath}"></script>
 </body>
 </html>`;

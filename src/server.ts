@@ -2,7 +2,7 @@
 // boundary. No recovery behavior lives here — that starts in PASS-02.
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL, URL as NodeURL } from "node:url";
 import type Database from "better-sqlite3";
 import {
   buildClockifySecurityHeaders,
@@ -56,7 +56,8 @@ const ADDON_ICON_SVG =
  * production). Read per-request, not cached at createServer() time: this function is also invoked
  * by tests that build the server straight from src/ (no dist/), which never hit this route. */
 function loadAppBundle(): string | undefined {
-  const bundlePath = fileURLToPath(new URL("./static/app.js", import.meta.url));
+  // `NodeURL`, not the ambient global — see the comment on the equivalent line in store/db.ts.
+  const bundlePath = fileURLToPath(new NodeURL("./static/app.js", import.meta.url));
   try {
     return readFileSync(bundlePath, "utf8");
   } catch {
@@ -213,13 +214,20 @@ export async function createServer(
 
   addon.registerComponent(
     componentDescriptor(),
-    withClockifyVerifiedComponentRequest(parser, async () =>
-      createClockifyHtmlResponse(componentShellHtml(config.clockifyParentOrigin, STATIC_APP_JS_PATH), {
-        frameAncestors: [config.clockifyParentOrigin],
-        // default-src 'none' blocks the external /static/app.js script; script-src is not a
-        // managed directive, so this is the correct (and only) way to allow it.
-        contentSecurityPolicy: { "script-src": ["'self'"] },
-      }),
+    withClockifyVerifiedComponentRequest(parser, async (_request, claims) =>
+      createClockifyHtmlResponse(
+        componentShellHtml(config.clockifyParentOrigin, STATIC_APP_JS_PATH, {
+          ...(claims.theme !== undefined ? { theme: claims.theme } : {}),
+          ...(claims.language !== undefined ? { language: claims.language } : {}),
+          ...(claims.workspaceRole !== undefined ? { workspaceRole: claims.workspaceRole } : {}),
+        }),
+        {
+          frameAncestors: [config.clockifyParentOrigin],
+          // default-src 'none' blocks the external /static/app.js script; script-src is not a
+          // managed directive, so this is the correct (and only) way to allow it.
+          contentSecurityPolicy: { "script-src": ["'self'"] },
+        },
+      ),
     ),
   );
 

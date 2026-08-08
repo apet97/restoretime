@@ -1,0 +1,15 @@
+// The E2E suite (tests/e2e/) boots the real shell bundle in a DOM environment (happy-dom) and
+// therefore needs `window`/`document` types the base project's `lib` (ES2023 only) does not carry.
+// `tsconfig.json` excludes `src/ui/**` and `tests/e2e/**` for exactly this reason: a file *imported*
+// by an included file still gets compiled under the importer's project, so without this split,
+// `tests/e2e/*.test.ts` importing `src/ui/app.ts` would compile the UI under a no-DOM lib and fail
+// on every `document`/`window` reference (mirrors the `tsconfig.ui.json` split for the UI itself).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "noEmit": true
+  },
+  "include": ["tests/e2e/**/*.ts"],
+  "exclude": []
+}

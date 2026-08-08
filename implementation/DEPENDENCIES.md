@@ -24,7 +24,7 @@ Transitive: `jose` (via the addon SDK). Never imported directly by app code.
 | `vitest` | Unit/contract/integration runner (matches sibling projects). |
 | `esbuild` | UI bundle (vanilla TS → one IIFE). |
 | `@types/node`, `@types/better-sqlite3` | Types. |
-| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest. The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, console errors — stay where the blueprint already assigns them: LV-01 against a live deployment, plus PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
+| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest, scoped to `tests/e2e/` only (a per-file `// @vitest-environment happy-dom` docblock; every other suite stays on the node environment). The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, a real console — stay where the blueprint already assigns them: LV-01 against a live deployment, plus PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
 
 ## Explicitly rejected
 

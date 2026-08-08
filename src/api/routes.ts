@@ -32,7 +32,7 @@ import {
   VERIFICATION_READ_UNAVAILABLE,
 } from "../clockify/recreate.js";
 import { isAddonTokenInvalid } from "../clockify/errors.js";
-import { markInstallationBroken } from "../platform/installations.js";
+import { getInstallationStatus, markInstallationBroken } from "../platform/installations.js";
 
 const RECONCILE_THROTTLE_MS = 30_000;
 const MARK_NOT_CREATED_MIN_CHECKS = 3;
@@ -159,7 +159,10 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     }),
   );
 
-  return json(200, { entries: summaries, clockifyUnavailable });
+  // docs/10 §8 "disabled addon" notice: STATUS_CHANGED -> INACTIVE keeps the workspace's data (it
+  // can be re-enabled), so the list still returns rows; the shell replaces actions with a notice.
+  const installationStatus = getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId);
+  return json(200, { entries: summaries, clockifyUnavailable, disabled: installationStatus === "INACTIVE" });
 }
 
 // --- GET /api/entries/detail -------------------------------------------------------------
@@ -246,22 +249,34 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
 
 // --- POST /api/entries/recreate -----------------------------------------------------------
 
-async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
-  if (!isPlainObject(body)) return errorJson(400, "invalid body");
-  const planId = body.planId;
-  if (typeof planId !== "string" || planId.length === 0) return errorJson(400, "planId is required");
+/** Outcome of `confirmPlan` (docs/07 §7-§8), shared by the single-entry route and the bulk route
+ * (docs/10 §7 — "each entry is claimed and executed independently"). Naming every branch as its
+ * own `kind`, instead of returning ad hoc responses, is what lets both callers map the same core
+ * onto their own wire shape without duplicating the claim/consume/attempt sequence (ADR-006: a
+ * plan must always revalidate immediately before it executes, bulk or not). */
+type ConfirmOutcome =
+  | { readonly kind: "no-client" }
+  | { readonly kind: "revalidate-truncated"; readonly message: string }
+  | { readonly kind: "revalidate-error" }
+  | { readonly kind: "stale"; readonly plan: RecreationPlan }
+  | { readonly kind: "already-claimed"; readonly entry: RecoverableEntry }
+  | { readonly kind: "plan-consumed" }
+  | { readonly kind: "baseline-truncated"; readonly message: string }
+  | { readonly kind: "attempt-error" }
+  | {
+      readonly kind: "done";
+      readonly result: Awaited<ReturnType<typeof attemptRecreation>>;
+      readonly entry?: RecoverableEntry;
+    };
 
-  const plan = plans.getById(deps.db, planId);
-  const loaded = loadOwnEntry(deps, viewer, body.entryId, true, plan?.createdBy === viewer.userId);
-  if ("error" in loaded) return loaded.error;
-  const entry = loaded.entry;
-
-  if (!plan || plan.recoverableEntryId !== entry.id) return errorJson(404, "plan not found");
-  if (plan.blockers.length > 0) return errorJson(422, "this plan has blockers and cannot be confirmed");
-  if (plan.actionRequired.length > 0) return errorJson(422, "this plan still needs choices");
-
+async function confirmPlan(
+  deps: ApiRouteDeps,
+  viewer: Viewer,
+  entry: RecoverableEntry,
+  plan: RecreationPlan,
+): Promise<ConfirmOutcome> {
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+  if (!clientResult) return { kind: "no-client" };
 
   // Revalidation (docs/07 §7): source hash + a fresh preflight with the same choices.
   const currentHash = computeSourceHash(entry.source);
@@ -272,9 +287,9 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
     fresh = runPreflight({ source: entry.source, viewer, choices: plan.choices, workspace: state, now: new Date() });
   } catch (err) {
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
-    if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
+    if (err instanceof PreflightTruncatedError) return { kind: "revalidate-truncated", message: err.message };
     deps.onError?.(err, { route: "recreate.revalidate" });
-    return errorJson(502, "Clockify could not be reached; try again");
+    return { kind: "revalidate-error" };
   }
 
   const stale =
@@ -297,7 +312,7 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
       actionRequired: fresh.actionRequired,
       fidelity: fresh.fidelity,
     });
-    return json(409, { stale: true, plan: freshPlan });
+    return { kind: "stale", plan: freshPlan };
   }
 
   // `claim()` returns the row AFTER the update, so the pre-claim state has to be read here — a
@@ -308,7 +323,7 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
   const claimed = entries.claim(deps.db, { id: entry.id, workspaceId: viewer.workspaceId, claimToken, now: new Date() });
   if (!claimed) {
     const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
-    return json(409, { error: "already claimed", entry: current ?? entry });
+    return { kind: "already-claimed", entry: current ?? entry };
   }
   const release = () =>
     entries.releaseClaim(deps.db, {
@@ -323,7 +338,7 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
     // Another confirm won the plan first. Nothing was sent to Clockify, so put the pre-claim state
     // back rather than inventing a FAILED with no attempt row (docs/08 invariant 4).
     release();
-    return json(409, { error: "plan already consumed" });
+    return { kind: "plan-consumed" };
   }
 
   let result;
@@ -347,13 +362,13 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
       // so nothing was sent: releasing the claim is safe. The plan stays CONSUMED — the user
       // re-runs preflight, exactly as after a STALE plan.
       release();
-      return errorJson(503, err.message);
+      return { kind: "baseline-truncated", message: err.message };
     }
     // Anything else escaping `attemptRecreation` happens at or after the create, so the outcome is
     // NOT known to be "nothing happened". Never release the claim here: the lease expires and the
     // row becomes reclaimable on its own, which is the honest state (ADR-007).
     deps.onError?.(err, { route: "recreate.attempt" });
-    return errorJson(502, "Clockify could not be reached; try again");
+    return { kind: "attempt-error" };
   }
 
   // ADR-007 / docs/07 §8: "Reconcile immediately once, then lazily." A create whose response was
@@ -370,10 +385,176 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
       }
     }
     const after = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? current;
-    return json(200, { result, entry: after });
+    return { kind: "done", result, entry: after };
   }
 
-  return json(200, { result });
+  return { kind: "done", result };
+}
+
+function confirmOutcomeToResponse(outcome: ConfirmOutcome): ReturnType<RequestHandler> {
+  switch (outcome.kind) {
+    case "no-client":
+      return errorJson(503, "Clockify connection is unavailable for this installation");
+    case "revalidate-truncated":
+      return errorJson(503, outcome.message);
+    case "revalidate-error":
+      return errorJson(502, "Clockify could not be reached; try again");
+    case "stale":
+      return json(409, { stale: true, plan: outcome.plan });
+    case "already-claimed":
+      return json(409, { error: "already claimed", entry: outcome.entry });
+    case "plan-consumed":
+      return json(409, { error: "plan already consumed" });
+    case "baseline-truncated":
+      return errorJson(503, outcome.message);
+    case "attempt-error":
+      return errorJson(502, "Clockify could not be reached; try again");
+    case "done":
+      return outcome.entry !== undefined
+        ? json(200, { result: outcome.result, entry: outcome.entry })
+        : json(200, { result: outcome.result });
+  }
+}
+
+async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
+  if (!isPlainObject(body)) return errorJson(400, "invalid body");
+  const planId = body.planId;
+  if (typeof planId !== "string" || planId.length === 0) return errorJson(400, "planId is required");
+
+  const plan = plans.getById(deps.db, planId);
+  const loaded = loadOwnEntry(deps, viewer, body.entryId, true, plan?.createdBy === viewer.userId);
+  if ("error" in loaded) return loaded.error;
+  const entry = loaded.entry;
+
+  if (!plan || plan.recoverableEntryId !== entry.id) return errorJson(404, "plan not found");
+  if (plan.blockers.length > 0) return errorJson(422, "this plan has blockers and cannot be confirmed");
+  if (plan.actionRequired.length > 0) return errorJson(422, "this plan still needs choices");
+
+  const outcome = await confirmPlan(deps, viewer, entry, plan);
+  return confirmOutcomeToResponse(outcome);
+}
+
+// --- POST /api/entries/bulk-preflight / bulk-recreate (docs/10 §7, admin-only) -------------
+
+const BULK_MAX = 50;
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.length > 0);
+}
+
+async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
+  if (!isAdmin(viewer)) return errorJson(403, "admin role required");
+  if (!isPlainObject(body)) return errorJson(400, "invalid body");
+  const ids = body.ids;
+  if (!isStringArray(ids)) return errorJson(400, "ids must be a non-empty array of entry ids");
+  if (ids.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} entries per bulk request`);
+
+  const clientResult = await loadClient(deps, viewer);
+  if (!clientResult) return errorJson(503, "Clockify connection is unavailable for this installation");
+
+  // One shared-data fetch for the whole batch (docs/07 §2 "fetch once, reuse for every entry") —
+  // the same sharing preflight-data.ts already does for `GET /api/entries`.
+  let shared: SharedWorkspaceData;
+  try {
+    shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
+  } catch (err) {
+    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
+    deps.onError?.(err, { route: "bulk-preflight" });
+    return errorJson(502, "Clockify could not be reached; try again");
+  }
+
+  const results: unknown[] = [];
+  for (const id of ids) {
+    const row = entries.getById(deps.db, viewer.workspaceId, id);
+    if (!row) {
+      results.push({ entryId: id, status: "not-found" });
+      continue;
+    }
+    try {
+      const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {});
+      const result = runPreflight({ source: row.source, viewer, choices: {}, workspace: state, now: new Date() });
+      const plan = plans.createActive(deps.db, {
+        id: randomUUID(),
+        recoverableEntryId: row.id,
+        createdBy: viewer.userId,
+        createdAt: new Date().toISOString(),
+        sourceHash: computeSourceHash(row.source),
+        choices: {},
+        resolution: result.resolution,
+        plannedRequest: result.plannedRequest,
+        warnings: result.warnings,
+        blockers: result.blockers,
+        actionRequired: result.actionRequired,
+        fidelity: result.fidelity,
+      });
+      const status = plan.blockers.length > 0 ? "blocked" : plan.actionRequired.length > 0 ? "needs-input" : "ready";
+      results.push({ entryId: id, status, plan });
+    } catch (err) {
+      if (err instanceof PreflightTruncatedError) {
+        results.push({ entryId: id, status: "error", message: err.message });
+        continue;
+      }
+      deps.onError?.(err, { route: "bulk-preflight" });
+      results.push({ entryId: id, status: "error", message: "Clockify could not be reached; try again" });
+    }
+  }
+  return json(200, { results });
+}
+
+/** Maps one `confirmPlan` outcome onto the bulk result row shape (docs/10 §7: "Results list per
+ * entry: Recreated / Failed (reason) / Unknown result. There is no cross-entry transaction; each
+ * row shows its own outcome."). The `RECREATED`/`FAILED`/`AMBIGUOUS` shapes are exactly the single
+ * confirm's `result` — same rendering, no duplicated presentation logic — everything upstream of a
+ * Clockify outcome (stale plan, lost claim race, transport failure) collapses to `ERROR`. */
+function bulkResultItem(entryId: string, planId: string, outcome: ConfirmOutcome): Record<string, unknown> {
+  switch (outcome.kind) {
+    case "no-client":
+      return { entryId, planId, outcome: "ERROR", message: "Clockify connection is unavailable for this installation" };
+    case "revalidate-truncated":
+    case "baseline-truncated":
+      return { entryId, planId, outcome: "ERROR", message: outcome.message };
+    case "revalidate-error":
+    case "attempt-error":
+      return { entryId, planId, outcome: "ERROR", message: "Clockify could not be reached; try again" };
+    case "stale":
+      return { entryId, planId, outcome: "ERROR", message: "This plan is no longer current. Open this entry to try again." };
+    case "already-claimed":
+      return { entryId, planId, outcome: "ERROR", message: "This entry is already being recreated." };
+    case "plan-consumed":
+      return { entryId, planId, outcome: "ERROR", message: "This plan was already used." };
+    case "done":
+      return { entryId, planId, ...outcome.result };
+  }
+}
+
+async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
+  if (!isAdmin(viewer)) return errorJson(403, "admin role required");
+  if (!isPlainObject(body)) return errorJson(400, "invalid body");
+  const planIds = body.planIds;
+  if (!isStringArray(planIds)) return errorJson(400, "planIds must be a non-empty array of plan ids");
+  if (planIds.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} plans per bulk request`);
+
+  const results: unknown[] = [];
+  for (const planId of planIds) {
+    const plan = plans.getById(deps.db, planId);
+    if (!plan) {
+      results.push({ planId, outcome: "ERROR", message: "plan not found" });
+      continue;
+    }
+    const entry = entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId);
+    if (!entry) {
+      results.push({ planId, entryId: plan.recoverableEntryId, outcome: "ERROR", message: "entry not found" });
+      continue;
+    }
+    if (plan.blockers.length > 0 || plan.actionRequired.length > 0) {
+      results.push({ planId, entryId: entry.id, outcome: "ERROR", message: "this plan has blockers or still needs choices" });
+      continue;
+    }
+    const outcome = await confirmPlan(deps, viewer, entry, plan);
+    results.push(bulkResultItem(entry.id, plan.id, outcome));
+  }
+  return json(200, { results });
 }
 
 // --- Reconcile (shared by the explicit route and the lazy detail-view trigger) ------------
@@ -610,7 +791,27 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
       const items = await collectPaged(client.tags.list.bind(client.tags), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((t) => ({ id: t.id, name: t.name, archived: t.archived })) });
     }
-    return errorJson(400, "kind must be one of projects, tasks, tags");
+    if (kind === "customFields") {
+      // Feeds the P-CF-OPT / P-CF-REQ resolution widgets (docs/10 §4): the field's current type
+      // and allowed values, keyed by the `refId` on the matching `ActionRequiredItem`. Same fetch
+      // `preflight-data.ts` already makes for the preflight itself — read-only, no new rule.
+      const items = await collectPaged(client.customFields.listForWorkspace.bind(client.customFields), {
+        workspaceId: viewer.workspaceId,
+        "entity-type": ["TIMEENTRY"],
+      });
+      return json(200, {
+        items: items
+          .filter((f): f is typeof f & { id: string } => f.id !== undefined)
+          .map((f) => ({
+            id: f.id,
+            name: f.name ?? f.id,
+            type: f.type ?? "TXT",
+            allowedValues: f.allowedValues ?? null,
+            required: f.required ?? false,
+          })),
+      });
+    }
+    return errorJson(400, "kind must be one of projects, tasks, tags, customFields");
   } catch (err) {
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
@@ -624,6 +825,24 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
 export function registerApiRoutes(addon: HandlerRegistrar, parser: ClockifySignatureParser, deps: ApiRouteDeps): void {
   const guard = (handler: (deps: ApiRouteDeps, viewer: Viewer, request: Parameters<RequestHandler>[0]) => ReturnType<RequestHandler>) =>
     requireViewer(parser, (request, viewer) => handler(deps, viewer, request));
+
+  /**
+   * docs/10 §8: when the addon is disabled for a workspace, "a notice replaces actions; lists stay
+   * readable". The UI shows that notice — but docs/00 says the UI never decides what a user may do,
+   * so the rule has to hold on the server too. Without this, a viewer already on the detail or
+   * confirm screen when the addon is disabled could still complete a recreation.
+   *
+   * Applied only to routes that write to Clockify or change a lifecycle state. Reads —
+   * `/api/entries`, `/api/entries/detail`, `/api/entries/preflight`, `/api/options` — stay
+   * available, which is what keeps lists readable.
+   */
+  const actionGuard = (handler: (deps: ApiRouteDeps, viewer: Viewer, request: Parameters<RequestHandler>[0]) => ReturnType<RequestHandler>) =>
+    guard((d, viewer, request) => {
+      if (getInstallationStatus(d.db, viewer.workspaceId, viewer.addonId) === "INACTIVE") {
+        return errorJson(409, "RestoreTime is disabled for this workspace.");
+      }
+      return handler(d, viewer, request);
+    });
 
   addon.registerHandler(
     "/api/entries",
@@ -643,36 +862,46 @@ export function registerApiRoutes(addon: HandlerRegistrar, parser: ClockifySigna
   addon.registerHandler(
     "/api/entries/recreate",
     "POST",
-    guard((d, viewer, request) => handleRecreate(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleRecreate(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/entries/reconcile",
     "POST",
-    guard((d, viewer, request) => handleReconcile(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleReconcile(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/entries/mark-not-created",
     "POST",
-    guard((d, viewer, request) => handleMarkNotCreated(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleMarkNotCreated(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/entries/resolve-ambiguous",
     "POST",
-    guard((d, viewer, request) => handleResolveAmbiguous(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleResolveAmbiguous(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/entries/dismiss",
     "POST",
-    guard((d, viewer, request) => handleDismiss(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleDismiss(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/entries/undismiss",
     "POST",
-    guard((d, viewer, request) => handleUndismiss(d, viewer, request.body)),
+    actionGuard((d, viewer, request) => handleUndismiss(d, viewer, request.body)),
   );
   addon.registerHandler(
     "/api/options",
     "GET",
     guard((d, viewer, request) => handleOptions(d, viewer, request.query ?? new URLSearchParams())),
+  );
+  addon.registerHandler(
+    "/api/entries/bulk-preflight",
+    "POST",
+    guard((d, viewer, request) => handleBulkPreflight(d, viewer, request.body)),
+  );
+  addon.registerHandler(
+    "/api/entries/bulk-recreate",
+    "POST",
+    actionGuard((d, viewer, request) => handleBulkRecreate(d, viewer, request.body)),
   );
 }

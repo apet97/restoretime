@@ -32,4 +32,30 @@ describe("UT-X01 escapeHtml", () => {
   it("empty string escapes to empty string", () => {
     expect(escapeHtml("")).toBe("");
   });
+
+  // PASS-03 extension: entity-shaped and markup-shaped payloads matching the actual Clockify-
+  // controlled fields the shell embeds server-side (docs/10 §8) — theme/language/workspaceRole
+  // claims and the parent-origin config all pass through this same function before landing in the
+  // component shell's HTML attributes (src/api/views.ts componentShellHtml).
+  it("a hostile theme/language/role claim value cannot break out of a data attribute", () => {
+    const hostileTheme = '"><script>alert(1)</script>';
+    const out = escapeHtml(hostileTheme);
+    expect(out).not.toContain('"><script>');
+    expect(out).toBe("&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("entity-shaped payload mixing numeric and named entities round-trips as literal text", () => {
+    const input = "AT&amp;T &#39;quoted&#39; &lt;tag&gt;";
+    const out = escapeHtml(input);
+    // Every literal &, <, >, ' in the source is escaped — including inside what looks like an
+    // existing entity — so the browser can only ever render this back as the original text.
+    expect(out).toBe("AT&amp;amp;T &amp;#39;quoted&amp;#39; &amp;lt;tag&amp;gt;");
+  });
+
+  it("markup-shaped payload with a closing tag and an event handler attribute never contains an open tag", () => {
+    const input = '</main><svg onload=alert(document.cookie)>';
+    const out = escapeHtml(input);
+    expect(out).not.toMatch(/<\/?[a-z]/i);
+    expect(out).toBe("&lt;/main&gt;&lt;svg onload=alert(document.cookie)&gt;");
+  });
 });

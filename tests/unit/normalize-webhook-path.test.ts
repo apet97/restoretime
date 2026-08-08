@@ -27,4 +27,34 @@ describe("normalizeWebhookPath", () => {
       "/webhooks/time-entry-deleted",
     );
   });
+
+  it("drops a trailing slash so it cannot become a second, unfindable key", () => {
+    expect(normalizeWebhookPath("/webhooks/time-entry-deleted/")).toBe(
+      "/webhooks/time-entry-deleted",
+    );
+  });
+
+  it("keeps the root path as a single slash", () => {
+    expect(normalizeWebhookPath("/")).toBe("/");
+  });
+
+  it("does not read a colon in a relative path as a URL scheme", () => {
+    // new URL("webhooks:time-entry-deleted") parses "webhooks" as a scheme and yields the
+    // pathname "time-entry-deleted", which would store the token under the wrong key.
+    expect(normalizeWebhookPath("webhooks:time-entry-deleted")).toBe(
+      "/webhooks:time-entry-deleted",
+    );
+  });
+
+  it("is idempotent, so writing and looking up agree even across builds", () => {
+    for (const input of [
+      "//webhooks/time-entry-deleted",
+      "/webhooks/time-entry-deleted/",
+      "https://example.invalid//webhooks/time-entry-deleted",
+      "webhooks/time-entry-deleted",
+    ]) {
+      const once = normalizeWebhookPath(input);
+      expect(normalizeWebhookPath(once)).toBe(once);
+    }
+  });
 });

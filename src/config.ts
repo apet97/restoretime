@@ -28,7 +28,9 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 function readPort(env: NodeJS.ProcessEnv): number {
   const raw = env.PORT;
   if (raw === undefined || raw.trim() === "") return DEFAULT_PORT;
-  const port = Number.parseInt(raw, 10);
+  // Match the whole string first: Number.parseInt("8080O") returns 8080, which would boot on a
+  // port the operator did not type.
+  const port = /^\d+$/.test(raw.trim()) ? Number.parseInt(raw, 10) : Number.NaN;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`PORT must be an integer between 1 and 65535, got ${JSON.stringify(raw)}.`);
   }

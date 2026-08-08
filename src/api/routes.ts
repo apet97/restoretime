@@ -9,7 +9,7 @@ import {
 } from "@apet97/clockify-addon-sdk/clockify";
 import { requireViewer } from "../platform/verify.js";
 
-export const PING_PATH = "/api/ping";
+const PING_PATH = "/api/ping";
 
 interface HandlerRegistrar {
   registerHandler(path: string, method: string, handler: RequestHandler): void;

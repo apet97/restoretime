@@ -11,15 +11,24 @@ const MIGRATION_FILE_PATTERN = /^(\d{4})_.+\.sql$/;
 
 function migrate(db: Database.Database): void {
   const current = db.pragma("user_version", { simple: true }) as number;
-  const files = readdirSync(MIGRATIONS_DIR)
+  const seen = new Map<number, string>();
+  const migrations = readdirSync(MIGRATIONS_DIR)
     .filter((name) => MIGRATION_FILE_PATTERN.test(name))
-    .sort();
+    .sort()
+    .map((file) => {
+      const version = Number.parseInt(MIGRATION_FILE_PATTERN.exec(file)?.[1] ?? "", 10);
+      // Two files sharing a number would leave the second one permanently unapplied, because
+      // user_version can only record one of them. That is a merge accident, not a schema.
+      const clash = seen.get(version);
+      if (clash !== undefined) {
+        throw new Error(`Migrations ${clash} and ${file} share version ${version}.`);
+      }
+      seen.set(version, file);
+      return { file, version };
+    });
 
-  for (const file of files) {
-    const match = MIGRATION_FILE_PATTERN.exec(file);
-    const version = Number.parseInt(match?.[1] ?? "", 10);
-    if (!Number.isInteger(version) || version <= current) continue;
-
+  for (const { file, version } of migrations) {
+    if (version <= current) continue;
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
     db.transaction(() => {
       db.exec(sql);

@@ -103,6 +103,23 @@ describe("createSqliteInstallationStore — generation guard", () => {
     ]);
   });
 
+  it("distinguishes an absent webhooks key from an empty webhooks list", async () => {
+    // ClockifyInstallationContext.webhooks is optional, so "no webhooks key" and "an empty list"
+    // are different contexts. The SDK's in-memory store preserves the difference (docs/08 says
+    // this store mirrors it), and collapsing them would silently rewrite a caller's context.
+    const store = createSqliteInstallationStore(db);
+
+    await store.save(context({ workspaceId: "ws-absent" }));
+    expect(await store.load("ws-absent", "addon-1")).not.toHaveProperty("webhooks");
+
+    await store.save(context({ workspaceId: "ws-empty", webhooks: [] }));
+    expect((await store.load("ws-empty", "addon-1"))?.webhooks).toEqual([]);
+  });
+
+  it("updateInstallationStatus reports false when no installation matches", () => {
+    expect(updateInstallationStatus(db, "ws-missing", "addon-1", "INACTIVE")).toBe(false);
+  });
+
   it("a redelivered INSTALLED save does not revert a status set by STATUS_CHANGED", async () => {
     const store = createSqliteInstallationStore(db);
     await store.save(context({ installedAt: 1000 }));

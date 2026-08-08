@@ -12,10 +12,10 @@ import {
 } from "@apet97/clockify-addon-sdk/clockify";
 
 export const WEBHOOK_PATH = "/webhooks/time-entry-deleted";
-export const COMPONENT_PATH = "/component";
+const COMPONENT_PATH = "/component";
 export const ICON_PATH = "/icon.svg";
 export const STATIC_APP_JS_PATH = "/static/app.js";
-export const LIFECYCLE_PATHS = {
+const LIFECYCLE_PATHS = {
   installed: "/lifecycle/installed",
   statusChanged: "/lifecycle/status-changed",
   deleted: "/lifecycle/deleted",

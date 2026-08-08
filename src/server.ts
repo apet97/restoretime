@@ -132,12 +132,21 @@ export async function createServer(
   addon.registerLifecycleEvent(
     lifecycle.statusChanged,
     withClockifyStatusChangedLifecycleRequest(parser, async (_request, payload, claims) => {
-      updateInstallationStatus(db, claims.workspaceId, claims.addonId, payload.status);
-      logger.info("installation status changed", {
+      const updated = updateInstallationStatus(
+        db,
+        claims.workspaceId,
+        claims.addonId,
+        payload.status,
+      );
+      const fields = {
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,
         status: payload.status,
-      });
+      };
+      if (updated) logger.info("installation status changed", fields);
+      // Still 204: Clockify has nothing to retry, and the status of an installation this app
+      // does not hold is not actionable. Say so rather than logging a change that did not happen.
+      else logger.warn("status changed for an unknown installation", fields);
       return { status: 204 };
     }),
   );
@@ -150,8 +159,9 @@ export async function createServer(
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,
       });
-      // Domain tables arrive in PASS-02; the cascade is a no-op placeholder until then, wired
-      // here so the DELETED path does not need rewiring later (docs/08 "Retention and deletion").
+      // Domain tables arrive in PASS-02; the cascade is a no-op placeholder until then. PASS-02
+      // must merge these two deletes into one transaction (docs/08 "Retention and deletion") —
+      // see the note in store/cascade.ts.
       deleteWorkspaceDomainData(db, claims.workspaceId);
       logger.info("installation deleted", {
         workspaceId: claims.workspaceId,
@@ -173,6 +183,15 @@ export async function createServer(
           return installation?.webhooks?.find(
             (webhook) => normalizeWebhookPath(webhook.path) === WEBHOOK_PATH,
           )?.authToken;
+        },
+        // A lookup that finds no stored token is a wiring failure, not an attack: the
+        // installation is missing, or Clockify delivered a path this app stores under a
+        // different key. Without this reporter the SDK's own error goes nowhere (it is passed
+        // to `reportAddonError`, which is a no-op when the reporter is undefined), so every
+        // delivery would 401 in silence until Clockify's retry budget ran out. The SDK redacts
+        // the request before calling this.
+        onError(error) {
+          logger.error("webhook token lookup failed", { error: String(error) });
         },
       },
       async (_request, claims) => {

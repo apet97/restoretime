@@ -306,20 +306,55 @@ describe("POST /webhooks/time-entry-deleted", () => {
     expect(response.status).toBe(401);
   });
 
-  it("returns 401 for an unknown installation", async () => {
+  it("returns 401 for an unknown installation and says so in the log", async () => {
+    // A token lookup that finds nothing is a wiring failure, not an attack. The SDK only reports
+    // it through the webhook options' own `onError`; without that reporter every delivery would
+    // be rejected in silence until Clockify stopped retrying.
+    const lines: string[] = [];
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk: string | Uint8Array) => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      const server = await boot();
+      const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+        workspaceId: WORKSPACE_ID,
+        addonId: ADDON_INSTALLATION_ID,
+      });
+      const response = await server.addon.handle(
+        createTestWebhookRequest(
+          token,
+          "TIME_ENTRY_DELETED",
+          { id: "entry-1", workspaceId: WORKSPACE_ID },
+          { path: "/webhooks/time-entry-deleted" },
+        ),
+      );
+      expect(response.status).toBe(401);
+    } finally {
+      write.mockRestore();
+    }
+    expect(lines.join("")).toContain("webhook token lookup failed");
+  });
+});
+
+describe("lifecycle: STATUS_CHANGED for an installation this app does not hold", () => {
+  it("acks with 204 without claiming a status change happened", async () => {
     const server = await boot();
-    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
-      workspaceId: WORKSPACE_ID,
-      addonId: ADDON_INSTALLATION_ID,
-    });
+    const token = await lifecycleToken();
     const response = await server.addon.handle(
-      createTestWebhookRequest(
+      createTestLifecycleRequest(
         token,
-        "TIME_ENTRY_DELETED",
-        { id: "entry-1", workspaceId: WORKSPACE_ID },
-        { path: "/webhooks/time-entry-deleted" },
+        { workspaceId: WORKSPACE_ID, addonId: ADDON_INSTALLATION_ID, status: "INACTIVE" },
+        { path: "/lifecycle/status-changed" },
       ),
     );
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(204);
+    expect(
+      server.db
+        .prepare("SELECT COUNT(*) AS n FROM installations")
+        .get() as { n: number },
+    ).toEqual({ n: 0 });
   });
 });

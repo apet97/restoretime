@@ -9,7 +9,10 @@ CREATE TABLE installations (
   as_user       TEXT NOT NULL,
   api_url       TEXT NOT NULL,
   auth_token    TEXT NOT NULL,
-  webhooks_json TEXT NOT NULL DEFAULT '[]',
+  -- NULL when the INSTALLED payload carried no `webhooks` key at all; '[]' when it carried an
+  -- empty list. ClockifyInstallationContext.webhooks is optional, so the two are different
+  -- contexts and the store round-trips them distinctly (docs/08).
+  webhooks_json TEXT,
   status        TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE')),
   installed_at  INTEGER NOT NULL,
   PRIMARY KEY (workspace_id, addon_id)

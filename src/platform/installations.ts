@@ -14,7 +14,7 @@ import type {
   ClockifyLifecycleWebhookToken,
 } from "@apet97/clockify-addon-sdk/clockify";
 
-export type InstallationStatus = "ACTIVE" | "INACTIVE";
+type InstallationStatus = "ACTIVE" | "INACTIVE";
 
 interface InstallationRow {
   workspace_id: string;
@@ -23,30 +23,38 @@ interface InstallationRow {
   as_user: string;
   api_url: string;
   auth_token: string;
-  webhooks_json: string;
+  webhooks_json: string | null;
   status: InstallationStatus;
   installed_at: number;
 }
 
 /**
  * Live INSTALLED payloads can carry a webhook path like "//webhooks/time-entry-deleted" (Clockify
- * joins baseUrl + "/" + path — evidence/install-capture-2026-08-08.md). Collapse repeated slashes
- * and reduce an absolute URL to its pathname so storage and lookup agree. Normalization happens
- * once, here, on write; `server.ts` compares the already-normalized stored path against the
- * webhook route constant on lookup — never normalize twice, never skip it.
+ * joins baseUrl + "/" + path — evidence/install-capture-2026-08-08.md, W17). This reduces an
+ * absolute http(s) URL to its pathname, collapses repeated slashes, and drops a trailing slash,
+ * so that storage and lookup agree on one key.
+ *
+ * The function is idempotent, and both sides normalize: writes normalize before storing, and the
+ * lookup in `server.ts` normalizes again before comparing. That is deliberate, not redundant — a
+ * row written by an older build stays findable.
+ *
+ * The absolute-URL branch is gated on an explicit `http(s)://` prefix. `new URL("webhooks:x")`
+ * parses "webhooks" as a scheme and would otherwise reduce that path to "/x".
  */
 export function normalizeWebhookPath(path: string): string {
   let pathname = path;
-  try {
-    pathname = new URL(path).pathname;
-  } catch {
-    // Not an absolute URL — already a relative path.
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      pathname = new URL(path).pathname;
+    } catch {
+      // Not a parseable URL after all — keep the raw string.
+    }
   }
-  return `/${pathname.replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
+  const collapsed = `/${pathname.replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
+  return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed;
 }
 
 function rowToContext(row: InstallationRow): ClockifyInstallationContext {
-  const webhooks = JSON.parse(row.webhooks_json) as ClockifyLifecycleWebhookToken[];
   return {
     workspaceId: row.workspace_id,
     addonId: row.addon_id,
@@ -55,11 +63,20 @@ function rowToContext(row: InstallationRow): ClockifyInstallationContext {
     apiUrl: row.api_url,
     authToken: row.auth_token,
     installedAt: row.installed_at,
-    ...(webhooks.length > 0 ? { webhooks } : {}),
+    ...(row.webhooks_json === null
+      ? {}
+      : { webhooks: JSON.parse(row.webhooks_json) as ClockifyLifecycleWebhookToken[] }),
   };
 }
 
-/** Raw (unencrypted) ClockifyInstallationStore implementation over `better-sqlite3`. */
+/**
+ * Raw (unencrypted) ClockifyInstallationStore implementation over `better-sqlite3`.
+ *
+ * Unlike the SDK's `InMemoryClockifyInstallationStore`, this store does not validate the context
+ * it is handed. It is never used directly: `server.ts` always composes it under
+ * `wrapClockifyInstallationStoreWithEncryption`, and the SDK's own AES-GCM codec rejects an empty
+ * token before a row is written. Use the composed store, not this one.
+ */
 export function createSqliteInstallationStore(db: Database.Database): ClockifyInstallationStore {
   const select = db.prepare<[string, string], InstallationRow>(
     "SELECT * FROM installations WHERE workspace_id = ? AND addon_id = ?",
@@ -71,7 +88,7 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
     asUser: string;
     apiUrl: string;
     authToken: string;
-    webhooksJson: string;
+    webhooksJson: string | null;
     installedAt: number;
   }>(`
     INSERT INTO installations
@@ -104,13 +121,16 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
       // Generation guard: skip only when the existing row is strictly newer.
       if (existing && existing.installed_at > context.installedAt) return;
 
-      const webhooksJson = JSON.stringify(
-        (context.webhooks ?? []).map((webhook) => ({
-          path: normalizeWebhookPath(webhook.path),
-          webhookType: webhook.webhookType,
-          authToken: webhook.authToken,
-        })),
-      );
+      const webhooksJson =
+        context.webhooks === undefined
+          ? null
+          : JSON.stringify(
+              context.webhooks.map((webhook) => ({
+                path: normalizeWebhookPath(webhook.path),
+                webhookType: webhook.webhookType,
+                authToken: webhook.authToken,
+              })),
+            );
       upsert.run({
         workspaceId: context.workspaceId,
         addonId: context.addonId,
@@ -138,16 +158,19 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
 }
 
 /** STATUS_CHANGED is a separate write path: `status` has no place in ClockifyInstallationContext,
- * so it never goes through `ClockifyInstallationStore.save`. */
+ * so it never goes through `ClockifyInstallationStore.save`. Returns whether a row was updated —
+ * zero rows means the installation is gone, which the caller reports instead of logging a
+ * status change that did not happen. */
 export function updateInstallationStatus(
   db: Database.Database,
   workspaceId: string,
   addonId: string,
   status: InstallationStatus,
-): void {
-  db.prepare(
-    "UPDATE installations SET status = ? WHERE workspace_id = ? AND addon_id = ?",
-  ).run(status, workspaceId, addonId);
+): boolean {
+  const result = db
+    .prepare("UPDATE installations SET status = ? WHERE workspace_id = ? AND addon_id = ?")
+    .run(status, workspaceId, addonId);
+  return result.changes > 0;
 }
 
 /** Imports the 32-byte AES-256-GCM token-encryption key from its hex env-var encoding. */

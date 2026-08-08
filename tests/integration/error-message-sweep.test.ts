@@ -277,7 +277,10 @@ describe("N8 error-message sweep", () => {
       (async (input, init) => {
         const path = pathOf(input);
         const method = methodOf(input, init);
-        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) throw new TypeError("simulated network failure");
+        // A non-retryable 400 rather than a thrown TypeError: a throw is a transport failure the
+        // SDK retries with ~3 s of real backoff, and this pass forbids a >2 s wall-clock sleep.
+        // Either way revalidation fails before any create call, which is what this asserts.
+        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) return jsonResponse({ message: "rejected", code: 501 }, 400);
         return stableClockifyStub()(input, init);
       }) as typeof fetch,
     );

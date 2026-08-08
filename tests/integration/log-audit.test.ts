@@ -1,9 +1,14 @@
-// IT-15 (docs/13; N3 in docs/12 "Sensitive log leakage", docs/14 "Logging"). Captures every line written to
-// process.stdout/stderr while a scripted run drives every logging call site this app has:
-// lifecycle install, webhook ingest, list, detail, preflight (including a preflight failure whose
-// underlying Clockify error body is adversarially crafted to *contain* a sentinel — proving the
-// app never forwards a raw Clockify error body into a log line), a recreate FAILED outcome, and
-// uninstall.
+// IT-15 (docs/13; N3 in docs/12 "Sensitive log leakage", docs/14 "Logging"). Captures every line
+// written to process.stdout/stderr while a scripted run drives these logging call sites:
+// lifecycle INSTALLED, a rejected webhook delivery, webhook ingest, list, detail, preflight
+// (including a preflight failure whose underlying Clockify error body is adversarially crafted to
+// *contain* a sentinel — proving the app never forwards a raw Clockify error body into a log
+// line), a recreate FAILED outcome, and lifecycle DELETED.
+//
+// It does NOT drive every call site in the app: the webhook token-lookup failure, the installation
+// decode failure, the node adapter's own `http error`, and the missing-static-bundle path are not
+// exercised here. They all log through the same `safeErrorSummary` helper this test pins, but that
+// is an argument, not a proof — say so rather than claim coverage this script does not have.
 //
 // The fixtures carry distinctive sentinel values (description, custom-field value, the
 // installation's Clockify auth token, and the webhook's per-installation token) so the assertion
@@ -123,6 +128,34 @@ describe("N3 log audit: sentinel values never appear in any captured log line", 
       ),
     );
 
+    // 1b. A delivery whose body carries the sentinels but whose workspace does not match the
+    // verified claims — rejected with 400 and logged. The rejection path logs a body-derived
+    // decision, so it is exactly where a raw payload would most plausibly leak.
+    const rejectedResponse = await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        {
+          id: "entry-forged",
+          workspaceId: "ws-someone-else",
+          userId: OWNER_ID,
+          description: SENTINEL_DESCRIPTION,
+          billable: true,
+          projectId: null,
+          type: "REGULAR",
+          currentlyRunning: false,
+          timeInterval: { start: "2026-08-07T09:00:00Z", end: "2026-08-07T11:30:00Z", timeZone: "UTC" },
+          project: null,
+          task: null,
+          tags: [],
+          user: { name: "Ana Markovic" },
+          customFieldValues: [{ customFieldId: "cf-1", name: "Cost code", value: SENTINEL_CF_VALUE }],
+        },
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    expect(rejectedResponse.status).toBe(400);
+
     // 2. Webhook ingest carrying the description and custom-field sentinels.
     const webhookResponse = await server.addon.handle(
       createTestWebhookRequest(
@@ -189,7 +222,11 @@ describe("N3 log audit: sentinel values never appear in any captured log line", 
         if (method === "GET" && path.endsWith("/tags")) return jsonResponse([]);
         if (method === "GET" && path.endsWith("/custom-fields")) return jsonResponse([]);
         if (method === "GET" && path.endsWith("/users")) {
-          return jsonResponse({ message: "internal error", code: 999, echo: SENTINEL_ERROR_ECHO }, 500);
+          // 400, not 500: the SDK retries 5xx on GETs with real backoff (~3 s), and this pass
+          // forbids a test depending on a wall-clock sleep over 2 s. What is under test is that
+          // an error body carrying a sentinel never reaches a log line — a non-retryable status
+          // proves exactly that, sooner.
+          return jsonResponse({ message: "rejected", code: 501, echo: SENTINEL_ERROR_ECHO }, 400);
         }
         return jsonResponse({ message: "unstubbed" }, 404);
       }) as typeof fetch,

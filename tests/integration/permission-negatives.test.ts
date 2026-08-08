@@ -117,8 +117,18 @@ async function tokenFor(opts: { workspaceId?: string; user?: string; role?: stri
   );
 }
 
+/** docs/13 says each case asserts "no row changed". The entry row alone is not enough: a refactor
+ * that consumed the plan before the access check would leave the entry untouched while a forged
+ * request burned another user's plan. Snapshot the plan status and the attempt count too. */
 function snapshotRow() {
-  return entries.getById(server.db, WORKSPACE_ID, entryId);
+  const entry = entries.getById(server.db, WORKSPACE_ID, entryId);
+  const planStatuses = server.db
+    .prepare("SELECT id, status FROM recreation_plans WHERE recoverable_entry_id = ? ORDER BY id")
+    .all(entryId);
+  const attemptCount = server.db
+    .prepare("SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id = ?")
+    .get(entryId) as { n: number };
+  return { entry, planStatuses, attemptCount: attemptCount.n };
 }
 
 function req(method: "GET" | "POST", path: string, token: string, body?: unknown, query?: Record<string, string>): AddonRequest {

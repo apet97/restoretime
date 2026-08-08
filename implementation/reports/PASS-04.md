@@ -259,3 +259,30 @@ No other behavior changed. Every existing test from PASS-01…03 still passes un
   (AGENTS.md rule 19).
 - Did not attempt to change `implementation/DEPENDENCIES.md`; `gitleaks` was added as a CI Action
   only, per the brief's authorized exception.
+
+---
+
+## Adversarial review (added by the judging author)
+
+An independent reviewer worked in its own worktree, ran every gate, and — unusually and valuably —
+**proved its claims by reverting behaviour and re-running**. It confirmed as genuinely load-bearing:
+IT-15 (reverting `safeErrorSummary` to `String(error)` made the sentinel reappear), the XSS proof
+(switching a view to `innerHTML` failed it), and the N+1 request-scoping (making the cache a module
+global failed four tests — closing the cross-tenant concern). It also traced the
+`safeErrorSummary` generic-`Error` branch and showed no Clockify content can reach it, because the
+SDK wraps every transport and parse failure as `ClockifyApiError`.
+
+**No blocking or high findings. Seven others, all fixed.**
+
+| ID | Sev | Finding | Disposition |
+|---|---|---|---|
+| F1 | med | The process-parallelism drill raced a **duplicated copy** of the claim SQL, so it could not detect a regression in the real `claim()`. The reviewer proved it: deleting the entire claim predicate left `concurrency-workers.test.ts` green. | **Fixed.** The worker genuinely cannot import the TypeScript module (a `worker_threads` entry skips vitest's transform, and the `.js` specifier does not exist before a build), so the suite now pins the two SQL strings against each other after whitespace normalization, and additionally asserts the predicate still contains both docs/07 §6 clauses. Verified the same way the defect was found: dropping the lease clause from `claim()` now fails this test. |
+| F2 | med | Two tests depended on real SDK retry backoff — 4.46 s and 2.92 s — violating this pass's own ">2 s wall-clock" rule, with ±20% jitter as a flake surface. | **Fixed.** Both stubs now return a non-retryable 400 instead of a 500/thrown `TypeError`. What each asserts is unchanged (an error body carrying a sentinel never reaches a log; revalidation fails before any create). 4.46 s → 0.75 s and 2.92 s → 0.32 s. |
+| F3 | low | docs/13's IT-12 cell claimed the reclaim and fencing steps ran "through the real route"; only the crash does. | **Fixed.** The cell now says the crash goes through the route and the rest is proved at the store layer, and names why (route-level lease expiry would need an injectable clock). |
+| F4 | low | `emitPreflightMetrics`'s docstring claimed every `runPreflight` call site emits; two do not. | **Fixed.** The docstring now states which sites emit and, more usefully, *why* the other two must not: counting the per-row list summaries would inflate the counter every time a user refreshed a list. |
+| F5 | low | The log-audit header claimed to drive "every logging call site this app has"; several were undriven. | **Fixed both ways.** A rejected webhook delivery (workspace mismatch → 400) was added to the script, since the rejection path is where a raw payload would most plausibly leak; and the header now names the sites it does **not** drive, noting that they share the pinned helper — which is an argument, not a proof. |
+| F6 | low | docs/13 and the XSS header said the payloads run "against the real bundle boot path"; that test imports `boot()` from source. | **Fixed.** Both now say the source path, and point at `component-flow.test.ts` as the test that boots the built bundle. |
+| F7 | low | The permission sweep's "no row changed" assertion snapshotted only `recoverable_entries`. | **Fixed.** The snapshot now also captures plan statuses and the attempt count, so a refactor that consumed a plan before the access check would fail the sweep. |
+
+Final gates after the fixes: typecheck, lint clean; **292 tests in 5.38 s**; build clean; **18 E2E**;
+`git diff --check` clean; `gitleaks detect` reports no leaks.

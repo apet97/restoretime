@@ -3,7 +3,7 @@
 // UT-X01 extension (docs/12 "XSS via stored Clockify values", docs/13). `src/ui/dom.ts`'s `el()`
 // is structurally safe (every string child becomes a `Text` node via `document.createTextNode`,
 // never parsed as markup — there is no `innerHTML` anywhere in `src/ui/`), so this file exists to
-// prove that guarantee empirically, end to end, against the real bundle-boot code path: fixture
+// prove that guarantee empirically, end to end, against real `boot()` source path (the built bundle is booted by component-flow.test.ts)-boot code path: fixture
 // entries carrying entity-encoded and markup-looking strings in the description, project name,
 // task name, tag names, owner name, and a custom-field value, driven through every rendered view
 // (list, detail, the resolution widgets, confirm, and the success/result view). The assertion is

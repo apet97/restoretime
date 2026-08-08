@@ -132,8 +132,14 @@ function preflightSummary(fidelity: ReturnType<typeof classifyFidelity>, blocker
   return { fidelity, blockerCount, actionRequiredCount };
 }
 
-/** docs/14 metrics: fired once per computed preflight result (single, revalidation, and bulk —
- * every `runPreflight` call site shares this). */
+/** docs/14 metrics: fired once per preflight the USER asked for — the single-entry preflight route
+ * and each entry of a bulk preflight.
+ *
+ * Deliberately NOT fired from the two internal `runPreflight` call sites: the per-row summaries in
+ * `GET /api/entries` (which would count one blocker per list render, so a user refreshing a list
+ * would inflate the counter without anything happening) and the revalidation inside confirm (which
+ * re-derives an already-counted result). The counters measure user-visible preflight outcomes, not
+ * invocations of the function. */
 function emitPreflightMetrics(logger: Logger, result: { readonly blockers: readonly unknown[]; readonly actionRequired: readonly unknown[] }): void {
   if (result.blockers.length > 0) emitMetric(logger, "preflight_blockers", { count: result.blockers.length });
   if (result.actionRequired.length > 0) emitMetric(logger, "preflight_action_required", { count: result.actionRequired.length });

@@ -62,7 +62,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-09 | Forged workspace/body identity ignored. **PASS-04 extension**: the same sweep as IT-07 above (`tests/integration/permission-negatives.test.ts`) covers forged workspace and forged user identity across every route |
 | IT-10 | Dismissed entry absorbs redelivery |
 | IT-11 | Uninstall purges all workspace rows |
-| IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens. **PASS-04 extension** (`tests/integration/lease-fencing-drill.test.ts`): crashes the real recreate handler mid-attempt via the test-only `RT_TEST_CRASH_MID_ATTEMPT` flag (rejected unless `NODE_ENV==="test"`, verified by a negative test), then drives the full lifecycle through the real route: too-soon reclaim refused, post-lease reclaim succeeds, the dead attempt's late write is fenced off |
+| IT-12 | Lease expiry: crashed attempt is reclaimable; fenced writes reject stale tokens. **PASS-04 extension** (`tests/integration/lease-fencing-drill.test.ts`): crashes the real recreate handler mid-attempt via the test-only `RT_TEST_CRASH_MID_ATTEMPT` flag (rejected unless `NODE_ENV==="test"`, verified by a negative test), the crash goes through the real route; the reclaim and fencing steps that follow are proved at the store layer (driving lease expiry through the route would need an injectable clock in `routes.ts`) |
 | IT-13 | Create returns 201 but the verification `get` fails after read-retries → still RECREATED, diff falls back to the 201 body, "verification read unavailable" recorded (fact 11) |
 | IT-14 | Page bound reached: the stub transport returns full pages past `maxPages: 10` → preflight fails with "workspace too large to verify; try again", and an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound. Never a partial baseline (docs/03 note 5, docs/07 §8) |
 | IT-15 | Log audit (docs/12 "Sensitive log leakage", docs/14 "Logging"; `tests/integration/log-audit.test.ts`). Captures every `process.stdout`/`stderr` line while a scripted run drives every logging call site (install, webhook, list, detail, preflight — including a preflight failure whose Clockify error body is adversarially crafted to contain a sentinel — recreate FAILED, uninstall), seeded with distinctive sentinel values (description, custom-field value, installation auth token, webhook token); asserts none appear in any captured line. Verified real: temporarily reverting the `safeErrorSummary` fix at the api-route error site made the sentinel appear in the failure diff |
@@ -137,7 +137,8 @@ small number of suites.
 `tests/e2e/xss-proof.test.ts` (**UT-X01 extension**, PASS-04) drives entity-encoded and
 markup-looking payloads in the description, project name, task name, tag names, owner name, and a
 custom-field value through every rendered view (list, detail, resolution widgets, confirm,
-success/result) against the real bundle boot path, asserting no `img`/`svg`/`script`/`iframe`
+success/result) through the real `boot()` source path (the built `dist/static/app.js` bundle itself is booted by
+`tests/e2e/component-flow.test.ts`), asserting no `img`/`svg`/`script`/`iframe`
 element is ever created from stored Clockify text.
 
 ## Commands

@@ -4,7 +4,7 @@
 // claim the same row on one shared database file. Exactly one SUCCESS path.
 import { describe, expect, it } from "vitest";
 import { Worker } from "node:worker_threads";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,5 +106,38 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// The worker must run the SAME predicate the app runs, or this drill re-proves a copy and would
+// stay green after `claim()` lost its lease clause — which an adversarial review demonstrated by
+// deleting the predicate and watching this file pass. The worker cannot import the TypeScript
+// module (a `node:worker_threads` entry skips vitest's transform, and the `.js` specifier does not
+// exist before a build), so the next best guarantee is to fail the moment the two drift.
+describe("the worker's claim SQL is the app's claim SQL", () => {
+  function normalizedSql(source: string, marker: string): string {
+    const start = source.indexOf(marker);
+    expect(start).toBeGreaterThan(-1);
+    const open = source.indexOf("`UPDATE recoverable_entries", start);
+    expect(open).toBeGreaterThan(-1);
+    const close = source.indexOf("`", open + 1);
+    expect(close).toBeGreaterThan(-1);
+    return source
+      .slice(open + 1, close)
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  it("is byte-identical after whitespace normalization", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../../src/store/entries.ts", import.meta.url)), "utf8");
+    const workerSource = readFileSync(fileURLToPath(new URL("./workers/claim-worker.mjs", import.meta.url)), "utf8");
+
+    const appSql = normalizedSql(appSource, "export function claim(");
+    const workerSql = normalizedSql(workerSource, "function run(");
+
+    expect(workerSql).toBe(appSql);
+    // And it is still the predicate docs/07 §6 specifies, not two copies of the same mistake.
+    expect(appSql).toContain("lifecycle_state IN ('IDLE','FAILED')");
+    expect(appSql).toContain("lifecycle_state='RECREATING' AND claim_expires_at < :now");
   });
 });

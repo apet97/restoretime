@@ -9,13 +9,13 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 |---|---|---|
 | UT-N01 | Webhook guard: rejects malformed bodies (missing id/workspaceId/timeInterval.start; wrong types) | Contract violation handling |
 | UT-N02 | Normalization: flat payload → DeletedTimeEntry; embedded task/tags IDs; running shape (`end:null`) | Boundary model correctness |
-| UT-P01…P13 | Preflight rules P-RUN, P-PROJ-*, P-TASK-*, P-TAG-*, P-DESC, P-CF, P-BILL, P-LOCK, collision cases | Deterministic plan decisions |
+| UT-P01…P16 | Preflight rules P-RUN, P-PROJ-*, P-TASK-*, P-TAG-*, P-DESC, P-CF-*, P-BILL, P-LOCK*, P-TYPE, P-TIMER, collision cases | Deterministic plan decisions |
 | UT-F01 | Fidelity classification matrix (FULL/ADJUSTED/PARTIAL/IMPOSSIBLE from rule outcomes) | Honest fidelity labels |
 | UT-S01 | Plan `sourceHash` mismatch → STALE | Tamper/drift guard |
 | UT-S02 | Revalidation detects changed dependency → STALE | TOCTOU guard |
 | UT-A01 | Policy: admin vs regular vs wrong-owner vs wrong-workspace | Authorization |
 | UT-X01 | HTML escaping of descriptions/names with entities and markup-looking text | XSS |
-| UT-M01 | Clockify error mapping: status+code → user-facing reason (400/4017/501…) | Failure honesty |
+| UT-M01 | Clockify error mapping: HTTP status + body code → user-facing reason (400/501, 401/4017, 403/4030 force-timer, 403/1003 locked) | Failure honesty |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
 
 ## Contract (fixture-pinned) — `tests/contract/`
@@ -61,12 +61,12 @@ Small and deterministic; not the whole exploratory campaign.
 |---|---|
 | LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct |
 | LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears |
-| LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify) |
-| LV-04 | Admin recreates another user's entry (createForUser addon-token success path — R11 closure) |
+| LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
+| LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) |
 | LV-05 | Missing project → ACTION_REQUIRED → substitute → success |
 | LV-06 | Archived-tag create behavior (closes the UNKNOWN in P-TAG-ARCH) |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
-| LV-08 | New required custom field → create rejection mapping |
+| LV-08 | Custom-field lifecycle: removed option → P-CF-OPT resolution; new required field without default → P-CF-REQ input → success |
 | LV-09 | `listForUser` response field coverage pinned (baseline-delta matcher inputs — R10 closure), including: a running entry inside the query window, and exact fingerprint round-trip (start/end epoch equality, description bytes, tagIds set) |
 | LV-10 | Mandatory ambiguity drill via the chaos hook: the suite runs the app with `RT_CHAOS_FETCH=lose-response` (test-only env flag; the app's fetch wrapper performs the real `createForUser` POST, then reports a transport timeout to the caller). (a) Lose-after-commit → the entry exists in Clockify → AMBIGUOUS → reconcile must adopt it → RECREATED. (b) Fail-before-send → nothing committed → bounded reconcile → user "not created" path → IDLE. The flag is rejected at boot unless `NODE_ENV=test` |
 

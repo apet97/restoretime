@@ -52,7 +52,12 @@ Preserved exactly (evidence: docs/01, W-series/R-series):
 - start and end time;
 - project, task, and tags (if they still exist);
 - billable flag (subject to workspace permissions);
+- custom-field values (when the field still exists; the value is written at creation, R5);
 - running state (as an explicit user choice).
+
+Restrictions the product enforces: only `REGULAR` entries are recreated (never breaks, time off,
+or holidays). In force-timer workspaces and locked periods, regular users are blocked — an admin
+can recreate the entry instead (admins bypass both restrictions).
 
 Always different on the new entry (system differences):
 
@@ -61,9 +66,9 @@ Always different on the new entry (system differences):
 - approval state: the new entry is always `UNSUBMITTED`;
 - no link to any invoice;
 - rates: Clockify applies the rates that are current at recreation time;
-- custom fields: the new entry gets the current workspace custom fields with their current default
-  values. Values that differed from defaults on the deleted entry cannot be recreated (public API
-  limitation, proved).
+- custom fields: values that existed on the deleted entry are written to the new entry when the
+  field still exists. A field that was removed, or a dropdown option that no longer exists, cannot
+  be preserved — the product warns and asks before it drops anything.
 
 The UI states these differences before the user confirms a recreation.
 

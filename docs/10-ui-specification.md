@@ -64,8 +64,8 @@ Plus plan-specific warnings, each in the form "what changed — why — what the
 contain":
 
 ```text
-Custom field "Cost code" — the deleted entry had "AZ-104". The new entry will have the current
-default "—". Clockify does not allow this value to be set through its API.
+Custom field "Cost code" — this field no longer exists in the workspace. The deleted entry had
+"AZ-104". The new entry cannot carry this value.
 ```
 
 ## 4. Resolution widgets (ACTION_REQUIRED)
@@ -76,8 +76,13 @@ default "—". Clockify does not allow this value to be set through its API.
 | Task gone | Select: current tasks of the effective project, plus "No task" when tasks are optional |
 | Tag gone | Checkbox per missing tag: "Remove tag ‹name›". Multi-select of current tags to add, when wanted |
 | Description required | Text input with the original description prefilled only if it was non-empty; otherwise empty |
+| Custom field option invalid | Select: the field's current options, or "Drop this value" |
+| Custom field required | Text/number input per field type |
 | Running entry | Radio: "Start a running timer (start time 09:00, no end)" / "Set an end time" with a datetime input. The running option shows: "Clockify allows one running timer per user. Starting this timer stops the timer that is running now." |
-| Blocked (owner gone, period locked) | No widget. Explanation text and what to do next |
+| Not a regular entry (break, time off, holiday) | No widget. "Only regular time entries can be recreated." |
+| Force timer on (regular user) | No widget. "This workspace only allows running timers. An admin can recreate this entry for you." |
+| Locked period (regular user) | Warning, not a block: "This entry's date may be in a locked period. An admin can recreate it, or unlock the period." |
+| Blocked (owner gone) | No widget. Explanation text and what to do next |
 
 Every selection re-runs preflight (`POST /api/entries/{id}/preflight` with `choices`). The confirm
 button activates only when the plan has no blockers and no open ACTION_REQUIRED items.

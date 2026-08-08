@@ -48,7 +48,7 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 
 | Product need | SDK method | Route | Request model | Response model | Notes |
 |---|---|---|---|---|---|
-| Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequest` | `TimeEntry` | Live-verified route (R1). App sends no `customFields` (R5) |
+| Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequest` | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
 | Post-create fetch | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` | — | `TimeEntry` | Verification diff input (F12) |
 | Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `start`,`end`,`description` | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
 | Owner check | `users.list` | `GET /workspaces/{ws}/users` | query `status=ALL`, `memberships` | `UserDtoV1[]` | Membership status = workspace membership |

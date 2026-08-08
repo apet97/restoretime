@@ -32,11 +32,12 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 
 - FACT: Empty, ASCII, emoji, Cyrillic, newlines, tabs, and HTML-entity text round-trip exactly.
   Literal `<`/`>` are rejected by the create API (message "Don't use < and > characters").
-- EVIDENCE: WH S4 (3X); RC edge-case-matrix. Status code reported as 501 (WH) and 400 (RC).
-- CONFIDENCE: PROVED_3X (behavior); INCONSISTENT (status code 400 vs 501).
-- CONSEQUENCE: Never parse error message text to classify; accept both codes. Descriptions from the
-  webhook are always create-safe because they were stored (the API rejected `<`/`>` at the original
-  create). Render descriptions escaped; they can contain entity text that looks like HTML.
+- EVIDENCE: WH S4 (3X); RC edge-case-matrix; operator guide error table. The status-code
+  discrepancy (reports said 400 and 501) is reconciled: HTTP 400 with body `code: 501` (R15).
+- CONFIDENCE: PROVED_3X.
+- CONSEQUENCE: Classify by parsed body code, never message text. Descriptions from the webhook are
+  always create-safe because they were stored (the API rejected `<`/`>` at the original create).
+  Render descriptions escaped; they can contain entity text that looks like HTML.
 
 ### W4 — `billable` is preserved distinctly
 
@@ -176,16 +177,24 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
   project, recreation as a completed entry is blocked; the user must pick a project or recreate as
   running.
 
-### R5 — Custom-field values are not writable; current defaults auto-attach
+### R5 — Custom-field values: writable at create with the `customFields` key
 
-- FACT: `customFieldValues` in create/update bodies is silently ignored on both create routes and
-  on full-body PUT. No per-entry CF endpoint exists. A new entry auto-attaches the current active
-  (VISIBLE+INVISIBLE) workspace custom fields with current defaults.
-- EVIDENCE: LIVE L3–L6; DSWH1 §5; DSWH3 S6; agent-7 G15; operator statement 2026-08-08.
-- CONFIDENCE: PROVED (negative), PROVED (auto-attach).
-- CONSEQUENCE: Never send `customFieldValues` on recreate. Preflight compares source values vs
-  current defaults and warns (fidelity rule F-CF). Post-create verification excludes CF from
-  pass/fail.
+- FACT: Per-entry CF values are settable at create time via
+  `customFields: [{customFieldId, sourceType:"WORKSPACE", value}]` — verified live on BOTH create
+  routes (E1 route B, E2 route A: values stored exactly; numeric strings normalize to numbers).
+  Full-body PUT with the same key edits values (E3; omitted fields reset to default — the product
+  never updates entries). The response-shaped key `customFieldValues` is silently ignored on write
+  (the earlier negative results L3/L4, DSWH1/DSWH3, agent-7 all used that key). Fields not
+  mentioned in the request auto-attach with current workspace defaults. Operator rule: only values
+  that differ from the default can be input — so recreation sends only differing values; equal
+  values attach automatically.
+- EVIDENCE: LIVE E1–E3 (2026-08-08); operator guide (force-timer guide §5/§7, live-tested);
+  operator statement 2026-08-08; negatives: L3/L4, DSWH1 §5, DSWH3 S6, agent-7 G15.
+- CONFIDENCE: PROVED.
+- CONSEQUENCE: Recreation includes `customFields` for source values that differ from current
+  defaults (docs/07 P-CF). Never send the `customFieldValues` key. Post-create verification
+  compares CF values (§9 diff applies). A removed field or invalid dropdown option is a preflight
+  resolution case, not silent loss.
 
 ### R6 — Archived projects accept creation
 
@@ -236,23 +245,27 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 ### R11 — Auth schemes
 
 - FACT: `X-Api-Key` and `X-Addon-Token` are distinct. Sending both → 401 code 1000. Bad API key →
-  401 code 4003. Bad addon token → 401 code 4017. Bearer is unsupported.
-- EVIDENCE: RC addon-token-matrix. CONFIDENCE: PROVED (failure paths); NOT_TESTABLE (addon-token
-  success path).
-- CONSEQUENCE: The REST client sends exactly one auth mode. For this addon: the installation
-  `authToken` as `X-Addon-Token`. The release live suite verifies success paths.
+  401 code 4003. Bad addon token → 401 code 4017. Bearer is unsupported. Operator statement
+  (2026-08-08): an addon token and an API key behave the same toward the REST API.
+- EVIDENCE: RC addon-token-matrix; operator statement.
+- CONFIDENCE: PROVED (failure paths); operator-stated (success-path equivalence), to be confirmed
+  by LV-04.
+- CONSEQUENCE: The REST client sends exactly one auth mode: the installation `authToken` as
+  `X-Addon-Token`. LV-04 remains a release gate, as confirmation of the equivalence on the real
+  addon path (admin recreating another user's entry).
 
 ### R12 — Workspace settings readable
 
 - FACT: Settings expose `forceProjects`, `forceTasks`, `forceTags`, `forceDescription`,
   `onlyAdminsCanChangeBillableStatus`, `timeApprovalEnabled`, `invoicingEnabled`,
-  `lockTimeEntries` (null in the test workspace), `trackTimeDownToSecond`.
+  `lockTimeEntries` (null in the test workspace), `trackTimeDownToSecond`, and `timeTrackingMode`
+  (`"DEFAULT" | "STOPWATCH_ONLY"` — `STOPWATCH_ONLY` is the force-timer setting, R16).
   SDK note: the typed `WorkspaceSettingsDtoV1` carries `forceProjects`, `lockTimeEntries`,
-  `automaticLock`, and `onlyAdminsCanChangeBillableStatus`, but not `timeApprovalEnabled` or
-  `invoicingEnabled` (live-observed only). Preflight reads settings through the SDK model and never
-  depends on the two untyped fields; approval/invoice behavior is an always-shown system
-  difference, not a settings branch.
-- EVIDENCE: agent-7 §3 (GET workspace/settings); SDK type inspection 2026-08-08.
+  `automaticLock`, `onlyAdminsCanChangeBillableStatus`, and `timeTrackingMode`, but not
+  `timeApprovalEnabled` or `invoicingEnabled` (live-observed only). Preflight reads settings
+  through the SDK model and never depends on the two untyped fields; approval/invoice behavior is
+  an always-shown system difference, not a settings branch.
+- EVIDENCE: agent-7 §3 (GET workspace/settings); SDK type inspection 2026-08-08; operator guide.
 - CONFIDENCE: PROVED_ONCE.
 - CONSEQUENCE: Preflight reads these once per preflight. `onlyAdminsCanChangeBillableStatus:true`
   means a regular user's `billable:true` recreate can be forced to `false` by the server — the
@@ -272,17 +285,48 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - EVIDENCE: agent-7. CONFIDENCE: PROVED.
 - CONSEQUENCE: None for recreation. Listed so implementers do not invent an update path.
 
-### R15 — Error codes observed
+### R15 — Error codes (status + body code)
 
-- FACT: 400 for dead references, `start>end`, `limit<1`, missing `type` (code 3001), end-only.
-  401 codes 1000/4003/4017 for auth. 404 for fake workspace and unknown static routes. 405 for
-  wrong method paths. 501 for domain validation (project required, `<`/`>`). 500+ is the ambiguity
-  trigger class.
-- EVIDENCE: RC api-contract-matrix, LIVE probes.
-- CONFIDENCE: PROVED; INCONSISTENT (400 vs 501 for some domain errors across reports).
-- CONSEQUENCE: Failure mapping keys on status class + parsed body `code`/`message` where present,
-  never on message text alone. 4xx → FAILED (not committed; validation is atomic per R3). 5xx or
-  transport failure → AMBIGUOUS.
+- FACT: Clockify errors carry an HTTP status AND a numeric body `code`; classification keys on the
+  code (via SDK `getErrorCode`), never on message text. Verified mapping: 403 + code `4030` =
+  force-timer rejection ("Manual time tracking disabled…"); 403 + code `1003` = locked-period
+  rejection ("Can't edit locked time entry."); 400 + body code `501` = domain validation (project
+  required, `<`/`>` — this reconciles earlier reports that said "400" and "501": both were right);
+  401 codes 1000/4003/4017 (auth); 404 unknown workspace/route; 405 wrong method. 5xx and
+  transport failures are the ambiguity trigger class.
+- EVIDENCE: RC api-contract-matrix; LIVE probes; operator force-timer guide (live-tested
+  2026-08-07/08).
+- CONFIDENCE: PROVED. Note: body code `501` covers several project causes (required, archived —
+  and archived projects actually accept creates, R6) → distinguish causes with preflight lookups,
+  not codes.
+- CONSEQUENCE: 4xx → FAILED with the code-mapped reason (docs/07 §8, UT-M01). 5xx/transport →
+  AMBIGUOUS. Codes 4030 and 1003 map to specific user-facing explanations with the admin-bypass
+  path (R16).
+
+### R16 — Force-timer and locked-period enforcement, with admin bypass
+
+- FACT: Force timer (workspace setting "Manual time tracking disabled"; settings field
+  `timeTrackingMode: "STOPWATCH_ONLY"`) rejects entries that have an `end` with 403 code `4030`.
+  On the plain route A the ban rejects everyone including admins; on the user-scoped route B,
+  regular users are rejected but **owner/admins bypass**. Time locks reject entries in locked
+  ranges with 403 code `1003` for regular users on both routes; **owner/admins are exempt on
+  both**. On route A the ban check fires before the lock check.
+- EVIDENCE: operator force-timer guide (live-tested matrix on the sacrificial workspace,
+  2026-08-07/08); SDK `WorkspaceSettingsDtoV1.timeTrackingMode` type.
+- CONFIDENCE: PROVED (operator live matrix); settings-field mapping SDK-verified.
+- CONSEQUENCE: Preflight rules P-TIMER and P-LOCK (docs/07). The product uses route B exclusively
+  (ADR-004), so: admins can always recreate (bypass); regular users hitting force-timer or a lock
+  get a precise explanation and the "ask an admin" path.
+
+### R17 — Only `REGULAR` entries are recreatable
+
+- FACT: Every captured webhook entry had `type:"REGULAR"`. The create models accept
+  `REGULAR`/`BREAK`; `TimeEntry` responses also include `TIMEOFF`/`HOLIDAY`/`OVERTIME`. Operator
+  directive (2026-08-08): recreate only `REGULAR`; never breaks, time off, or holidays.
+- EVIDENCE: WH payload contract; SDK models; operator directive.
+- CONFIDENCE: PROVED (evidence scope) + directive (product rule).
+- CONSEQUENCE: The source stores `type`; preflight rule P-TYPE blocks non-`REGULAR` sources with
+  an explanation. No UI is built for other types.
 
 ## S-series — SDK facts
 

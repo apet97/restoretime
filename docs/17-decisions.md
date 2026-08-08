@@ -22,6 +22,6 @@ decision requires editing the ADR (status + date) — never silent drift.
   plugin systems — no requirement justifies them (evidence: the whole product is one ingestion
   write and one mutation path).
 - Owner substitution — no evidence for safe semantics (docs/07 §3).
-- Custom-field value writes on recreate — the public API ignores them (R5); retrying them would be
-  dead code.
+- Entry updates of any kind — recreation only creates; the PUT edit path (E3) is deliberately
+  unused.
 - Per-entry rate preservation — impossible by platform design (W6, R9).

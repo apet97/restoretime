@@ -20,6 +20,7 @@ interface DeletedTimeEntry {
   start: string;              // timeInterval.start, UTC ISO-8601, second precision
   end: string | null;         // null when the entry was running at deletion (W12)
   wasRunning: boolean;        // payload `currentlyRunning`
+  type: string;               // payload `type` — "REGULAR"|"BREAK"|"HOLIDAY"|"TIME_OFF"; P-TYPE blocks non-REGULAR (R17)
   timeZone: string;           // display only (W5)
   projectId: string | null;
   projectName: string | null; // display only

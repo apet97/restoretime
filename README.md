@@ -4,12 +4,12 @@ RestoreTime is a Clockify Marketplace add-on. It recovers deleted time entries.
 
 When a user deletes a time entry in Clockify, RestoreTime keeps the entry's data. The user can then
 **recreate** the entry: RestoreTime creates a **new** time entry with the same description, time,
-project, task, tags, and billable flag.
+project, task, tags, billable flag, and custom-field values.
 
 Clockify has no undelete function. The new entry is a new entity. It has a new ID, a new creation
 time, and the approval state `Not submitted`. It is not linked to any invoice. Clockify applies the
-rates that are current at recreation time. Custom fields on the new entry use the current workspace
-defaults.
+rates that are current at recreation time. Only regular time entries are recreated — never breaks,
+time off, or holidays.
 
 ## How it works
 

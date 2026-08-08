@@ -20,11 +20,15 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Workspace requires project (`forceProjects`) | 501 without project; running entries bypass (R4) | P-PROJ-REQ | Project picker or running mode | UT-P08 |
 | Workspace requires description | Not directly probed; settings readable (R12) | P-DESC | Text input | UT-P09 |
 | `onlyAdminsCanChangeBillableStatus` | Regular user + `billable:true`: server behavior UNVERIFIED | P-BILL warning; post-create diff reports actual | Warning + success-view diff line | UT-P10, LV-07 |
-| Locked period | NOT_TESTABLE live; setting formats unverified | P-LOCK warning only (never parses dates, never blocks); create rejection is the backstop (R15) | Warning text; failure view explains the unlock path | UT-P11, LV-08 |
+| Locked period | 403 code 1003 for regular users; owner/admins exempt on both routes (R16) | P-LOCK skips admins; P-LOCK-REG warns regular users (never parses dates); 1003 maps to a precise reason with the admin handoff | Warning text; failure view: "An admin can recreate it, or unlock the period" | UT-P11 |
+| Force timer (`STOPWATCH_ONLY`) | Entries with `end` rejected 403 code 4030: everyone on route A; regular users on route B; admins bypass on route B (R16) | P-TIMER blocks regular viewers of completed entries with the admin handoff; running-mode plans unaffected; admins proceed | Blocked view: "An admin can recreate this entry for you" | UT-P15 |
+| Non-REGULAR entry type (break, holiday, time off) | All evidence entries were `REGULAR`; types enum is REGULAR/BREAK/HOLIDAY/TIME_OFF (R17) | P-TYPE blocker; no recreation attempt | Blocked view: "Only regular time entries can be recreated" | UT-P14 |
 | Description with `<`/`>` | Rejected at original create (W3) — cannot exist in a source | None needed; guard still accepts any stored text | — | CT-03 (fixture) |
 | Emoji/Cyrillic/newline/tab descriptions | Byte-for-byte (W3) | Stored and resent exactly; escaped on render | Rendered as text | UT-N02, UT-X01 |
-| Custom field with user-set value | Values not writable on create; current defaults attach (R5) | P-CF warning; fidelity PARTIAL | Differences line per field | UT-P12 |
-| New required custom field added after deletion | NOT_TESTABLE; create may 400 | Create rejection → FAILED with mapped reason | Failure view explains | LV-08 |
+| Custom field with user-set value | Values written at create via the `customFields` key (R5, E1/E2); defaults auto-attach for untouched fields | P-CF-KEEP/P-CF-WRITE: value preserved; the wrong key (`customFieldValues`) is never sent | No warning when preserved | UT-P16 |
+| Custom field removed after deletion | Field absent from current definitions | P-CF-GONE: value not sent; fidelity PARTIAL | Differences line per field | UT-P12 |
+| Custom-field option removed | Create with a dead option: rejection expected (NOT_TESTABLE) | P-CF-OPT: preflight validates against `allowedValues` → user picks a current option or drops the value | Option select or drop | UT-P16, LV-08 |
+| New required custom field added after deletion | Required CF without default rejects a create that omits it (expected; NOT_TESTABLE) | P-CF-REQ: user enters a value at preflight | Typed input per field | UT-P16, LV-08 |
 | Duplicate recreation click (user + admin) | Creates have no dedup (R7) | Atomic claim; loser sees current state | Second clicker sees "Recreating…" | IT-03 |
 | Ambiguous create, entry committed | No idempotency key (R7, R10) | AMBIGUOUS; baseline-delta reconcile adopts the single match | "Unknown result" → auto-resolved | IT-04 |
 | Ambiguous create, nothing committed | Same | Bounded reconcile → user marks not created → IDLE | "It was not created" action | IT-04 |
@@ -41,6 +45,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 Cases intentionally not handled in v1 (recorded, not silently dropped):
 
 - Owner substitution (assign the new entry to a different user). No evidence for safe semantics.
-- Recreation of `BREAK`/`TIME_OFF`/etc. entry types. All evidence is `REGULAR`; the guard stores
-  `type` and preflight blocks non-`REGULAR` sources with an explanation if they ever arrive.
-- Per-entry custom-field writes. Public API does not support them (R5).
+- Non-`REGULAR` types are handled as a hard blocker (P-TYPE), not as a recreation path — no UI or
+  request construction exists for `BREAK`/`HOLIDAY`/`TIME_OFF` (operator directive, R17).
+- Editing custom-field values on an existing entry is possible via full-body PUT with the
+  `customFields` key (E3) but the product never updates entries — recreation only ever creates.

@@ -100,7 +100,9 @@ it calls), live API calls, metrics polish, dismiss-undismiss UI.
 - POST is never retried (SDK default; do not enable mutation retries).
 - 4xx → FAILED with mapped reason; 5xx/timeout/reset → AMBIGUOUS. Never parse message text to
   classify (R6/R15).
-- No `customFields` on any create (R5). No update/delete of Clockify entries anywhere.
+- CF values go out only as `customFields` items `{customFieldId, sourceType:"WORKSPACE", value}`
+  per P-CF (R5); the `customFieldValues` key is never sent. Only `REGULAR` sources reach the
+  mutation path (P-TYPE). No update/delete of Clockify entries anywhere.
 - `/api/*` derives identity from claims only (docs/09).
 
 ## Tests

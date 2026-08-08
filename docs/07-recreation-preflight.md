@@ -9,7 +9,8 @@ must not invent behavior beyond this document and its evidence references.
 source   DeletedTimeEntry (immutable, from recoverable_entries)
 viewer   { userId, workspaceId, workspaceRole }  — verified component JWT claims only
 choices  user substitutions from the UI (optional): { projectId?, taskId?, dropTagIds?,
-         addTagIds?, description?, runningMode?: "running" | "completed", completedEnd? }
+         addTagIds?, description?, runningMode?: "running" | "completed", completedEnd?,
+         customFieldInputs?: {customFieldId, value}[], dropCustomFieldIds? }
 ```
 
 ## 2. Preflight data fetch
@@ -36,9 +37,11 @@ ACTION_REQUIRED round are validated here, never trusted.
 | ID | Condition | Outcome |
 |---|---|---|
 | P-PERM | viewer is not admin AND `viewer.userId ≠ source.ownerId` | blocker `NOT_PERMITTED` (normally filtered before this point; defense in depth) |
+| P-TYPE | `source.type ≠ "REGULAR"` | blocker `TYPE_NOT_SUPPORTED` — entry types are `REGULAR`/`BREAK`/`HOLIDAY`/`TIME_OFF`; only `REGULAR` is recreated (R17, operator directive) |
 | P-OWNER | owner membership absent or not `ACTIVE` | blocker `OWNER_UNAVAILABLE` (name shown; admin sees membership status) |
 | P-RUN | `source.wasRunning` and no `choices.runningMode` | ACTION_REQUIRED: choose "Recreate as running timer" or "Set an end time". The running choice must carry the warning: Clockify allows one running timer per user — starting this timer stops any timer the owner currently has running (W12 tie-break evidence) |
 | P-RUN-END | `choices.runningMode="completed"` and (`completedEnd` missing or `completedEnd ≤ start`) | ACTION_REQUIRED: end must be after start (R2) |
+| P-TIMER | `timeTrackingMode = "STOPWATCH_ONLY"` AND the plan sends an `end` (completed entry) AND viewer is not admin | blocker `TIMER_REQUIRED` — the workspace forbids manual entries for regular users (403 code 4030). Owner/admins bypass on route B (R16), so the message says: an admin can recreate this entry. Running-mode plans (no `end`) are unaffected. Admin viewers: rule does not apply |
 | P-PROJ-REQ | effective projectId is null AND `forceProjects` AND mode is completed | ACTION_REQUIRED: select a project (running mode also resolves it, R4) |
 | P-PROJ-GONE | source projectId set, lookup 404, no `choices.projectId` | ACTION_REQUIRED: select a replacement project (or "no project" if `!forceProjects`) |
 | P-PROJ-SUB | `choices.projectId` set | validate it exists; substitute (fidelity → ADJUSTED) |
@@ -49,9 +52,14 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-TAG-REQ | all source tags dropped AND `forceTags` AND `addTagIds` empty | ACTION_REQUIRED: select at least one current tag |
 | P-TAG-ARCH | effective tag exists but `archived` | warning `ARCHIVED_TAG` (create behavior for archived tags is UNKNOWN; rejection maps to FAILED with explanation) |
 | P-DESC | `forceDescription` AND effective description empty | ACTION_REQUIRED: user enters a description |
-| P-CF | a source CF with non-null value: field gone/inactive, or current default ≠ source value | warning `CF_VALUE_DIFFERS` per field (name, original value, current default). Never blocks. Fidelity → PARTIAL contribution |
+| P-CF-KEEP | source CF value non-null; field exists and is active; value equals the current default | send nothing — the value auto-attaches (R5). No warning |
+| P-CF-WRITE | field exists and is active; value differs from the current default; value valid for the field type (dropdown: in `allowedValues`; NUMBER: numeric) | include `{customFieldId, sourceType:"WORKSPACE", value}` in `plannedRequest.customFields` (R5) |
+| P-CF-OPT | dropdown value not in current `allowedValues`, no choice made | ACTION_REQUIRED: pick a current option (substitute → ADJUSTED) or drop the value (→ warning, PARTIAL) |
+| P-CF-GONE | field missing or no longer active | warning `CF_FIELD_GONE`; the value is not sent; fidelity → PARTIAL |
+| P-CF-REQ | a required CF has no default and no source value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`) |
 | P-BILL | `onlyAdminsCanChangeBillableStatus` AND viewer not admin AND `source.billable=true` | warning `BILLABLE_MAY_CHANGE` — server may force non-billable; post-create diff reports the actual result (R12) |
-| P-LOCK | any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) | warning `PERIOD_MAY_BE_LOCKED` — lock semantics are NOT_TESTABLE and the setting formats are not verified, so the rule never parses dates and never blocks. Text: "This workspace locks old time entries. If Clockify rejects the recreation, ask an admin to unlock the period." The create-rejection mapping is the enforcement backstop (R15) |
+| P-LOCK | viewer is admin/owner | rule does not apply — admins are lock-exempt on route B (R16, PROVED) |
+| P-LOCK-REG | viewer is regular AND any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) | warning `PERIOD_MAY_BE_LOCKED` — lock-range semantics are not fully verified, so the rule never parses dates and never blocks; the rejection mapping is precise: 403 code 1003 → "The entry's date is in a locked period. An admin can recreate this entry, or unlock the period." (R15, R16) |
 | P-SYS | always | informational system differences: new ID, new timestamps, `UNSUBMITTED`, no invoice link, current rates (R9) |
 
 Owner substitution is not offered. Changing the owner changes the entry's meaning; no evidence
@@ -69,9 +77,12 @@ billable     = source.billable
 projectId    = choices.projectId ?? source.projectId
 taskId       = choices.taskId ?? (project unchanged ? source.taskId : null)
 tagIds       = (source.tags − dropTagIds + addTagIds) as IDs, deduped
+customFields = per P-CF: source values that differ from current defaults (plus user inputs from
+               P-CF-REQ/P-CF-OPT), as [{customFieldId, sourceType:"WORKSPACE", value}];
+               the key is `customFields` — never `customFieldValues`; omitted when empty (R5)
 ```
 
-Anything not listed is never sent. `customFields` is never sent (R5).
+Anything not listed is never sent.
 
 ## 5. Plan output
 
@@ -164,7 +175,8 @@ Compare `plannedRequest` with the fetched new entry:
 | projectId/taskId | exact | `VALUE_DIFFERS` |
 | tagIds | set-equal | `VALUE_DIFFERS` |
 | billable | exact | `VALUE_DIFFERS` (expected when P-BILL warned; report, not alarm) |
-| customFieldValues | never compared for pass/fail (R5) | informational note only |
+| customFields (planned) | per-field value equality against the actual `customFieldValues` (numeric-tolerant: the API normalizes numeric strings to numbers, R5) | `VALUE_DIFFERS` |
+| auto-attached CFs beyond the plan | not compared for pass/fail | informational (they reflect current workspace defaults) |
 | duration | never compared | recomputed by Clockify (W5) |
 
 Diffs are stored on the attempt and shown on the success view ("Clockify applied these changes").
@@ -175,18 +187,17 @@ report, not a gate; the entry exists and is linked.
 
 ```text
 IMPOSSIBLE  any blocker present
-PARTIAL     no blockers; a source value cannot be represented:
-            a non-default source custom-field value (P-CF), or a dropped value the user did not
-            explicitly choose (cannot occur — drops require choice; kept for rule completeness)
+PARTIAL     no blockers; a source value cannot be represented: a custom field whose field is gone
+            or whose value the user chose to drop (P-CF-GONE / P-CF-OPT drop)
 ADJUSTED    no blockers; ≥1 explicit user substitution/drop/input that changes values (project,
-            task, tags, description, or an end time set on a running source)
+            task, tags, description, an end time set on a running source, a replacement or
+            entered custom-field value)
 FULL        otherwise — including running→running recreation: the explicit running-mode choice
             preserves the source state and substitutes nothing
 ```
 
-A custom field that became required after deletion cannot be detected at preflight (P-CF examines
-source values, not new requirements); it surfaces as a create rejection → FAILED with the mapped
-reason (docs/11).
+Custom fields preserved through the write path (P-CF-KEEP/P-CF-WRITE) do not downgrade fidelity —
+the value on the new entry equals the source value (R5).
 
 System differences (new ID, timestamps, UNSUBMITTED, invoice, rates, CF auto-attach of matching
 defaults) never downgrade fidelity. They are always listed on the confirm and success views.

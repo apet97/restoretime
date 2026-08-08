@@ -37,8 +37,9 @@ app — report the defect as a blocker (none were known at planning time; docs/0
    snapshots (ADR-002).
 3. Webhook ingestion = verify → normalize → one `INSERT OR IGNORE` → 204. No inbox table
    (ADR-003).
-4. All creates use `timeEntries.createForUser` with the source owner (ADR-004). Never send
-   `customFields` (the API ignores them; evidence R5).
+4. All creates use `timeEntries.createForUser` with the source owner (ADR-004). Custom fields are
+   sent only via the `customFields` key per the P-CF rules (evidence R5); the response-shaped
+   `customFieldValues` key is never sent. Only `REGULAR` entries are recreated (R17).
 5. Every mutation comes from an ACTIVE, hash-pinned plan that passes revalidation moments before
    the create (ADR-006).
 6. Never silently change a source value. Preserve, ask, warn, or block.

@@ -7,7 +7,7 @@ The product is done when every statement is true and verified.
 - [ ] `TIME_ENTRY_DELETED` ingestion verifies, normalizes, persists, and acks; duplicates are
       no-ops (IT-01, IT-02, CT-01…CT-05).
 - [ ] A regular user sees only their own deleted entries; an admin sees the workspace's (IT-07).
-- [ ] Preflight produces plans that match docs/07 rule-for-rule (UT-P01…P13).
+- [ ] Preflight produces plans that match docs/07 rule-for-rule (UT-P01…P16).
 - [ ] A confirmed, valid plan recreates the entry through `createForUser`; the success view shows
       the new entry, fidelity, and differences (F9, F12; LV-03, LV-04).
 - [ ] Concurrent recreation of the same source is impossible (IT-03).

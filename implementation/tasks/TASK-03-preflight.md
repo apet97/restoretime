@@ -11,5 +11,5 @@
   otherwise ACTIVE plan with `plannedRequest` and fidelity. New plan STALE-supersedes prior ones.
 - Failure behavior: Clockify read failure after SDK retries → "Clockify could not be reached"
   error, no plan persisted.
-- Tests: UT-P01…P13, UT-F01, UT-A01.
+- Tests: UT-P01…P16, UT-F01, UT-A01.
 - Acceptance: every P-* rule has a failing-then-passing unit test; plan JSON matches docs/06.

@@ -30,6 +30,10 @@ canAct(entry)   = canRead(entry)
   `WHERE workspace_id=? AND owner_id=?`. Detail/preflight/recreate re-check the row's owner.
 - No other elevated role exists. Clockify project-level managers get no extra rights in v1; there
   is no evidence for safe semantics, and the addon token operates at workspace level.
+- Platform restrictions interact with roles (R16): owner/admins bypass force-timer and
+  locked-period create restrictions on the user-scoped route; regular users do not. The UI turns
+  this into a handoff: a regular user blocked by P-TIMER/P-LOCK-REG is told an admin can recreate
+  the entry — and an admin opening the same entry sees it actionable.
 
 ## Enforcement points
 

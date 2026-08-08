@@ -53,10 +53,14 @@ Notes:
 ## 3. Outbound write (recreation)
 
 - Method: `timeEntries.createForUser` → `POST /workspaces/{ws}/user/{userId}/time-entries` (R1).
-- Body sent: `{workspaceId, userId, start, end?, description?, billable?, projectId?, taskId?, tagIds?}`.
+- Body sent: `{workspaceId, userId, start, end?, description?, billable?, projectId?, taskId?,
+  tagIds?, customFields?}`.
   - `end` omitted only when the user explicitly chose "recreate as running timer" (W12, R2).
-  - `customFields` is never sent: the API ignores it and the new entry auto-attaches current
-    workspace defaults (R5). The SDK models the field; the product does not use it.
+  - `customFields` is included only per the P-CF rules: source values that differ from current
+    defaults, plus user-entered values, as `[{customFieldId, sourceType:"WORKSPACE", value}]`
+    (R5). The response-shaped key `customFieldValues` is never sent — it is silently ignored.
+  - `type` is never sent: the create default is `REGULAR` and only `REGULAR` sources are
+    recreated (R17).
 - Retry: never. The SDK never retries POST (matches N7). A transport failure or 5xx is AMBIGUOUS
   (docs/07 §8). A 4xx is FAILED with a mapped reason (R15).
 - Response: created entry. Verification still fetches it with `timeEntries.get` and diffs against

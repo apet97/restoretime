@@ -23,6 +23,8 @@ Requirements are numbered for traceability. Tests reference these IDs (docs/13).
 | F15 | Bulk recreation for admins: select entries, preflight each, confirm once, execute independently. | docs/10 §7 |
 | F16 | Offer "recreate as running timer" only when the deleted entry was running, as an explicit choice. | W12 |
 | F17 | On uninstall, delete the workspace's data per the retention policy. | docs/12, docs/08 |
+| F18 | Enforce platform restrictions deterministically: only `REGULAR` entries are recreated (P-TYPE); force-timer workspaces block regular users' completed recreations (P-TIMER); locked periods warn regular users (P-LOCK-REG). Admins bypass both restrictions on the user-scoped route (R16), so blocked regular users are told an admin can recreate the entry. | R16, R17, operator guide |
+| F19 | Preserve custom-field values through the create write path when the field still exists; resolve removed fields and invalid options explicitly. | R5, P-CF rules |
 
 ## Non-functional
 
@@ -41,7 +43,8 @@ Requirements are numbered for traceability. Tests reference these IDs (docs/13).
 
 - Restoration of entry identity, approval state, invoice links, rates, or audit history (impossible
   by platform design — R9).
-- Per-entry custom-field value writes (not supported by the public API — R5).
+- Editing existing entries, including their custom fields (recreation only creates; R5/E3).
+- Recreation of non-`REGULAR` entries — breaks, holidays, time off (R17; preflight blocks them).
 - "Deleted by" attribution (the webhook carries no actor — W13).
 - Real-time sync of any Clockify data other than deleted time entries.
 - Use of `/entities/deleted`, `/entities/created`, `/entities/updated` (ADR-002).

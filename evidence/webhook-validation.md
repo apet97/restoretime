@@ -67,25 +67,43 @@ All probe entries were deleted after measurement. These close gaps the campaigns
 | L3 | `customFieldValues` in create body, plain route and user-scoped route | Values silently ignored (stored `null`) | PROVED (also DSWH1, DSWH3, agent-7) |
 | L4 | `customFieldValues` in full-body `PUT /time-entries/{id}`, two item shapes | Silently ignored | PROVED |
 | L5 | Candidate per-entry CF endpoints (6 paths) | 404 (`/time-entries/custom-field-values` 405 per DSWH3) | PROVED |
-| L6 | Create with no `customFieldValues` in body | Current workspace custom fields auto-attached with current defaults (e.g. `test123="tqewq"`) | PROVED (matches operator statement: active VISIBLE+INVISIBLE fields attach automatically) |
+| L6 | Create with no `customFields` in body | Current workspace custom fields auto-attached with current defaults (e.g. `test123="tqewq"`) | PROVED (matches operator statement: active VISIBLE+INVISIBLE fields attach automatically) |
 | L7 | Completed entry without `projectId` in this workspace | 501 "Project is either required field or given project is archived…" | PROVED (message text is generic; archived projects still accept creates per recreation campaign — never classify by message text) |
+| E1 | Create (route B) with `customFields: [{customFieldId, sourceType:"WORKSPACE", value}]` | Values stored exactly; numeric string `"777.5"` returned as number `777.5` | PROVED |
+| E2 | Create (route A, plain) with the same key | Values stored exactly | PROVED |
+| E3 | Full-body PUT with `customFields` | Edit applied; omitted fields reset to default (full-replace semantics) | PROVED (product never updates entries) |
 
-### Custom-field conclusion
+### Custom-field conclusion (corrected 2026-08-08, second revision)
 
-Per-entry custom-field values cannot be written through the public REST v1 entry create/update
-contract (four independent negative observations, L3–L5). A recreated entry receives the **current**
-workspace custom-field set with current default values (L6). Therefore:
+The first revision concluded per-entry CF writes were impossible. That was wrong in cause: every
+negative probe (L3/L4 here, DSWH1, DSWH3, agent-7) sent the **response-shaped** key
+`customFieldValues`, which the API silently ignores. With the correct request key `customFields`
+(items `{customFieldId, sourceType:"WORKSPACE", value}`), values are stored at create on both
+routes (E1/E2) and editable via full-body PUT (E3). The operator confirms: values can be input
+when they differ from the default; untouched fields auto-attach current defaults.
 
-- The recreation request never sends `customFieldValues`.
-- Preflight compares the source entry's stored values against current defaults and warns on
-  difference (fidelity rule F-CF, `docs/07-recreation-preflight.md`).
-- Post-create verification treats custom fields as informational only; they never fail the diff.
+Therefore:
+
+- The recreation request includes `customFields` for source values that differ from current
+  defaults (and for user-entered values), never the `customFieldValues` key.
+- A removed field or invalid dropdown option is an explicit preflight resolution (P-CF rules in
+  docs/07), not silent loss.
+- Post-create verification compares CF values (numeric-tolerant).
+
+### Force-timer and lock evidence (operator guide, live-tested 2026-08-07/08)
+
+`~/Downloads/clockify-force-timer-guide.md` documents the live matrix on the same sacrificial
+workspace: force timer (`timeTrackingMode:"STOPWATCH_ONLY"`) rejects entries with `end` via 403
+code `4030` — everyone on the plain route, regular users only on the user-scoped route
+(owner/admins bypass). Locks reject via 403 code `1003` for regular users; owner/admins are exempt
+on both routes. This grounds docs/01 R15/R16 and preflight rules P-TIMER/P-LOCK.
 
 ## 4. What remains unverifiable here
 
 | Unknown | Why | Handling |
 |---|---|---|
-| Addon-token success path on Clockify REST calls | No installed addon existed in any test environment | Release live suite installs the addon on a sacrificial workspace (docs/13) |
+| Addon-token success path on Clockify REST calls | No installed addon existed in any test environment; operator states API key and addon token act the same toward REST | LV-04 confirms on the real addon path before submission (docs/13) |
 | Approval-enabled deletion payload fields | No approval workspace available | Never claim approval restoration; post-create state is `UNSUBMITTED` (PROVED) |
 | Invoiced-entry deletion | Not producible | Warn category; see docs/11 |
-| Locked-period enforcement | Lock configuration not creatable via API | Preflight reads workspace lock settings where the SDK exposes them; 400/501 create rejections are mapped to user-facing blockers regardless |
+| Locked-period date semantics (which ranges are locked) | Lock configuration not creatable via API; the rejection (403/1003) and admin exemption are PROVED, the range computation is not | P-LOCK-REG warns without date math; rejection mapping is precise (R15/R16) |
+| Archived-tag create behavior | Not probed | P-TAG-ARCH warning; LV-06 closes it |

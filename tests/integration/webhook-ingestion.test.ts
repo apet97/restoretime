@@ -117,6 +117,50 @@ describe("IT-01 duplicate webhook delivery", () => {
   });
 });
 
+describe("IT-06 recreated entry deleted -> new row with parent link", () => {
+  it("a webhook for the recreated entry's own id links back to the original row", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+
+    const first = await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", validBody(), {
+        path: "/webhooks/time-entry-deleted",
+      }),
+    );
+    expect(first.status).toBe(204);
+    const original = server.db
+      .prepare("SELECT id FROM recoverable_entries WHERE workspace_id = ? AND source_entry_id = ?")
+      .get(WORKSPACE_ID, "entry-a") as { id: string };
+
+    // Simulate a completed recreation (the mutation pipeline is exercised end-to-end in
+    // tests/integration/mutation.test.ts and api-walkthrough.test.ts; this test isolates the
+    // lineage-link behavior of the webhook handler itself).
+    server.db
+      .prepare("UPDATE recoverable_entries SET lifecycle_state='RECREATED', new_entry_id='new-entry-x' WHERE id=?")
+      .run(original.id);
+
+    // The new Clockify entry is later deleted too — its own TIME_ENTRY_DELETED webhook arrives.
+    const second = await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        validBody({ id: "new-entry-x", description: "recreated entry, now deleted itself" }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    expect(second.status).toBe(204);
+
+    const childRow = server.db
+      .prepare("SELECT id, parent_recoverable_id FROM recoverable_entries WHERE workspace_id = ? AND source_entry_id = ?")
+      .get(WORKSPACE_ID, "new-entry-x") as { id: string; parent_recoverable_id: string | null };
+    expect(childRow.parent_recoverable_id).toBe(original.id);
+  });
+});
+
 describe("IT-02 wrong webhook token / unknown installation", () => {
   it("a wrong token is rejected 401 with no row", async () => {
     const server = await boot();

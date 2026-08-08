@@ -28,7 +28,9 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [x] Bounded list reads use `iterPages` and surface the page bound instead of returning a partial
       result (IT-14).
 - [x] Recreated-deleted-recreated chains show lineage (IT-06).
-- [x] Uninstall purges the workspace's data (IT-11).
+- [x] Uninstall purges the workspace's data (IT-11) — and **proved live**: a real uninstall on the
+      developer workspace took `recoverable_entries` 132, `recreation_plans` 11,
+      `recreation_attempts` 4 and `installations` 1 all to zero (evidence "Live run 10").
 
 ## Quality bars
 

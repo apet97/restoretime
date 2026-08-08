@@ -169,4 +169,8 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
 - Every failure view answers: what happened, whether anything was created, what to do next (N8).
 - Token refresh: the token lives in memory only. `bridge.subscribe("refreshAddonToken", body => ...)` receives the refreshed token as a window message whose title is `refreshAddonToken` and whose body is the token string. The shell dispatches `bridge.refreshAddonToken()` proactively every 25 minutes (tokens live 30 minutes). On API 401 the shell dispatches a refresh, waits up to 5 seconds for the message, retries the call once with the new token, and on timeout shows a session-expired notice ("Reload the component").
 - Disabled addon (STATUS_CHANGED INACTIVE): a notice "RestoreTime is disabled for this workspace"
-  replaces actions; lists stay readable.
+  replaces actions; lists stay readable. Note what this is actually for: Clockify removes a disabled
+  add-on from its own interface — the sidebar entry disappears and `/addons/<key>` redirects away
+  (verified on the developer environment, evidence "Live run 10") — so a user cannot navigate to the
+  notice. It covers the iframe that was already open when the status changed. The protection that
+  matters is the server-side `actionGuard` refusal, because that stale iframe can still POST.

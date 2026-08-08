@@ -132,13 +132,22 @@ export interface ListFilters {
   readonly status?: LifecycleState;
   readonly search?: string;
   readonly dismissed?: boolean;
+  /** Caps how many rows come back. The list route always sets this: every returned row costs a
+   * preflight with its own Clockify lookups, so an unbounded read is an unbounded fan-out. */
+  readonly limit?: number;
+}
+
+/** `list` fetched one row beyond `limit`, meaning older rows exist that were not returned. */
+export interface ListPage {
+  readonly rows: RecoverableEntry[];
+  readonly truncated: boolean;
 }
 
 export function list(
   db: Database.Database,
   workspaceId: string,
   filters: ListFilters,
-): RecoverableEntry[] {
+): ListPage {
   const clauses = ["workspace_id = @workspaceId"];
   const params: Record<string, unknown> = { workspaceId };
 
@@ -176,12 +185,21 @@ export function list(
     params.search = `%${filters.search.replace(/[%_\\]/g, "\\$&")}%`;
   }
 
+  // Fetch one past the cap so "there are more" is observed, never guessed from a full page.
+  let limitSql = "";
+  if (filters.limit !== undefined) {
+    limitSql = " LIMIT @limitPlusOne";
+    params.limitPlusOne = filters.limit + 1;
+  }
+
   const rows = db
     .prepare<Record<string, unknown>, EntryRow>(
-      `SELECT * FROM recoverable_entries WHERE ${clauses.join(" AND ")} ORDER BY detected_at DESC`,
+      `SELECT * FROM recoverable_entries WHERE ${clauses.join(" AND ")} ORDER BY detected_at DESC${limitSql}`,
     )
     .all(params);
-  return rows.map(rowToEntry);
+
+  const truncated = filters.limit !== undefined && rows.length > filters.limit;
+  return { rows: (truncated ? rows.slice(0, filters.limit) : rows).map(rowToEntry), truncated };
 }
 
 export interface ClaimInput {

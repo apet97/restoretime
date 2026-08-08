@@ -15,6 +15,7 @@ export const WEBHOOK_PATH = "/webhooks/time-entry-deleted";
 const COMPONENT_PATH = "/component";
 export const ICON_PATH = "/icon.svg";
 export const STATIC_APP_JS_PATH = "/static/app.js";
+export const STATIC_APP_CSS_PATH = "/static/app.css";
 const LIFECYCLE_PATHS = {
   installed: "/lifecycle/installed",
   statusChanged: "/lifecycle/status-changed",

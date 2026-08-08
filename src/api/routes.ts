@@ -147,6 +147,12 @@ function emitPreflightMetrics(logger: Logger, result: { readonly blockers: reado
 
 // --- GET /api/entries ------------------------------------------------------------------
 
+/** How many rows one list render may return. Every row costs a preflight with its own Clockify
+ * lookups (see the `summaries` fan-out below), so this bounds real API traffic, not just payload
+ * size. A workspace that deletes heavily reached 127 rows within a day of testing. Older rows stay
+ * reachable through the filters. */
+const LIST_PAGE_SIZE = 50;
+
 async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLSearchParams) {
   const adminUserId = isAdmin(viewer) ? query.get("userId") : null;
   const projectId = query.get("projectId");
@@ -167,7 +173,7 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     ...(query.get("dismissed") === "true" ? { dismissed: true } : {}),
   };
 
-  const rows = entries.list(deps.db, viewer.workspaceId, filters);
+  const { rows, truncated } = entries.list(deps.db, viewer.workspaceId, { ...filters, limit: LIST_PAGE_SIZE });
 
   let shared: SharedWorkspaceData | undefined;
   let clockifyUnavailable = false;
@@ -206,7 +212,13 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
   // docs/10 §8 "disabled addon" notice: STATUS_CHANGED -> INACTIVE keeps the workspace's data (it
   // can be re-enabled), so the list still returns rows; the shell replaces actions with a notice.
   const installationStatus = getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId);
-  return json(200, { entries: summaries, clockifyUnavailable, disabled: installationStatus === "INACTIVE" });
+  return json(200, {
+    entries: summaries,
+    clockifyUnavailable,
+    disabled: installationStatus === "INACTIVE",
+    truncated,
+    limit: LIST_PAGE_SIZE,
+  });
 }
 
 // --- GET /api/entries/detail -------------------------------------------------------------
@@ -578,7 +590,9 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
         fidelity: result.fidelity,
       });
       const status = plan.blockers.length > 0 ? "blocked" : plan.actionRequired.length > 0 ? "needs-input" : "ready";
-      results.push({ entryId: id, status, plan });
+      // `source` is what lets the review view name each row. Without it a "ready" row rendered as
+      // "Ready — " with nothing to review, which is the one thing that view exists to let an admin do.
+      results.push({ entryId: id, status, plan, source: row.source });
     } catch (err) {
       if (err instanceof PreflightTruncatedError) {
         results.push({ entryId: id, status: "error", message: err.message });

@@ -101,6 +101,19 @@ describe("GET /component", () => {
     // does not enforce CSP — which is exactly how it reached a real browser. This asserts the
     // served policy instead; the live violation event is in evidence/live-release-run.md.
     expect(csp).toContain("connect-src 'self'");
+    // Third directive with the same story: the stylesheet is an external resource, so without
+    // style-src `default-src 'none'` blocks it and the component renders unstyled.
+    expect(csp).toContain("style-src 'self'");
+    expect(String(response.body)).toContain('<link rel="stylesheet" href="/static/app.css">');
+  });
+
+  it("serves the stylesheet the shell links, as CSS", async () => {
+    const server = await boot();
+    const response = await server.addon.handle({ method: "GET", path: "/static/app.css", headers: {} });
+    // Built from src/ in this suite (no dist/), so the loader reports missing rather than 200 —
+    // what matters here is that the route exists and is not a 404, which would leave the <link>
+    // above pointing at nothing.
+    expect(response.status).not.toBe(404);
   });
 
   it("rejects an invalid token with 401", async () => {
@@ -141,7 +154,9 @@ describe("GET /api/entries", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false });
+    // `truncated`/`limit` are part of the list contract: the server bounds the page, so the UI can
+    // say "showing the N most recent" instead of letting a full page read as "everything".
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false, truncated: false, limit: 50 });
   });
 
   it("rejects a request with no Authorization header", async () => {

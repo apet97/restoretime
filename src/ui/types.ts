@@ -46,6 +46,9 @@ export interface ListResponse {
   readonly entries: readonly ListRow[];
   readonly clockifyUnavailable: boolean;
   readonly disabled: boolean;
+  /** Older rows matched the filters but were not returned (server bound, not a UI choice). */
+  readonly truncated: boolean;
+  readonly limit: number;
 }
 
 export interface DetailResponse {
@@ -116,6 +119,8 @@ export interface BulkPreflightRow {
   readonly status: "not-found" | "error" | "blocked" | "needs-input" | "ready";
   readonly message?: string;
   readonly plan?: RecreationPlan;
+  /** Absent only for `not-found`, where there is no entry left to describe. */
+  readonly source?: DeletedTimeEntry;
 }
 
 export type BulkRecreateRow =

@@ -8,7 +8,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && mkdir -p dist/store/migrations dist/static && cp src/store/migrations/*.sql dist/store/migrations/ && esbuild src/ui/app.ts --bundle --outfile=dist/static/app.js --format=iife --target=es2020",
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/store/migrations dist/static && cp src/store/migrations/*.sql dist/store/migrations/ && cp src/ui/app.css dist/static/app.css && esbuild src/ui/app.ts --bundle --outfile=dist/static/app.js --format=iife --target=es2020",
     "start": "node dist/server.js",
     "dev": "npm run build && node --watch dist/server.js",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json && tsc -p tsconfig.e2e.json",

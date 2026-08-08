@@ -302,5 +302,5 @@ export function renderResolutionWidgets(
     renderDescriptionWidget(choices, reflow, actionRequired),
     renderCustomFieldsWidget(ctx, choices, reflow, actionRequired, source),
   ].filter((w): w is HTMLElement => w !== null);
-  return el("section", { "aria-label": "Needs your input" }, el("h3", {}, "Needs your input"), ...widgets);
+  return el("section", { "aria-label": "Needs your input", class: "rt-notice" }, el("h3", {}, "Needs your input"), ...widgets);
 }

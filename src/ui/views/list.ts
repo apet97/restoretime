@@ -91,6 +91,12 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     nodes.push(el("p", {}, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
   } else {
     nodes.push(el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, data.disabled, syncReviewButton))));
+    // Say so when the server withheld older rows, rather than letting a full page read as "all".
+    if (data.truncated) {
+      nodes.push(
+        el("p", {}, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
+      );
+    }
   }
 
   if (ctx.isAdminRole && filters.bulkMode) {
@@ -191,7 +197,7 @@ function renderRow(
   const status = statusLabel(row);
   const actionable = row.lifecycleState === "IDLE" || row.lifecycleState === "FAILED";
 
-  const openButton = el("button", { type: "button" }, header);
+  const openButton = el("button", { type: "button", class: "rt-title" }, header);
   openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
 
   const lines = [
@@ -203,7 +209,7 @@ function renderRow(
   ];
 
   if (actionable && !disabledInstallation) {
-    const recreateButton = el("button", { type: "button" }, "Recreate");
+    const recreateButton = el("button", { type: "button", class: "rt-primary" }, "Recreate");
     recreateButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
     lines.push(el("div", {}, recreateButton));
   }

@@ -65,7 +65,7 @@ export async function runAction<T>(ctx: Ctx, action: () => Promise<T>, onSuccess
  * for every case this helper is used on (reads, and preflight, which never mutates Clockify). */
 export function renderApiError(root: HTMLElement, err: unknown, retry: () => void): void {
   const message = err instanceof ApiError ? apiErrorMessage(err) : "RestoreTime could not complete that request.";
-  const retryButton = el("button", { type: "button" }, "Try again");
+  const retryButton = el("button", { type: "button", class: "rt-primary" }, "Try again");
   retryButton.addEventListener("click", retry);
   mount(root, el("section", {}, el("p", {}, message), retryButton));
 }
@@ -105,14 +105,16 @@ export function renderDifferences(plan: RecreationPlan): HTMLElement {
           ...planWarnings.map((w) => el("li", {}, w.message)),
         )
       : null;
-  return el("section", {}, el("h3", {}, "Differences"), systemDiffs, ...(warningsList ? [warningsList] : []));
+  return el("section", { "aria-label": "Differences" }, el("h3", {}, "Differences"), systemDiffs, ...(warningsList ? [warningsList] : []));
 }
 
 export function renderBlockers(blockers: readonly PlanBlocker[]): HTMLElement | null {
   if (blockers.length === 0) return null;
   return el(
     "section",
-    {},
+    // rt-notice, not a bare <section>: the stylesheet marks what the user must not miss, and
+    // "Differences" is routine information that must not borrow the same alarm.
+    { class: "rt-notice" },
     el("h3", {}, "This entry cannot be recreated yet"),
     el("ul", {}, ...blockers.map((b) => el("li", {}, b.message))),
   );

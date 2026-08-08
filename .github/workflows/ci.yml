@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# The default GITHUB_TOKEN cannot list a pull request's commits, which gitleaks needs to scan the
+# diff — without these it fails with "Resource not accessible by integration" (403). Least
+# privilege: read-only, and only the two scopes the scan needs.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest

@@ -196,3 +196,93 @@ recursing into itself — a real bug this exact check caught during review befor
 ## 5. Operator inputs still required (full list)
 
 See `implementation/reports/PASS-05.md` §Operator inputs for the complete, current list.
+
+---
+
+# Live run 2 — 2026-08-08, developer environment, real installed addon
+
+The first PASS-05 run could not reach any live row. This one did. The operator supplied credentials
+and installed the addon, and the target environment is `developer.clockify.me` (their direction —
+it is also where DS-01…DS-03 already run).
+
+## Result: LV-01…LV-10 pass; LV-08 skips for a platform reason
+
+```
+$ npm run test:live
+ Test Files  10 passed (10)
+      Tests  10 passed | 1 skipped (11)
+```
+
+Reproduced twice with identical results.
+
+| Row | Result | What it proved live |
+|---|---|---|
+| LV-01 | pass | manifest, icon and bundle served from the deployed host; `/component` refuses an unverified caller |
+| LV-02 | pass | a real delete fired `TIME_ENTRY_DELETED` — **and the deployed addon received and persisted it** (below) |
+| LV-03 | pass | plan → confirm → RECREATED end to end against real Clockify. Partial: no usable custom field, so the R5 assertion did not run |
+| LV-04 | pass | **R11 closed on the real addon path** — an admin recreated another user's entry using the installation's own addon token |
+| LV-05 | pass | P-PROJ-GONE and P-TAG-ARCH both surfaced; supplying choices produced a real recreated entry |
+| LV-07 | pass | **R12 closed** — `onlyAdminsCanChangeBillableStatus=false`, `defaultBillableProjects=true`; P-BILL fired for a regular viewer exactly as the rule says |
+| LV-09 | pass | description-filtered `listForUser` reflects a fresh create immediately; the fingerprint round-trips against a real fetched entry; a running entry shows `end:null` unfiltered; **no windowed query is ever sent** (R10) |
+| LV-10 (a) | pass | **the hard gate.** With `RT_CHAOS_FETCH=lose-response` the create really committed at Clockify while the caller saw a transport failure → AMBIGUOUS → reconcile adopted it → RECREATED |
+| LV-10 (b) | pass | nothing sent → AMBIGUOUS → bounded reconcile found nothing → "not created" → IDLE |
+| LV-08 | **skipped** | see below |
+
+## Webhook receipt, confirmed from the addon's own logs
+
+LV-02 states it cannot confirm receipt. The operator can, and did — the deployed instance logged a
+matched pair for every probe delete:
+
+```
+{"msg":"metric:webhook_received",    "workspaceId":"69bda6b317a0c5babe34b4ff"}
+{"msg":"metric:recoverable_created", "workspaceId":"69bda6b317a0c5babe34b4ff"}
+```
+
+Sixteen pairs, and 14 rows persisted in `recoverable_entries`. Delete in Clockify → RS256-verified
+delivery → normalized row. W11 and the ingestion path are proved end to end on a real installation.
+
+## New live findings
+
+1. **A custom field created through `customFields.createForWorkspace` arrives `status: "INACTIVE"`.**
+   Probed directly: create returns 201 with `status: "INACTIVE"`, and both the API key and the addon
+   token then list it as INACTIVE. The app is right to ignore it (S6: active means
+   `status !== "INACTIVE"`), so no P-CF-* rule fires for a freshly created field.
+2. **Activating it is not possible here.** `customFields.updateForWorkspace` with
+   `status: "VISIBLE"` answers **500** on this workspace. LV-08 therefore cannot stage its scenario
+   at all and reports a skip naming the exact status. Nothing in that setup exercises product code,
+   so this is a workspace/plan-shape gap — not a suite or product defect. **R23's custom-field
+   item-shape question stays open.**
+3. **The live suite must run sequentially.** With ten files in parallel against one workspace the
+   results were flaky — different rows failed on each run, all with real Clockify errors. Serialised
+   (`--no-file-parallelism`) it is stable across repeated runs. The failures were the suite racing
+   itself, never the product.
+
+## Suite defects this run exposed and fixed
+
+- `buildLiveRestClient` passed the API key through the app's client factory, which always sends
+  `X-Addon-Token`. Clockify answered `401 code 4017`, and the test then claimed "a real R11 finding,
+  not a suite defect" — blaming the platform for our own wiring. The probe client now uses the SDK's
+  `apiKey` mode, and the 401 message distinguishes `4003` (bad API key) from `4017` (bad addon
+  token).
+- The app-driving rows accepted an API key as the installation token. They now require a real
+  `CK_LIVE_ADDON_TOKEN` and report blocked without it — otherwise LV-04 could look green while
+  proving nothing about R11, which is the one thing it exists to prove.
+- Probe fixtures created entries with no project on a `forceProjects` workspace, so Clockify
+  rejected them with `400 code 501` (R4). Fixtures now attach a real project, which is also what a
+  genuine deleted entry there looks like.
+- LV-09's planned request omitted `projectId` while its probe entry had one, so `fingerprintMatches`
+  correctly reported a mismatch. The fixture now describes the entry it actually created.
+
+## Cleanup
+
+A post-run sweep of every workspace member's entries, the workspace's custom fields, and its tags
+found **zero** remaining `RT-PROBE-` artefacts.
+
+## What is still not verified
+
+- **Production (`app.clockify.me`).** Everything above is the developer environment. The production
+  sacrificial workspace has never been exercised.
+- **An authenticated component render.** Only Clockify's platform key can sign a real component
+  session, so LV-01 proves the boundary rejects unverified callers, not that a signed load renders.
+  That stays the docs/15 step-6 production smoke.
+- **R23's custom-field item shape**, blocked by finding 2 above.

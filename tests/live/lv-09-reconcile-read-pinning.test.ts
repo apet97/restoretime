@@ -22,8 +22,10 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
+  pickUsableProject,
   recordingPassthroughFetch,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
@@ -48,6 +50,12 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
       expect(check.blocked).toBe(true);
       return;
     }
+    const tokenCheck = checkLiveAddonToken(check.env);
+    if (tokenCheck.blocked) {
+      console.log(`LV-09 ${tokenCheck.reason}`);
+      expect(tokenCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
     const restClient = buildLiveRestClient(env);
 
@@ -64,6 +72,8 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
       const start = new Date(Date.now() - 5 * 60 * 1000);
       const end = new Date(start.getTime() + 3 * 60 * 1000);
       const description = `${RT_PROBE_PREFIX}LV09 ${randomUUID()}`;
+      // R4: a `forceProjects` workspace rejects a completed create without a project (400/501).
+      const probeProject = await pickUsableProject(restClient, env.workspaceId);
       const created = await restClient.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: owner.id,
@@ -71,12 +81,17 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         end: end.toISOString(),
         description,
         billable: false,
+        ...(probeProject ? { projectId: probeProject.id } : {}),
       });
       probeEntryId = created.id;
 
       const filtered = await restClient.timeEntries.listForUser({ workspaceId: env.workspaceId, userId: owner.id, description });
       expect(filtered.some((e) => e.id === created.id), "a fresh create must be immediately visible through the description-filtered listForUser read").toBe(true);
 
+      // The planned request must describe the entry that was actually created, project included:
+      // `fingerprintMatches` compares `projectId`, so omitting it here would make the fingerprint
+      // legitimately report "not the same entry" — the function doing exactly its job, and the
+      // assertion below failing for a fixture reason rather than a product one.
       const planned: PlannedRequest = {
         workspaceId: env.workspaceId,
         userId: owner.id,
@@ -84,6 +99,7 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         end: end.toISOString(),
         description,
         billable: false,
+        ...(probeProject ? { projectId: probeProject.id } : {}),
       };
       const fp = fingerprintFromPlanned(planned);
       const match = filtered.find((e) => e.id === created.id)!;
@@ -97,6 +113,7 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         start: runningStart.toISOString(),
         description: `${RT_PROBE_PREFIX}LV09-running ${randomUUID()}`,
         billable: false,
+        ...(probeProject ? { projectId: probeProject.id } : {}),
       });
       runningEntryId = running.id;
       const unfiltered = await restClient.timeEntries.listForUser({ workspaceId: env.workspaceId, userId: owner.id });
@@ -120,8 +137,10 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         wasRunning: false,
         type: "REGULAR",
         timeZone: null,
-        projectId: null,
-        projectName: null,
+        // R4: a `forceProjects` workspace needs a project, or the plan comes back ACTION_REQUIRED
+        // and the recreate this row drives (to prove the reads are never windowed) never happens.
+        projectId: probeProject?.id ?? null,
+        projectName: probeProject?.name ?? null,
         clientName: null,
         taskId: null,
         taskName: null,

@@ -15,6 +15,7 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   deletedEntryFromLiveTimeEntry,
   describeIfAuthRejected,
@@ -38,6 +39,12 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
     if (check.blocked) {
       console.log(`LV-03 ${check.reason}`);
       expect(check.blocked).toBe(true);
+      return;
+    }
+    const tokenCheck = checkLiveAddonToken(check.env);
+    if (tokenCheck.blocked) {
+      console.log(`LV-03 ${tokenCheck.reason}`);
+      expect(tokenCheck.blocked).toBe(true);
       return;
     }
     const env: LiveEnv = check.env;

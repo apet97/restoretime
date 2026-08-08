@@ -20,3 +20,6 @@ omp-session-*.html
 
 # Agent worktrees (harness-managed, never part of the product)
 .claude/
+
+# Live-run state (encrypted installation records + the codec key). Never committed.
+var/

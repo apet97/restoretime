@@ -14,7 +14,15 @@
 // metric lines, docs/14 "Metrics", or the docs/15 "Production smoke" step).
 import { describe, expect, it } from "vitest";
 import { ClockifyApiError } from "clockify-sdk-ts-115";
-import { buildLiveRestClient, checkLiveDeployedHost, checkLiveEnv, describeIfAuthRejected, RT_PROBE_PREFIX, type LiveEnv } from "./support.js";
+import {
+  buildLiveRestClient,
+  checkLiveDeployedHost,
+  checkLiveEnv,
+  describeIfAuthRejected,
+  pickUsableProject,
+  RT_PROBE_PREFIX,
+  type LiveEnv,
+} from "./support.js";
 
 describe("LV-02 webhook delivery trigger (docs/13)", () => {
   it("deleting a real entry via CK_LIVE_API_KEY is the trigger side of webhook delivery; receipt at the deployed addon is not verifiable from this suite", async () => {
@@ -47,6 +55,9 @@ describe("LV-02 webhook delivery trigger (docs/13)", () => {
 
       const start = new Date(Date.now() - 15 * 60 * 1000);
       const end = new Date(start.getTime() + 5 * 60 * 1000);
+      // R4: this workspace may set `forceProjects`, which rejects a completed create without a
+      // project (400 code 501). A real deleted entry there always had one, so the probe does too.
+      const probeProject = await pickUsableProject(client, env.workspaceId);
       const created = await client.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: active.id,
@@ -54,6 +65,7 @@ describe("LV-02 webhook delivery trigger (docs/13)", () => {
         end: end.toISOString(),
         description: `${RT_PROBE_PREFIX}LV02 ${start.toISOString()}`,
         billable: false,
+        ...(probeProject ? { projectId: probeProject.id } : {}),
       });
 
       // The delete itself IS the trigger LV-02 exists to fire — Clockify's platform is what

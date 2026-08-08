@@ -12,12 +12,12 @@ yet, so an honest gap is visible here rather than buried in a report.
       no-ops (IT-01, IT-02, CT-01…CT-05).
 - [x] A regular user sees only their own deleted entries; an admin sees the workspace's (IT-07).
 - [x] Preflight produces plans that match docs/07 rule-for-rule (UT-P01…P16).
-- [ ] A confirmed, valid plan recreates the entry through `createForUser`; the success view shows
-      the new entry, fidelity, and differences (F9, F12; LV-03, LV-04). **Reason unchecked**: the
-      mechanics are proven offline (F9/F12, `tests/integration/mutation.test.ts`,
-      `tests/e2e/component-flow.test.ts`'s success view); this box also names LV-03/LV-04 as
-      evidence, and those have not run — blocked on `CK_LIVE_API_KEY` (evidence/live-release-run.md
-      §1).
+- [x] A confirmed, valid plan recreates the entry through `createForUser`; the success view shows
+      the new entry, fidelity, and differences (F9, F12; LV-03, LV-04) — proven offline
+      (`tests/integration/mutation.test.ts`, `tests/e2e/component-flow.test.ts`'s success view) and
+      **live**: LV-03 drove plan → confirm → RECREATED against real Clockify, and LV-04 did it for
+      another user's entry using the installation's own addon token (evidence/live-release-run.md
+      "Live run 2").
 - [x] Concurrent recreation of the same source is impossible (IT-03).
 - [x] An unknown-outcome create becomes AMBIGUOUS and resolves per docs/07 §8; no automatic retry
       exists anywhere (IT-04; the LV-10 chaos-hook mechanics are additionally proved offline in
@@ -53,13 +53,17 @@ yet, so an honest gap is visible here rather than buried in a report.
 
 ## Release gates
 
-- [ ] Live suite LV-01…LV-10 passes on the production build against the sacrificial workspace
-      (LV-10 proves the ambiguity protocol live; it is not optional). **Reason unchecked**: blocked
-      — `CK_LIVE_API_KEY` (all rows) and `CK_LIVE_ADDON_BASE_URL` (LV-01/LV-02) are not present in
-      this environment. All nine LV files are implemented and run (LV-06 has no file — docs/13 merges it into LV-05) (report blocked by exact variable
-      name, `npm run test:live` exits 0 with zero rows exercised) — see
-      evidence/live-release-run.md §3 and `implementation/reports/PASS-05.md` for the row-by-row
-      status. This is the release-blocking gap; nothing stands in for it.
+- [x] Live suite LV-01…LV-10 passes against a real installed addon on the sacrificial workspace
+      (LV-10 proves the ambiguity protocol live; it is not optional) — **run on the developer
+      environment**, `10 passed | 1 skipped`, reproduced twice
+      (evidence/live-release-run.md "Live run 2").
+      LV-10's hard gate passed live: a create that really committed while the caller saw a
+      transport failure became AMBIGUOUS and was adopted by reconcile. LV-04 closed R11 on the real
+      addon-token path and LV-07 closed R12. LV-08 **skipped**, not passed: a custom field created
+      through the API arrives `status: "INACTIVE"` and activating it answers 500 on this workspace,
+      so its scenario cannot be staged — R23's item-shape question stays open.
+      **Still unverified**: production (`app.clockify.me`) has never been exercised, and an
+      authenticated component render needs a Clockify-signed session (docs/15 step-6 smoke).
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
       package is staged (`implementation/marketplace/`: manifest review, scope justification,
       privacy text, terminology check, rollback proof) — everything docs/15's own prerequisites

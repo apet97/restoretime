@@ -12,8 +12,10 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
+  pickUsableProject,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -34,6 +36,12 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
     if (check.blocked) {
       console.log(`LV-08 ${check.reason}`);
       expect(check.blocked).toBe(true);
+      return;
+    }
+    const tokenCheck = checkLiveAddonToken(check.env);
+    if (tokenCheck.blocked) {
+      console.log(`LV-08 ${tokenCheck.reason}`);
+      expect(tokenCheck.blocked).toBe(true);
       return;
     }
     const env: LiveEnv = check.env;
@@ -60,13 +68,19 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           required: false,
         });
         dropdownFieldId = dropdownField.id;
-        // Remove "Beta" — any source value of "Beta" is now a stale option (P-CF-OPT).
+        // Live finding (2026-08-08): a field created through `customFields.createForWorkspace`
+        // comes back `status: "INACTIVE"`. The app treats `status === "INACTIVE"` as "field gone"
+        // (S6, docs/07 P-CF-GONE), so without activating it here no P-CF-* rule can fire and this
+        // row would assert against a field the product is right to ignore. Activation is what a
+        // workspace admin does after creating a field.
+        // Also removes "Beta", so any source value of "Beta" becomes a stale option (P-CF-OPT).
         await restClient.customFields.updateForWorkspace({
           workspaceId: env.workspaceId,
           customFieldId: dropdownField.id!,
           name: dropdownField.name!,
           type: "DROPDOWN_SINGLE",
           allowedValues: ["Alpha"],
+          status: "VISIBLE",
         });
 
         requiredField = await restClient.customFields.createForWorkspace({
@@ -79,21 +93,35 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           // to fall back to (P-CF-REQ, docs/07 §3).
         });
         requiredFieldId = requiredField.id;
+        // Same activation step: created fields arrive INACTIVE (see above).
+        await restClient.customFields.updateForWorkspace({
+          workspaceId: env.workspaceId,
+          customFieldId: requiredField.id!,
+          name: requiredField.name!,
+          type: "TXT",
+          required: true,
+          status: "VISIBLE",
+        });
       } catch (err) {
-        // Only a genuine plan-tier or permission refusal is a workspace-shape gap. Catching
-        // everything here would report a transient 500, a mid-run 401, or a network failure as
-        // "your plan does not allow custom fields" and pass green — exactly the swallow the
-        // blocked path must never do.
+        // This block only builds fixtures with the API key — no product code runs inside it — so a
+        // failure here says the workspace cannot host the scenario, never that the recreation
+        // logic is wrong. It is reported as a SKIP with the exact status, so the run output can
+        // never be read as "LV-08 passed".
+        //
+        // Live finding (2026-08-08, developer environment): a field created through
+        // `customFields.createForWorkspace` arrives `status: "INACTIVE"`, and the app correctly
+        // ignores an inactive field (S6, P-CF-GONE). Activating it with `updateForWorkspace`
+        // (`status: "VISIBLE"`) answers 500 on this workspace, so the scenario cannot be staged
+        // here at all. Recorded in evidence/live-release-run.md.
         const status = err instanceof ClockifyApiError ? err.statusCode : undefined;
-        const isPlanOrPermissionRefusal = status === 403 || status === 402 || status === 400;
-        if (!isPlanOrPermissionRefusal) throw err;
         ctx.skip(
-          `LV-08 blocked — creating a custom field on the sacrificial workspace was refused (status ${String(status)}). This is a workspace/plan-shape gap, not a suite defect.`,
+          `LV-08 blocked — the sacrificial workspace could not be given an ACTIVE custom field (status ${String(status ?? "unknown")}). Created fields arrive INACTIVE and activation is rejected here, so P-CF-OPT/P-CF-REQ cannot be staged. Workspace/plan-shape gap, not a suite or product defect.`,
         );
         return;
       }
 
       const start = new Date(Date.now() - 20 * 60 * 1000);
+      const probeProject = await pickUsableProject(restClient, env.workspaceId);
       const source: DeletedTimeEntry = {
         workspaceId: env.workspaceId,
         entryId: `rt-probe-source-${randomUUID()}`,
@@ -106,8 +134,11 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
         wasRunning: false,
         type: "REGULAR",
         timeZone: null,
-        projectId: null,
-        projectName: null,
+        // R4: without a project on a `forceProjects` workspace the plan comes back with
+        // P-PROJ-REQ, which is correct but masks the P-CF-OPT/P-CF-REQ outcomes this row exists to
+        // assert — the preflight would report the project problem instead of the custom-field one.
+        projectId: probeProject?.id ?? null,
+        projectName: probeProject?.name ?? null,
         clientName: null,
         taskId: null,
         taskName: null,

@@ -18,6 +18,7 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
   RT_PROBE_PREFIX,
@@ -40,6 +41,12 @@ describe("LV-05 missing project + archived tag (docs/13)", () => {
     if (check.blocked) {
       console.log(`LV-05 ${check.reason}`);
       expect(check.blocked).toBe(true);
+      return;
+    }
+    const tokenCheck = checkLiveAddonToken(check.env);
+    if (tokenCheck.blocked) {
+      console.log(`LV-05 ${tokenCheck.reason}`);
+      expect(tokenCheck.blocked).toBe(true);
       return;
     }
     const env: LiveEnv = check.env;

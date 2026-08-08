@@ -30,8 +30,10 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
+  pickUsableProject,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -47,7 +49,19 @@ afterEach(() => {
   delete process.env.RT_CHAOS_FETCH;
 });
 
-function freshSource(env: LiveEnv, ownerId: string, ownerName: string, tag: string): DeletedTimeEntry {
+/** The synthetic deleted entry this drill recreates.
+ *
+ * `project` must be supplied on a workspace that sets `forceProjects` (R4): without one the plan
+ * legitimately comes back with P-PROJ-REQ ACTION_REQUIRED and `/api/entries/recreate` refuses it
+ * with 422 — correct product behaviour, but it means the chaos hook never runs and the drill
+ * proves nothing. A real deleted entry on such a workspace always carried a project. */
+function freshSource(
+  env: LiveEnv,
+  ownerId: string,
+  ownerName: string,
+  tag: string,
+  project: { id: string; name: string } | undefined,
+): DeletedTimeEntry {
   const start = new Date(Date.now() - 25 * 60 * 1000);
   return {
     workspaceId: env.workspaceId,
@@ -61,8 +75,8 @@ function freshSource(env: LiveEnv, ownerId: string, ownerName: string, tag: stri
     wasRunning: false,
     type: "REGULAR",
     timeZone: null,
-    projectId: null,
-    projectName: null,
+    projectId: project?.id ?? null,
+    projectName: project?.name ?? null,
     clientName: null,
     taskId: null,
     taskName: null,
@@ -79,6 +93,12 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(check.blocked).toBe(true);
       return;
     }
+    const tokenCheckA = checkLiveAddonToken(check.env);
+    if (tokenCheckA.blocked) {
+      console.log(`LV-10(a) ${tokenCheckA.reason}`);
+      expect(tokenCheckA.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
     const restClient = buildLiveRestClient(env);
     let createdEntryId: string | undefined;
@@ -89,7 +109,8 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(owner, "at least one ACTIVE user is required").toBeDefined();
       if (!owner) return;
 
-      const source = freshSource(env, owner.id, owner.name, "a");
+      const probeProject = await pickUsableProject(restClient, env.workspaceId);
+      const source = freshSource(env, owner.id, owner.name, "a", probeProject);
       harness = await bootLiveHarness(env);
       const recoverableId = randomUUID();
       seedRecoverableEntry(harness, { id: recoverableId, sourceEntryId: source.entryId, ownerId: owner.id, source });
@@ -170,6 +191,12 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(check.blocked).toBe(true);
       return;
     }
+    const tokenCheckB = checkLiveAddonToken(check.env);
+    if (tokenCheckB.blocked) {
+      console.log(`LV-10(b) ${tokenCheckB.reason}`);
+      expect(tokenCheckB.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
     const restClient = buildLiveRestClient(env);
 
@@ -179,7 +206,8 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(owner, "at least one ACTIVE user is required").toBeDefined();
       if (!owner) return;
 
-      const source = freshSource(env, owner.id, owner.name, "b");
+      const probeProject = await pickUsableProject(restClient, env.workspaceId);
+      const source = freshSource(env, owner.id, owner.name, "b", probeProject);
       harness = await bootLiveHarness(env);
       const recoverableId = randomUUID();
       seedRecoverableEntry(harness, { id: recoverableId, sourceEntryId: source.entryId, ownerId: owner.id, source });

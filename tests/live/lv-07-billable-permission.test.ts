@@ -20,6 +20,7 @@ import {
   apiCall,
   bootLiveHarness,
   buildLiveRestClient,
+  checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
   RT_PROBE_PREFIX,
@@ -42,6 +43,12 @@ describe("LV-07 billable-permission warning against the real workspace setting (
     if (check.blocked) {
       console.log(`LV-07 ${check.reason}`);
       expect(check.blocked).toBe(true);
+      return;
+    }
+    const tokenCheck = checkLiveAddonToken(check.env);
+    if (tokenCheck.blocked) {
+      console.log(`LV-07 ${tokenCheck.reason}`);
+      expect(tokenCheck.blocked).toBe(true);
       return;
     }
     const env: LiveEnv = check.env;

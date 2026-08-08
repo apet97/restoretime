@@ -1,0 +1,170 @@
+{
+  "id": "ENTRY_S2",
+  "description": "DSWH3_s2 🚀 ДСВХ3_тест\nsecond line with tab\there\n&amp;lt;b&amp;gt;bold&amp;lt;/b&amp;gt; &amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt; &amp;amp; &amp;lt;a href=&quot;x&quot;&amp;gt;link&amp;lt;/a&amp;gt;",
+  "userId": "UID1",
+  "billable": true,
+  "projectId": "PROJ_A",
+  "timeInterval": {
+    "start": "2026-08-08T01:00:00Z",
+    "end": "2026-08-08T04:15:30Z",
+    "duration": "PT3H15M30S",
+    "timeZone": "Europe/Belgrade",
+    "offsetStart": 7200,
+    "offsetEnd": 7200,
+    "zonedStart": "2026-08-08T03:00:00",
+    "zonedEnd": "2026-08-08T06:15:30"
+  },
+  "workspaceId": "WSID",
+  "isLocked": false,
+  "hourlyRate": null,
+  "costRate": null,
+  "customFieldValues": [
+    {
+      "customFieldId": "CF_test123",
+      "timeEntryId": "ENTRY_S2",
+      "value": "tqewq",
+      "name": "test123"
+    },
+    {
+      "customFieldId": "CF_MCP_TEST_FIELD",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "MCP-TEST-FIELD"
+    },
+    {
+      "customFieldId": "CF_RARARARARARARAr",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "RARARARARARARAr"
+    },
+    {
+      "customFieldId": "CF_AAAAAASSSSSSSS",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "AAAAAASSSSSSSS"
+    },
+    {
+      "customFieldId": "CF_DSR8_Text",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "DSR8_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR8_Number",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "DSR8_CF_Number"
+    },
+    {
+      "customFieldId": "CF_DSR9_Text",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "DSR9_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR9_Dropdown",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "DSR9_CF_Dropdown"
+    },
+    {
+      "customFieldId": "CF_DSR9_Number",
+      "timeEntryId": "ENTRY_S2",
+      "value": null,
+      "name": "DSR9_CF_Number"
+    }
+  ],
+  "type": "REGULAR",
+  "kioskId": null,
+  "approvalStatus": null,
+  "detailedApprovalStatus": null,
+  "projectCurrency": null,
+  "currentlyRunning": false,
+  "project": {
+    "name": "DSWH3_project",
+    "hourlyRate": {
+      "amount": 2500
+    },
+    "costRate": {
+      "amount": 1000
+    },
+    "clientId": "CLIENT_A",
+    "workspaceId": "WSID",
+    "billable": true,
+    "memberships": [
+      {
+        "userId": "UID1",
+        "hourlyRate": null,
+        "costRate": null
+      }
+    ],
+    "estimate": {
+      "estimate": "PT0S",
+      "type": "AUTO"
+    },
+    "color": "#FF5722",
+    "archived": false,
+    "clientName": "DSWH3_client",
+    "duration": "PT0S",
+    "note": "",
+    "activeEstimate": "NONE",
+    "timeEstimate": {
+      "includeNonBillable": true,
+      "estimate": 0,
+      "type": "AUTO",
+      "resetOption": null
+    },
+    "budgetEstimate": null,
+    "estimateReset": null,
+    "sourceType": null,
+    "auditMetadata": {
+      "updatedAt": 1786141872000
+    },
+    "accessOnPaidPlan": null,
+    "id": "PROJ_A",
+    "public": false,
+    "template": false
+  },
+  "task": {
+    "name": "DSWH3_task",
+    "projectId": "PROJ_A",
+    "assigneeId": "",
+    "assigneeIds": [],
+    "userGroupIds": [],
+    "estimate": "PT0S",
+    "status": "ACTIVE",
+    "workspaceId": "WSID",
+    "budgetEstimate": 0,
+    "billable": true,
+    "hourlyRate": null,
+    "costRate": null,
+    "sourceType": "PRODUCTION",
+    "id": "TASK_A",
+    "duration": "PT0S"
+  },
+  "user": {
+    "id": "UID1",
+    "name": "Firstname Lastname",
+    "status": "ACTIVE",
+    "hourlyRate": {
+      "amount": 99900
+    },
+    "costRate": {
+      "amount": 777700
+    }
+  },
+  "tags": [
+    {
+      "name": "DSWH3_tag_one",
+      "workspaceId": "WSID",
+      "archived": false,
+      "id": "TAG_A"
+    },
+    {
+      "name": "DSWH3_tag_two",
+      "workspaceId": "WSID",
+      "archived": false,
+      "id": "TAG_B"
+    }
+  ]
+}

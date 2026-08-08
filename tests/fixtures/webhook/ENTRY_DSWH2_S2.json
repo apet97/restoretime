@@ -1,0 +1,172 @@
+{
+  "id": "ENTRY_DSWH2_S2",
+  "description": "DSWH2_S2_max \ud83d\ude80\ud83d\udcaf \u65e5\u672c\u8a9e emoji:\ud83d\ude80, &lt;b&gt;HTML&lt;/b&gt; &amp; \"quotes\" newline\nsecond line\ttabbed",
+  "userId": "USER_SELF",
+  "billable": true,
+  "projectId": "PROJ_DSWH2_MAX",
+  "timeInterval": {
+    "start": "2026-08-08T14:00:00Z",
+    "end": "2026-08-08T15:45:30Z",
+    "duration": "PT1H45M30S",
+    "timeZone": "Europe/Belgrade",
+    "offsetStart": 7200,
+    "offsetEnd": 7200,
+    "zonedStart": "2026-08-08T16:00:00",
+    "zonedEnd": "2026-08-08T17:45:30"
+  },
+  "workspaceId": "WS",
+  "isLocked": false,
+  "hourlyRate": null,
+  "costRate": null,
+  "customFieldValues": [
+    {
+      "customFieldId": "CF_test123",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": "1323123",
+      "name": "test123"
+    },
+    {
+      "customFieldId": "CF_MCP_TEST_FIELD",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": "DSWH2_invisible_text",
+      "name": "MCP-TEST-FIELD"
+    },
+    {
+      "customFieldId": "CF_RARA",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": null,
+      "name": "RARARARARARARAr"
+    },
+    {
+      "customFieldId": "CF_AAAA",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": null,
+      "name": "AAAAAASSSSSSSS"
+    },
+    {
+      "customFieldId": "CF_DSR8_Text",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": "DSWH2_text_val_\u65e5\u672c",
+      "name": "DSR8_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR8_Number",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": 1234.56,
+      "name": "DSR8_CF_Number"
+    },
+    {
+      "customFieldId": "CF_DSR9_Text",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": "DSWH2_9text \ud83d\ude80",
+      "name": "DSR9_CF_Text"
+    },
+    {
+      "customFieldId": "CF_DSR9_Dropdown",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": "DSR9_Opt2",
+      "name": "DSR9_CF_Dropdown"
+    },
+    {
+      "customFieldId": "CF_DSR9_Number",
+      "timeEntryId": "ENTRY_DSWH2_S2",
+      "value": 777,
+      "name": "DSR9_CF_Number"
+    }
+  ],
+  "type": "REGULAR",
+  "kioskId": null,
+  "approvalStatus": null,
+  "detailedApprovalStatus": null,
+  "projectCurrency": null,
+  "currentlyRunning": false,
+  "project": {
+    "name": "DSWH2_proj_max",
+    "hourlyRate": {
+      "amount": 7500
+    },
+    "costRate": null,
+    "clientId": "CLIENT_DSWH2",
+    "workspaceId": "WS",
+    "billable": true,
+    "memberships": [
+      {
+        "userId": "USER_SELF",
+        "hourlyRate": null,
+        "costRate": null
+      }
+    ],
+    "estimate": {
+      "estimate": "PT0S",
+      "type": "AUTO"
+    },
+    "color": "#4DB6AC",
+    "archived": false,
+    "clientName": "DSWH2_client_max",
+    "duration": "PT0S",
+    "note": "",
+    "activeEstimate": "NONE",
+    "timeEstimate": {
+      "includeNonBillable": true,
+      "estimate": 0,
+      "type": "AUTO",
+      "resetOption": null
+    },
+    "budgetEstimate": null,
+    "estimateReset": null,
+    "sourceType": null,
+    "auditMetadata": null,
+    "accessOnPaidPlan": null,
+    "id": "PROJ_DSWH2_MAX",
+    "public": true,
+    "template": false
+  },
+  "task": {
+    "name": "DSWH2_task_max",
+    "projectId": "PROJ_DSWH2_MAX",
+    "assigneeId": "",
+    "assigneeIds": [],
+    "userGroupIds": [],
+    "estimate": "PT0S",
+    "status": "ACTIVE",
+    "workspaceId": "WS",
+    "budgetEstimate": 0,
+    "billable": true,
+    "hourlyRate": null,
+    "costRate": null,
+    "sourceType": "PRODUCTION",
+    "id": "TASK_DSWH2",
+    "duration": "PT0S"
+  },
+  "user": {
+    "id": "USER_SELF",
+    "name": "Firstname Lastname",
+    "status": "ACTIVE",
+    "hourlyRate": {
+      "amount": 99900
+    },
+    "costRate": {
+      "amount": 777700
+    }
+  },
+  "tags": [
+    {
+      "name": "DSWH2_tag_A",
+      "workspaceId": "WS",
+      "archived": false,
+      "id": "TAG_A"
+    },
+    {
+      "name": "DSWH2_tag_B",
+      "workspaceId": "WS",
+      "archived": false,
+      "id": "TAG_B"
+    },
+    {
+      "name": "DSWH2_tag_Unicode_\ud83d\ude80",
+      "workspaceId": "WS",
+      "archived": false,
+      "id": "TAG_UNI"
+    }
+  ]
+}

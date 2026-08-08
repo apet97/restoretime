@@ -669,3 +669,59 @@ writes, and `tests/e2e/component-flow.test.ts` proves the chain claim → shell 
 
 The 401 token-refresh path (docs/10 §8) still has no live proof — it needs a component session left
 open past the 25-minute proactive refresh.
+
+# Live run 10 — the whole installation lifecycle, driven end to end
+
+Everything below was done through the Clockify UI on the developer workspace, watching the addon's
+own log and database. No step needed the operator.
+
+```
+STATUS_CHANGED -> INACTIVE   "installation status changed" ... status INACTIVE   (persisted)
+STATUS_CHANGED -> ACTIVE     "installation status changed" ... status ACTIVE     (persisted)
+DELETED                      "installation deleted" ... result "deleted"
+INSTALLED (fresh)            "installation installed" ... addonId 6a778f5a…      (new id)
+TIME_ENTRY_DELETED           webhook_received -> recoverable_created             (new token)
+```
+
+## F17 purge, proved on real data
+
+Immediately before uninstalling, the live database held:
+
+```
+recoverable_entries 132   recreation_plans 11   recreation_attempts 4   installations 1
+```
+
+After Clockify's DELETED lifecycle call, every one of those tables read **0**. This is the strongest
+form of the IT-11 claim available — a real uninstall of a real installation purging real rows,
+rather than an integration test's synthetic fixture.
+
+## What disabling actually does, and what it means for docs/10 §8
+
+Clockify's own confirmation says: "When you disable this add-on it will disappear from Clockify
+interface and the add-on will lose access to your workspace." That is literally true — while
+INACTIVE, `/addons/restoretime` **redirects to `/tracker`** and the sidebar entry is removed.
+
+So docs/10 §8's disabled-state notice ("RestoreTime is disabled for this workspace" replaces
+actions, lists stay readable) is not something a user reaches by navigating: the platform removes
+the entry point first. The notice is still correct and still worth keeping — an iframe already open
+when the status changes keeps running — and the server-side `actionGuard` refusal remains the real
+protection, because that stale iframe can still POST. What is wrong is any expectation that a user
+will *see* the notice; recorded here rather than left as an implied claim.
+
+## Reinstall, and the suite re-run
+
+Reinstalled from the addons page by pasting the manifest URL — the same "Insert link" + Install flow
+an operator uses, so this whole cycle is reversible without operator involvement. The fresh install
+rendered the docs/10 §1 **empty state** ("No deleted time entries. When you delete a time entry in
+Clockify, it appears here."), which no earlier run had ever seen because the workspace always had
+rows.
+
+The live suite then ran against the fresh installation on the current build: **11 passed, 0
+skipped**, including LV-07 re-confirming R12 (`onlyAdminsCanChangeBillableStatus=false`,
+`defaultBillableProjects=true`, P-BILL fires for a regular viewer).
+
+## Workspace left as found
+
+No `RT-PROBE` time entries remain in Clockify. Workspace settings are at baseline
+(`timeTrackingMode: DEFAULT`, `lockTimeEntries: null`, `automaticLock: null`, `forceProjects: true`).
+The addon is installed and ACTIVE.

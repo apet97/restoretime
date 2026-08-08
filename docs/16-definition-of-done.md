@@ -32,9 +32,9 @@ yet, so an honest gap is visible here rather than buried in a report.
 
 ## Quality bars
 
-- [ ] `npm run typecheck`, `lint`, `test`, `build` green on `main`. **Reason unchecked**: all four
-      are green, re-verified on this pass's commits (33 test files, 299 tests, 0 typecheck/lint
-      errors) — but on this pass's branch, not yet merged to `main`
+- [x] `npm run typecheck`, `lint`, `test`, `build` green on `main` — verified on `main` after the
+      PASS-05 merge: 33 test files, 299 tests, plus 18 E2E; `git diff --check` clean; `gitleaks
+      detect` reports no leaks.
       (`implementation/passes/PASS-05-release.md` "Git requirements": PR review and merge precede
       the tag).
 - [x] No dependency beyond `implementation/DEPENDENCIES.md`; no dead code; no TODO/FIXME in `src/`

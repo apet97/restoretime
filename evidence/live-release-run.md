@@ -762,3 +762,58 @@ No code changed: a reconciliation pass would be the fix, and v1 does not have on
 
 Worth noting how this surfaced — an infrastructure outage during cleanup, not a test. The suite
 cannot see it, because every test delivers the lifecycle call it is asserting on.
+
+# Live run 12 — the 401/proactive token-refresh path, finally proved live
+
+The last unproven item in docs/10 §8. It could never be tested before because it needs a component
+session left open past the 25-minute proactive refresh, inside a real Clockify iframe — a top-level
+page load cannot do it, because the refresh is `postMessage`-based and `window.parent === window`
+there, so the request posts to itself and times out.
+
+## Instrumentation
+
+A listener was installed on the **parent** page (`developer.clockify.me`, same-origin to the probe)
+recording every `message` event, plus the iframe's original token `iat`. Nothing was reloaded for the
+whole observation — a reload would have restarted the 25-minute timer and destroyed the test.
+
+## What was observed
+
+```
+frame minted        2026-08-08T22:46:28Z   (token exp 23:16:28Z, 30 min life)
+message -> parent   2026-08-08T23:11:28.875Z   from https://population-papua-…trycloudflare.com
+                    = 25 min 00.9 s after mint — src/ui/bridge.ts's
+                      setInterval(bridge.refreshAddonToken, 25 min), firing on schedule
+frame token re-minted 2026-08-08T23:11:29Z   — 125 ms after the request
+```
+
+The captured message travels **from the addon origin up to the parent**: that is our own
+`refreshAddonToken` dispatch. Clockify's reply travels parent → iframe, which a parent-side listener
+cannot see by design; the token being re-minted 125 ms later is what shows the answer arrived.
+
+## The decisive check
+
+A message crossing the boundary only proves the handshake happened, not that the component kept
+working. So the session was exercised on either side of the original token's expiry, without
+reloading:
+
+```
+23:14:36Z   (1m52s BEFORE expiry)  click entry -> detail + preflight render     OK
+23:18:14Z   (1m46s AFTER  expiry)  click entry -> detail + preflight render     OK
+```
+
+The second call is the proof. At 23:18:14Z the token the component started with had been expired for
+106 seconds. `/api/entries/detail` and `/api/entries/preflight` both succeeded and the detail view
+rendered, with no "session expired" notice. The only token that can satisfy `requireViewer` at that
+moment is the refreshed one, so the refresh both fired and took effect.
+
+Server log across the whole window: **0 error lines**.
+
+## What this closes, and one thing it does not
+
+docs/10 §8's refresh contract is now verified live: the proactive dispatch fires at 25 minutes, the
+new token replaces the old one in memory, and calls continue past the original expiry.
+
+Not covered: the **reactive** half — a 401 mid-call triggering a refresh and one retry, and the
+session-expired notice when that retry also 401s. That path is unit-covered in `src/ui/api.ts`'s
+tests but has never fired live, because the proactive refresh keeps it from being reached. Forcing it
+would mean invalidating a token mid-session, which nothing in the platform offers.

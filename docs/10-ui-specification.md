@@ -167,6 +167,11 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
   via `applyClockifyTheme`/`applyClockifyLanguage` from the verified claims.
 - The iframe bridge is created with `parentOrigin` from `CLOCKIFY_PARENT_ORIGIN` (fact 12).
 - Every failure view answers: what happened, whether anything was created, what to do next (N8).
+- Token refresh **(proactive half verified live, evidence "Live run 12")**: the dispatch fires at
+  25 minutes and the session keeps working past the original token's expiry — a call 106 s after
+  expiry still succeeded. The **reactive** half (a 401 mid-call triggering one retry, and the
+  session-expired notice when that retry also 401s) stays unit-covered only: the proactive refresh
+  keeps it from being reached, and nothing in the platform can invalidate a token mid-session.
 - Token refresh: the token lives in memory only. `bridge.subscribe("refreshAddonToken", body => ...)` receives the refreshed token as a window message whose title is `refreshAddonToken` and whose body is the token string. The shell dispatches `bridge.refreshAddonToken()` proactively every 25 minutes (tokens live 30 minutes). On API 401 the shell dispatches a refresh, waits up to 5 seconds for the message, retries the call once with the new token, and on timeout shows a session-expired notice ("Reload the component").
 - Disabled addon (STATUS_CHANGED INACTIVE): a notice "RestoreTime is disabled for this workspace"
   replaces actions; lists stay readable. Note what this is actually for: Clockify removes a disabled

@@ -330,3 +330,52 @@ workspace as you found it".
 Several live files claimed they ran against "real production Clockify". They run against whichever
 environment `CK_LIVE_API_BASE` names — production by default, the developer environment here. The
 headers now say that instead of overstating which environment was exercised.
+
+---
+
+# Live run 4 — 2026-08-08, R23 closed
+
+The operator added two dropdown fields, so the workspace now holds three active TIMEENTRY custom
+fields. Every LV row runs; nothing is skipped.
+
+```
+$ npm run test:live
+ Test Files  10 passed (10)
+      Tests  11 passed (11)
+```
+
+## R23 is closed
+
+R23's open half was the custom-field **item shape**: `type`, `allowedValues`, `required`, `status`,
+`workspaceDefaultValue` were SDK-typed only, because the workspace held no custom fields. Live
+items now exist and carry all five, deserializing into the SDK model the preflight reads:
+
+| Field | type | status | required | allowedValues | workspaceDefaultValue |
+|---|---|---|---|---|---|
+| `asdadsdad` | `TXT` | `VISIBLE` | `false` | `[]` | `null` |
+| `asdasadadas` | `DROPDOWN_SINGLE` | `VISIBLE` | `false` | `["Option 1","Option 2"]` | `null` |
+| `asdasd` | `DROPDOWN_SINGLE` | `VISIBLE` | `false` | `["Option 1","Option 2","Option 3"]` | `"Option 2"` |
+
+This also confirms the S6 facts in place: the status enum uses `VISIBLE` (there is no `"ACTIVE"`),
+and the default lives on `workspaceDefaultValue`, not `defaultValue`.
+
+## P-CF-OPT proved live (R19)
+
+LV-08 now uses the workspace's own dropdown rather than creating one. The seeded deleted entry
+carries a value that is **not** among the field's current `allowedValues`; preflight raised
+`P-CF-OPT` against that exact field id; the user's "keep the original value" choice was applied; and
+the recreated entry came back carrying that value verbatim.
+
+That is R19 confirmed end to end on a real workspace: Clockify stores a dropdown value outside
+`allowedValues` without complaint, so only preflight can surface the problem — and the product
+surfaces it and preserves the user's decision.
+
+## What remains open
+
+**The P-CF-REQ half of LV-08.** All three fields have `required: false`, so no field forces the
+"required with nothing to fall back to" case (docs/07 §3). LV-08 reports `PARTIAL` and names the
+missing shape rather than passing silently. One active field with `required: true` and no default
+value would close it.
+
+R22's operator statement that a required custom field makes a value mandatory at create therefore
+remains operator-stated, not live-proved.

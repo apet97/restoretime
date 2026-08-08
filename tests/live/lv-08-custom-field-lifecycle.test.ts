@@ -74,17 +74,20 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
       const active = existing.filter((f) => f.status !== "INACTIVE" && f.id !== undefined);
       dropdownField = active.find((f) => f.type === "DROPDOWN_SINGLE" && (f.allowedValues?.length ?? 0) > 0);
       requiredField = active.find((f) => f.required === true && f.workspaceDefaultValue == null);
-      if (dropdownField && requiredField) {
+      if (dropdownField) {
         dropdownFieldId = dropdownField.id;
-        requiredFieldId = requiredField.id;
+        requiredFieldId = requiredField?.id;
         console.log(
-          `LV-08: using the workspace's existing active fields — dropdown "${dropdownField.name}" and required "${requiredField.name}". Neither is created or deleted by this test.`,
+          `LV-08: using the workspace's existing active fields — dropdown "${dropdownField.name}"` +
+            (requiredField ? ` and required "${requiredField.name}"` : "; no required field with an empty default exists, so the P-CF-REQ half does not run") +
+            ". Nothing here is created or deleted by this test.",
         );
       }
 
       try {
-        if (dropdownField && requiredField) {
-          // Both shapes already exist; nothing to provision.
+        if (dropdownField) {
+          // The dropdown shape exists; nothing to provision. A required field is optional — its
+          // half of the row is skipped below rather than blocking the half that can run.
         } else {
         dropdownField = await restClient.customFields.createForWorkspace({
           workspaceId: env.workspaceId,
@@ -152,6 +155,9 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
 
       const start = new Date(Date.now() - 20 * 60 * 1000);
       const probeProject = await pickUsableProject(restClient, env.workspaceId);
+      const allowed = dropdownField.allowedValues ?? [];
+      const staleOption = `${RT_PROBE_PREFIX}removed-option`;
+      expect(allowed, "the stale value must genuinely be outside the field's current options").not.toContain(staleOption);
       const source: DeletedTimeEntry = {
         workspaceId: env.workspaceId,
         entryId: `rt-probe-source-${randomUUID()}`,
@@ -173,9 +179,11 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
         taskId: null,
         taskName: null,
         tags: [],
-        // The dropdown field carries the now-removed "Beta" option; the required field carries no
-        // value at all (never set on the deleted entry).
-        customFieldValues: [{ customFieldId: dropdownFieldId!, name: dropdownField.name!, value: "Beta" }],
+        // The deleted entry carried a dropdown value that is no longer an offered option — which
+        // is exactly what P-CF-OPT exists for (R19: Clockify itself accepts any string, so only
+        // preflight can catch it). Derived from the field's real `allowedValues` so this holds
+        // whatever the workspace's options happen to be.
+        customFieldValues: [{ customFieldId: dropdownFieldId!, name: dropdownField.name!, value: staleOption }],
       };
 
       harness = await bootLiveHarness(env);
@@ -192,7 +200,7 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
       const firstPlan = (firstPreflight.body as { plan: { actionRequired: { ruleId: string; refId?: string }[] } }).plan;
       const ruleIds = firstPlan.actionRequired.map((a) => `${a.ruleId}:${a.refId}`);
       expect(ruleIds).toContain(`P-CF-OPT:${dropdownFieldId}`);
-      expect(ruleIds).toContain(`P-CF-REQ:${requiredFieldId}`);
+      if (requiredFieldId) expect(ruleIds).toContain(`P-CF-REQ:${requiredFieldId}`);
 
       // Resolve: keep the stale dropdown value as-is (P-CF-OPT "keep"), supply a value for the
       // required field (P-CF-REQ input).
@@ -203,8 +211,8 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
           entryId: recoverableId,
           choices: {
             customFieldInputs: [
-              { customFieldId: dropdownFieldId, value: "Beta" },
-              { customFieldId: requiredFieldId, value: `${RT_PROBE_PREFIX}required-value` },
+              { customFieldId: dropdownFieldId, value: staleOption },
+              ...(requiredFieldId ? [{ customFieldId: requiredFieldId, value: `${RT_PROBE_PREFIX}required-value` }] : []),
             ],
           },
         },
@@ -226,10 +234,19 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
 
       const newEntry = await restClient.timeEntries.get({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! });
       const values = (newEntry.customFieldValues ?? []) as Record<string, unknown>[];
+      // R19: Clockify stores a dropdown value verbatim even when it is not an offered option, so
+      // the value the user chose to keep must survive onto the new entry unchanged.
       const dropdownValue = values.find((v) => v.customFieldId === dropdownFieldId)?.value;
-      const requiredValue = values.find((v) => v.customFieldId === requiredFieldId)?.value;
-      expect(dropdownValue).toBe("Beta");
-      expect(requiredValue).toBe(`${RT_PROBE_PREFIX}required-value`);
+      expect(dropdownValue).toBe(staleOption);
+      if (requiredFieldId) {
+        const requiredValue = values.find((v) => v.customFieldId === requiredFieldId)?.value;
+        expect(requiredValue).toBe(`${RT_PROBE_PREFIX}required-value`);
+      } else {
+        console.log(
+          "LV-08 PARTIAL — P-CF-OPT proved live (stale dropdown option kept and written to the new entry). " +
+            "The P-CF-REQ half did not run: this workspace has no active field with `required: true` and no default value.",
+        );
+      }
     } catch (err) {
       const rejected = describeIfAuthRejected(err);
       if (rejected) {

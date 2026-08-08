@@ -63,9 +63,10 @@ yet, so an honest gap is visible here rather than buried in a report.
       custom-field value written at create and preserved on the new entry. **R23 closed**: live custom-field items now
       carry all five properties the preflight reads, and LV-08 proved P-CF-OPT end to end — a value
       outside the field's current `allowedValues` was surfaced, kept on the user's choice, and
-      written verbatim to the new entry (R19). LV-08 reports PARTIAL: no field on this workspace has
-      `required: true` with no default, so the P-CF-REQ half did not run and R22 stays
-      operator-stated.
+      written verbatim to the new entry (R19). **R22 proved live**: with active required fields
+      carrying no default, a create that omits them is rejected `400 {"message":" <field names>",
+      "code":501}` and one that supplies them succeeds — so LV-08's P-CF-REQ half runs too and the
+      whole docs/07 §3 custom-field rule set is live-verified. The suite runs with **no skips**.
       **Still unverified**: production (`app.clockify.me`) has never been exercised, and an
       authenticated component render needs a Clockify-signed session (docs/15 step-6 smoke).
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable

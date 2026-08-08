@@ -21,6 +21,7 @@ import {
   checkLiveAddonToken,
   checkLiveEnv,
   describeIfAuthRejected,
+  requiredCustomFieldValues,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -71,6 +72,9 @@ describe("LV-05 missing project + archived tag (docs/13)", () => {
 
       const start = new Date(Date.now() - 90 * 60 * 1000);
       const end = new Date(start.getTime() + 15 * 60 * 1000);
+      // R22: required fields with no default must carry a value or preflight raises P-CF-REQ,
+      // which would mask the P-PROJ-GONE/P-TAG-ARCH outcomes this row asserts.
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
       const missingProjectId = `rt-probe-nonexistent-project-${randomUUID()}`;
       const source: DeletedTimeEntry = {
         workspaceId: env.workspaceId,
@@ -90,7 +94,7 @@ describe("LV-05 missing project + archived tag (docs/13)", () => {
         taskId: null,
         taskName: null,
         tags: [{ id: tag.id, name: tag.name }],
-        customFieldValues: [],
+        customFieldValues: requiredCfs.source,
       };
 
       harness = await bootLiveHarness(env);

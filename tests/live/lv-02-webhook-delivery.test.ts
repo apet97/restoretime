@@ -20,6 +20,7 @@ import {
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
+  requiredCustomFieldValues,
   RT_PROBE_PREFIX,
   type LiveEnv,
 } from "./support.js";
@@ -58,6 +59,8 @@ describe("LV-02 webhook delivery trigger (docs/13)", () => {
       // R4: this workspace may set `forceProjects`, which rejects a completed create without a
       // project (400 code 501). A real deleted entry there always had one, so the probe does too.
       const probeProject = await pickUsableProject(client, env.workspaceId);
+      // R22: a workspace with required custom fields rejects a create that omits them (400/501).
+      const requiredCfs = await requiredCustomFieldValues(client, env.workspaceId);
       const created = await client.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: active.id,
@@ -66,6 +69,7 @@ describe("LV-02 webhook delivery trigger (docs/13)", () => {
         description: `${RT_PROBE_PREFIX}LV02 ${start.toISOString()}`,
         billable: false,
         ...(probeProject ? { projectId: probeProject.id } : {}),
+        ...(requiredCfs.create.length > 0 ? { customFields: requiredCfs.create } : {}),
       });
 
       // The delete itself IS the trigger LV-02 exists to fire — Clockify's platform is what

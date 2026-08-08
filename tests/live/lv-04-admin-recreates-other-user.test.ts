@@ -23,6 +23,7 @@ import {
   deletedEntryFromLiveTimeEntry,
   describeIfAuthRejected,
   pickUsableProject,
+  requiredCustomFieldValues,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -76,6 +77,8 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
       // R4: on a `forceProjects` workspace a completed create without a project is rejected with
       // 400 code 501. A real deleted entry there always carried one, so the probe does too.
       const probeProject = await pickUsableProject(restClient, env.workspaceId);
+      // R22: a workspace with required custom fields rejects a create that omits them (400/501).
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
       const created = await restClient.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: owner.id,
@@ -84,6 +87,7 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
         description: `${RT_PROBE_PREFIX}LV04 ${start.toISOString()}`,
         billable: false,
         ...(probeProject ? { projectId: probeProject.id } : {}),
+        ...(requiredCfs.create.length > 0 ? { customFields: requiredCfs.create } : {}),
       });
       expect(created.userId).toBe(owner.id); // the create really targeted the OTHER user
 

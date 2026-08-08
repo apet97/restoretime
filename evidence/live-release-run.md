@@ -379,3 +379,72 @@ value would close it.
 
 R22's operator statement that a required custom field makes a value mandatory at create therefore
 remains operator-stated, not live-proved.
+
+---
+
+# Live run 5 — 2026-08-08, R22 proved live; whole suite green with nothing skipped
+
+The operator set two custom fields to `required: true` with no default value. That completed both
+LV-08 halves and, more importantly, turned R22 from an operator statement into live evidence.
+
+```
+$ npm run test:live
+ Test Files  10 passed (10)
+      Tests  11 passed (11)      # no skips, no PARTIAL
+```
+
+## R22 is proved
+
+R22(a) said "a required custom field makes a value mandatory at create time", on the operator's
+word. Probed directly against the workspace, with two active required fields carrying no default:
+
+```
+create WITHOUT values for them  ->  400 {"message":" asdadsdad, asdasadadas","code":501}
+create WITH    values for them  ->  201, all three field values stored
+```
+
+Two details worth keeping:
+
+- **The rejection body's message is nothing but the missing field names** — no sentence, no
+  explanation. That is another reason classification keys on `statusCode` plus the body code and
+  never on message text (R6, R15). The code is `501`, the same domain-validation code that already
+  covers "project required" and "archived tag" (R15, R18), so the code alone cannot say which
+  cause applies — only preflight's own lookups can, which is exactly how docs/07 is built.
+- **The third field auto-attached its default** (`asdasd` → `"Option 2"`) without being sent,
+  confirming the R5 auto-attach behaviour on a live create.
+
+## P-CF-REQ proved end to end
+
+With a required field that has no default and no source value, LV-08's second half now runs:
+preflight raised `P-CF-REQ` against that exact field id, the user's typed value was accepted, and
+the recreated entry came back carrying it. Together with the P-CF-OPT half from run 4, the whole
+docs/07 §3 custom-field rule set is now live-verified.
+
+## What this exposed in the suite, and the fix
+
+Turning on required fields broke five rows at once — every one of them for the same real reason:
+the probe fixtures created entries without values for the newly required fields, so Clockify
+rejected them 400/501, and the seeded sources triggered a legitimate `P-CF-REQ` that made the
+confirm refuse with 422.
+
+The product was right every time. The fixtures were unrealistic: a real deleted entry on a
+workspace with required fields always carried values for them. `requiredCustomFieldValues()` in
+`tests/live/support.ts` now supplies them, for both the create shape and the `DeletedTimeEntry`
+shape, and every affected row uses it.
+
+That is the third time this pattern has appeared — `forceProjects`, then required custom fields.
+The lesson is recorded here rather than re-learned: **live fixtures must be derived from the
+workspace's actual settings, never assumed.**
+
+## Evidence closed live across the whole run
+
+**R5** · **R10** · **R11** · **R12** · **R19** · **R22** · **R23** · **W11**
+
+## What is still not verified
+
+- **Production (`app.clockify.me`)**. Everything here is the developer environment.
+- **An authenticated component render** — only a Clockify-signed session produces one, so it stays
+  the docs/15 step-6 production smoke.
+
+The operator's three custom fields were left in place; the sweep removes only `RT-PROBE-` artefacts,
+and found none.

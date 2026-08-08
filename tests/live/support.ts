@@ -162,6 +162,42 @@ export async function pickUsableProject(
   return usable?.id === undefined ? undefined : { id: usable.id, name: usable.name ?? usable.id };
 }
 
+/**
+ * A value for every active custom field the workspace marks `required` with no default.
+ *
+ * R22, proved live 2026-08-08: a create that omits them is rejected with
+ * `400 {"message":" <field names>","code":501}`. Any real client has to supply them, so probe
+ * fixtures do too — otherwise a workspace that turns on a required field breaks every row for a
+ * reason that has nothing to do with recreation.
+ *
+ * Returns both shapes: `create` for the `customFields` key on a create request, and `source` for
+ * the `customFieldValues` array on a `DeletedTimeEntry`.
+ */
+export async function requiredCustomFieldValues(
+  client: ClockifyClient,
+  workspaceId: string,
+): Promise<{
+  create: { customFieldId: string; sourceType: "WORKSPACE"; value: unknown }[];
+  source: { customFieldId: string; name: string; value: unknown }[];
+}> {
+  const fields = await client.customFields.listForWorkspace({
+    workspaceId,
+    "entity-type": ["TIMEENTRY"],
+    "page-size": 200,
+  });
+  const required = fields.filter(
+    (f) => f.id !== undefined && f.status !== "INACTIVE" && f.required === true && f.workspaceDefaultValue == null,
+  );
+  const create = required.map((f) => ({
+    customFieldId: f.id!,
+    sourceType: "WORKSPACE" as const,
+    // A dropdown only accepts one of its own options here; anything else is a free-text value.
+    value: f.type === "DROPDOWN_SINGLE" ? (f.allowedValues?.[0] ?? `${RT_PROBE_PREFIX}value`) : `${RT_PROBE_PREFIX}value`,
+  }));
+  const source = create.map((c, i) => ({ customFieldId: c.customFieldId, name: required[i]?.name ?? c.customFieldId, value: c.value }));
+  return { create, source };
+}
+
 export function buildLiveRestClient(env: LiveEnv): ClockifyClient {
   // Built with the SDK's `apiKey` mode, NOT the app's `buildClockifyClient`. `CK_LIVE_API_KEY` is
   // a personal API key, and the app's factory always sends its credential as `X-Addon-Token`.

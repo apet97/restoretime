@@ -34,6 +34,7 @@ import {
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
+  requiredCustomFieldValues,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -61,6 +62,9 @@ function freshSource(
   ownerName: string,
   tag: string,
   project: { id: string; name: string } | undefined,
+  /** R22: a required field with no default must carry a value, or preflight rightly raises
+   * P-CF-REQ and the confirm is refused with 422 before the chaos hook can run. */
+  requiredCustomFields: { customFieldId: string; name: string; value: unknown }[],
 ): DeletedTimeEntry {
   const start = new Date(Date.now() - 25 * 60 * 1000);
   return {
@@ -81,7 +85,7 @@ function freshSource(
     taskId: null,
     taskName: null,
     tags: [],
-    customFieldValues: [],
+    customFieldValues: requiredCustomFields,
   };
 }
 
@@ -110,7 +114,8 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       if (!owner) return;
 
       const probeProject = await pickUsableProject(restClient, env.workspaceId);
-      const source = freshSource(env, owner.id, owner.name, "a", probeProject);
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
+      const source = freshSource(env, owner.id, owner.name, "a", probeProject, requiredCfs.source);
       harness = await bootLiveHarness(env);
       const recoverableId = randomUUID();
       seedRecoverableEntry(harness, { id: recoverableId, sourceEntryId: source.entryId, ownerId: owner.id, source });
@@ -207,7 +212,8 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       if (!owner) return;
 
       const probeProject = await pickUsableProject(restClient, env.workspaceId);
-      const source = freshSource(env, owner.id, owner.name, "b", probeProject);
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
+      const source = freshSource(env, owner.id, owner.name, "b", probeProject, requiredCfs.source);
       harness = await bootLiveHarness(env);
       const recoverableId = randomUUID();
       seedRecoverableEntry(harness, { id: recoverableId, sourceEntryId: source.entryId, ownerId: owner.id, source });

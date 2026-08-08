@@ -26,6 +26,7 @@ import {
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
+  requiredCustomFieldValues,
   recordingPassthroughFetch,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
@@ -74,6 +75,8 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
       const description = `${RT_PROBE_PREFIX}LV09 ${randomUUID()}`;
       // R4: a `forceProjects` workspace rejects a completed create without a project (400/501).
       const probeProject = await pickUsableProject(restClient, env.workspaceId);
+      // R22: a workspace with required custom fields rejects a create that omits them (400/501).
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
       const created = await restClient.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: owner.id,
@@ -82,6 +85,7 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         description,
         billable: false,
         ...(probeProject ? { projectId: probeProject.id } : {}),
+        ...(requiredCfs.create.length > 0 ? { customFields: requiredCfs.create } : {}),
       });
       probeEntryId = created.id;
 
@@ -100,6 +104,7 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         description,
         billable: false,
         ...(probeProject ? { projectId: probeProject.id } : {}),
+        ...(requiredCfs.create.length > 0 ? { customFields: requiredCfs.create } : {}),
       };
       const fp = fingerprintFromPlanned(planned);
       const match = filtered.find((e) => e.id === created.id)!;
@@ -114,6 +119,7 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         description: `${RT_PROBE_PREFIX}LV09-running ${randomUUID()}`,
         billable: false,
         ...(probeProject ? { projectId: probeProject.id } : {}),
+        ...(requiredCfs.create.length > 0 ? { customFields: requiredCfs.create } : {}),
       });
       runningEntryId = running.id;
       const unfiltered = await restClient.timeEntries.listForUser({ workspaceId: env.workspaceId, userId: owner.id });
@@ -145,7 +151,9 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
         taskId: null,
         taskName: null,
         tags: [],
-        customFieldValues: [],
+        // R22: required fields with no default must carry a value, or the confirm below is
+        // refused with 422 before the reads this row observes ever happen.
+        customFieldValues: requiredCfs.source,
       };
       harness = await bootLiveHarness(env);
       const recoverableId = randomUUID();

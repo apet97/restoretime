@@ -19,6 +19,7 @@ import {
   checkLiveEnv,
   deletedEntryFromLiveTimeEntry,
   describeIfAuthRejected,
+  requiredCustomFieldValues,
   RT_PROBE_PREFIX,
   seedRecoverableEntry,
   teardownLiveHarness,
@@ -74,6 +75,13 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
 
       const start = new Date(Date.now() - 60 * 60 * 1000);
       const end = new Date(start.getTime() + 30 * 60 * 1000);
+      const requiredCfs = await requiredCustomFieldValues(restClient, env.workspaceId);
+      const cfCreate = [
+        ...(usableField && cfValue !== undefined
+          ? [{ customFieldId: usableField.id!, sourceType: "WORKSPACE" as const, value: cfValue }]
+          : []),
+        ...requiredCfs.create.filter((c) => c.customFieldId !== usableField?.id),
+      ];
       const created = await restClient.timeEntries.createForUser({
         workspaceId: env.workspaceId,
         userId: owner.id,
@@ -82,7 +90,10 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
         description: `${RT_PROBE_PREFIX}LV03 ${start.toISOString()}`,
         billable: true,
         ...(project ? { projectId: project.id } : {}),
-        ...(usableField && cfValue !== undefined ? { customFields: [{ customFieldId: usableField.id!, sourceType: "WORKSPACE" as const, value: cfValue }] } : {}),
+        // The field this row asserts on, plus a value for every OTHER required field with no
+        // default — R22: omitting any of them is rejected 400/501 with the field names listed.
+        // `usableField` wins on a clash, since its value is what the R5 assertion checks.
+        ...(cfCreate.length > 0 ? { customFields: cfCreate } : {}),
       });
 
       const source = deletedEntryFromLiveTimeEntry(created, owner.name, project?.name ?? null, new Map());

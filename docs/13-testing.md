@@ -58,7 +58,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-04 | Ambiguous protocol: commit-lost → reconcile adopts; nothing-committed → user marks; two candidates → user picks. **PASS-04 extension** (`tests/integration/ambiguous-soak.test.ts`): one scripted soak covering all three phases plus a fourth — two *different* rows both resolving to the same Clockify id via the real `/api/entries/resolve-ambiguous` route; exactly one 409, the loser stays AMBIGUOUS |
 | IT-05 | Dependency deleted between plan and create → 4xx → FAILED with mapped reason |
 | IT-06 | Recreated entry deleted → new row with parent link |
-| IT-07 | Authorization negatives: other-user entry 404; demoted admin 403; cross-workspace 404. **PASS-04 extension** (`tests/integration/permission-negatives.test.ts`, 53 cases): every `/api/*` route against five forgeries (expired token, wrong-addon-key token, cross-workspace viewer, other-member viewer, demoted admin), each asserting the exact failure mode and that no row changed |
+| IT-07 | Authorization negatives: other-user entry 404; demoted admin 403; cross-workspace 404. **PASS-04 extension** (`tests/integration/permission-negatives.test.ts`, 55 cases): every `/api/*` route against five forgeries (expired token, wrong-addon-key token, cross-workspace viewer, other-member viewer, demoted admin), each asserting the exact failure mode and that no row changed |
 | IT-08 | Clockify 401 code 4017 on any call → installation marked broken |
 | IT-09 | Forged workspace/body identity ignored. **PASS-04 extension**: the same sweep as IT-07 above (`tests/integration/permission-negatives.test.ts`) covers forged workspace and forged user identity across every route |
 | IT-10 | Dismissed entry absorbs redelivery |
@@ -162,7 +162,7 @@ the local in-process harness is never substituted for them.
 
 ### Assembling the environment
 
-Six variables across the two suites all describe one installation, and two of them cannot be typed
+Eight variables across the two suites all describe one installation, and two of them cannot be typed
 from memory: the addon token exists only inside the encrypted installation record, and a
 cloudflared quick tunnel's hostname changes on every start. `scripts/live-env.sh` assembles the set
 and runs a command with it:

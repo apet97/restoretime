@@ -21,7 +21,7 @@ interface DeletedTimeEntry {
   end: string | null;         // null when the entry was running at deletion (W12)
   wasRunning: boolean;        // payload `currentlyRunning`
   type: string;               // payload `type` — "REGULAR"|"BREAK"|"HOLIDAY"|"TIME_OFF"; P-TYPE blocks non-REGULAR (R17)
-  timeZone: string;           // display only (W5)
+  timeZone: string | null;    // display only (W5); null when the payload carries none
   projectId: string | null;
   projectName: string | null; // display only
   clientName: string | null;  // display only

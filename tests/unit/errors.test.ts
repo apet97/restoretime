@@ -45,12 +45,26 @@ describe("UT-M01 clockifyErrorCode", () => {
     expect(clockifyErrorCode(err)).toBe("501");
   });
 
-  it("the SDK's own getErrorCode returns undefined for the same numeric codes — the reason the app owns its own normalizer", () => {
-    const err = apiError(400, { message: "…", code: 501 });
-    expect(getErrorCode(err)).toBeUndefined();
-    // The app's normalizer succeeds where the SDK helper does not — this asymmetry is the whole
-    // point of clockifyErrorCode existing (docs/03 §6, R15).
-    expect(clockifyErrorCode(err)).toBe("501");
+  // Until clockify-sdk-ts-115@3.0.0 the SDK's `getErrorCode` required a string body code, so it
+  // returned `undefined` for every code Clockify actually sends — the original reason this app
+  // owns a normalizer. That gap is closed, and the two now agree on every shape the app can meet.
+  // The normalizer stays anyway: RestoreTime pins its own error classification, because a silent
+  // change in a transitive dependency must not be able to reclassify a user-visible failure
+  // reason (docs/03 §6). Pinning the *agreement* is what makes a future divergence visible here
+  // rather than in a customer's result view.
+  it("the SDK's getErrorCode agrees with the app normalizer on every body shape the app classifies on", () => {
+    const shapes: readonly [string, unknown, string | undefined][] = [
+      ["a numeric body code", { message: "…", code: 501 }, "501"],
+      ["a string body code", { message: "…", code: "501" }, "501"],
+      ["a nested error.code", { error: { message: "…", code: 4030 } }, "4030"],
+      ["a code-absent body", { message: "not found" }, undefined],
+      ["a null body", null, undefined],
+    ];
+    for (const [label, body, expected] of shapes) {
+      const err = apiError(400, body);
+      expect(clockifyErrorCode(err), label).toBe(expected);
+      expect(getErrorCode(err), label).toBe(expected);
+    }
   });
 });
 

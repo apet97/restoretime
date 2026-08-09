@@ -21,10 +21,20 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [x] Concurrent recreation of the same source is impossible (IT-03).
 - [x] An unknown-outcome create becomes AMBIGUOUS and resolves per docs/07 §8; no automatic retry
       exists anywhere (IT-04; the LV-10 chaos-hook mechanics are additionally proved offline in
-      `tests/integration/chaos-fetch-drill.test.ts`).
+      `tests/integration/chaos-fetch-drill.test.ts`). The SDK's own retry layer is pinned too:
+      `tests/integration/write-retry-invariant.test.ts` proves `createForUser` reaches the
+      transport exactly once on a 500, a 429 with `Retry-After`, and a rejected fetch — so the
+      invariant survives an SDK default changing under us, not only app code changing.
 - [x] Every Clockify 4xx maps to a user-facing reason through `clockifyErrorCode`, including
       numeric body codes and code-absent bodies; the SDK `getErrorCode` is not imported anywhere
-      (UT-M01; `grep -rn "^import.*getErrorCode" src/` → no matches, re-verified PASS-05).
+      in `src/` (UT-M01; `grep -rn "^import.*getErrorCode" src/` → no matches, re-verified
+      PASS-05 and again after the 4.0.0 upgrade). Since `clockify-sdk-ts-115@3.0.0` the two agree;
+      the normalizer is kept to pin this app's classification, and UT-M01 now asserts the
+      agreement so a future divergence surfaces there (docs/03 §6).
+- [x] `clockifyErrorDetail` — the one SDK accessor that can carry request data into a string — is
+      not imported anywhere (`grep -rn "^import.*clockifyErrorDetail" src/` → no matches; the only
+      mention in `src/` is the docblock in `src/clockify/errors.ts` explaining why). Log safety
+      rests on `safeErrorSummary` alone (docs/12, docs/14 N3; IT log-audit).
 - [x] Bounded list reads use `iterPages` and surface the page bound instead of returning a partial
       result (IT-14).
 - [x] Recreated-deleted-recreated chains show lineage (IT-06).

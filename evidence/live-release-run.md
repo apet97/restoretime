@@ -941,3 +941,8 @@ blocks arrived at the add-on and was persisted.
 A detailed report over the whole workspace for the day returns **0 entries**, and **0 `RT-PROBE-`
 rows across all users**; the entry LV-10(a) deliberately committed is gone. The suite's own cleanup
 did this — nothing was tidied by hand afterwards.
+
+The add-on was then uninstalled (`installation deleted … result "deleted"`, local rows to zero), and
+the API key this run created was **deleted**: `RT-LIVE-SUITE-20260809` no longer appears in Manage
+API keys, and a request carrying it now returns `401`. A run that mints a credential has not left
+the workspace as it found it until that credential is gone.

@@ -5,7 +5,7 @@ Two read-only source SDKs. Pinned commits at planning time:
 | SDK | Package | Version | Commit |
 |---|---|---|---|
 | `~/Downloads/working/addons-me/addon-ts-sdk` (`addon-sdk/` workspace) | `@apet97/clockify-addon-sdk` | 1.2.0 | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` |
-| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 2.0.0 | `b33e5b0227ece3de613adf6071039cc648bc35c8` (inspected); HEAD later advanced externally to `8cac46e9…` then `f2d82d1…` (docs-only + one error-name JSON claim fix; zero diff in the load-bearing paths — the app never matches error names, only `statusCode` and its own `clockifyErrorCode` — verified 2026-08-08) |
+| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 4.0.0 | `e6fe4a21582676f2d2d85c8f364e7229a4a2ee1f` (`release: SDK, CLI, and TypeScript MCP 4.0.0`). Upgraded from 2.0.0 on 2026-08-09; the two majors fixed `getErrorCode`'s numeric codes (3.0.0) and made `ClockifyApiError.message` body-free (4.0.0) — both defects this app had already found and worked around, so the changes are recorded below rather than acted on |
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work
 around a defect in the app — fix upstream first (AGENTS.md).
@@ -60,8 +60,13 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 
 **Transport behavior relied on**: reads retry 408/429/500/502/503/504 (GET/HEAD/OPTIONS only,
 `maxRetries: 2` = up to 3 attempts, exponential backoff, `Retry-After`/`X-RateLimit-Reset`
-honored); POST/PATCH are never retried by either retry layer (the composed-fetch layer rejects
-POST in `retryableMethods` at construction). Errors are `ClockifyApiError` with `statusCode` +
+honored); POST/PATCH are never retried by either retry layer (the request layer defaults
+`retryMutationMethods` to `false`; the composed-fetch layer rejects POST in `retryableMethods` at
+construction). The app opts into neither, and **this is now pinned by a test** rather than
+inherited on trust: `tests/integration/write-retry-invariant.test.ts` sends a 500, a 429 with
+`Retry-After`, and a rejected transport at `createForUser` and asserts the transport saw exactly
+one call each — a retried write is a duplicate entry in a customer's timesheet (ADR-007).
+Errors are `ClockifyApiError` with `statusCode` +
 parsed body; timeouts are `ClockifyApiTimeoutError` — which only fires when the app sets
 `timeoutInSeconds` (the default is no timeout; the app passes `timeoutInSeconds: 30`).
 `iterAll`/`iterPages` (package root, `wrapper/index.ts`) auto-paginate any list method
@@ -69,21 +74,26 @@ parsed body; timeouts are `ClockifyApiTimeoutError` — which only fires when th
 `{items, page, pageSize, hasNextPage}` envelope is the sole way to detect that the page bound was
 hit, which the design requires (docs/03 note 5). `iterAll` yields items and cannot express it.
 
-**Error-code extraction — do not use `getErrorCode`.** `getErrorCode(err)` returns the body `code`
-only when it is a **string** (`errors.ts`: `typeof direct === "string"`). Clockify sends numbers.
-Live-probed 2026-08-08: `400 → code 501` (number), `401 → code 4017` (number), `404 → no code` —
-`getErrorCode` returned `undefined` in all three. The app owns a four-line normalizer
-(`src/clockify/errors.ts` `clockifyErrorCode`, source in docs/03 §6) that reads `err.body.code`
-(then `err.body.error.code`) and returns `String(code)`. This is not an SDK workaround
-(AGENTS.md rule 5): the helper is correct for its documented string-code contract, and Clockify's
-time-entry endpoints fall outside it.
+**Error-code extraction — the app normalizes, `getErrorCode` is not imported.** The app owns a
+five-line normalizer (`src/clockify/errors.ts` `clockifyErrorCode`, source in docs/03 §6) that
+reads `err.body.code` (then `err.body.error.code`) and returns `String(code)`. It was written
+because `getErrorCode(err)` accepted a **string** body `code` only, while Clockify sends numbers —
+live-probed 2026-08-08: `400 → code 501`, `401 → code 4017`, `404 → no code`, and `getErrorCode`
+returned `undefined` in all three. **That gap is closed as of `clockify-sdk-ts-115@3.0.0`**, and
+the two agree on every shape the app classifies on (numeric, string, nested `error.code`, absent,
+null body — UT-M01 pins the agreement). The normalizer is kept deliberately: this app pins its own
+error classification so a transitive-dependency change cannot silently reclassify a user-visible
+failure reason. Not an SDK workaround (AGENTS.md rule 5).
 
-**Upstream suggestion (non-blocking, do not wait on it)**: widen `getErrorCode` to accept numeric
-body codes. Record it against `clockify-ts-sdk`; the app ships its own normalizer either way.
+**Error strings are body-free as of 4.0.0.** `ClockifyApiError.message` no longer embeds the
+response body — it is `"<message>\nStatus code: <n>"`. The body reaches a string only through the
+opt-in `clockifyErrorDetail(err)`, which the app **does not import**: it is the one accessor that
+can carry request data, and RestoreTime's log-safety rule (docs/12, docs/14 N3) has no room for it
+in a log line. `safeErrorSummary` remains the only path from a `ClockifyApiError` to a log field.
 
-**Known SDK drift, not blocking**: `entityChangesExperimental.listDeleted` return type mismatches
-live (wrapper object vs bare array); `listCreated`/`listUpdated` typed `string`. The product never
-calls these (ADR-002). Record for upstream fix; do not consume.
+**Known SDK drift, not blocking**: `entityChangesExperimental` return types were corrected in
+4.0.0; the product never calls them (ADR-002). `currencyCode` was removed from the client write
+bodies in 4.0.0; the product never calls `clients.*` either. Neither affects this app.
 
 **Known model inconsistency, handled in normalization**: `TimeEntriesTimeEntry.type` includes
 `"TIME_OFF"`; `TimeEntry.type` uses `"TIMEOFF"`. The app normalizes webhook payloads itself and only

@@ -326,9 +326,12 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - FACT: Clockify errors carry an HTTP status AND a body `code`; classification keys on the code,
   never on message text. **The body `code` is a JSON number, and some 4xx bodies carry no `code`
   at all** (fresh-pass probes FP-1/FP-2, 2026-08-08: `400 {"message":…,"code":501}`,
-  `401 {…,"code":4017}`, `404` with no `code` key). The SDK helper `getErrorCode` returns only
-  **string** body codes, so it returns `undefined` for every Clockify numeric code — the app reads
-  the code itself and normalizes with `String()` (docs/03 §6). Verified mapping: 403 + code `4030` =
+  `401 {…,"code":4017}`, `404` with no `code` key). At the then-pinned `clockify-sdk-ts-115@2.0.0`
+  the SDK helper `getErrorCode` returned only **string** body codes, so it returned `undefined` for
+  every Clockify numeric code — the app reads the code itself and normalizes with `String()`
+  (docs/03 §6). *(Superseded 2026-08-09: `@3.0.0` fixed `getErrorCode`; the app keeps its
+  normalizer to pin its own classification, and the two now agree — docs/03 §6, docs/04.)*
+  Verified mapping: 403 + code `4030` =
   force-timer rejection ("Manual time tracking disabled…"); 403 + code `1003` = locked-period
   rejection ("Can't edit locked time entry."); 400 + body code `501` = domain validation (project
   required, `<`/`>` — this reconciles earlier reports that said "400" and "501": both were right);
@@ -506,9 +509,13 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
 
 ### S6 — Clockify REST SDK type facts the app must match exactly
 
-- FACT (source-verified at the pinned commit, 2026-08-08):
+- FACT (source-verified at the then-pinned `clockify-sdk-ts-115@2.0.0`, 2026-08-08; the app moved to
+  `@4.0.0` on 2026-08-09 — every item below still holds except the first, which is annotated):
   - `getErrorCode(err)` accepts only **string** body codes (`errors.ts`: `typeof direct === "string"`).
     Clockify sends numbers → it returns `undefined`. The app uses its own normalizer (R15, docs/03 §6).
+    *(Superseded by `@3.0.0`, which reads numeric codes. The normalizer is kept deliberately — it
+    pins this app's classification against a dependency change — and UT-M01 now asserts the two
+    agree instead of that they differ.)*
   - `CustomFieldStatus = "INACTIVE" | "VISIBLE" | "INVISIBLE"` — there is **no** `"ACTIVE"` member.
     "Active field" means `status !== "INACTIVE"` (matches L6: VISIBLE and INVISIBLE fields both
     auto-attach).

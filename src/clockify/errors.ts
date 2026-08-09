@@ -1,8 +1,12 @@
 // App-owned Clockify body-code normalizer (docs/03 §6, source verbatim). Clockify sends the body
-// `code` as a JSON number, and some 4xx bodies carry none at all; the SDK's `getErrorCode` only
-// returns string codes, so it returns `undefined` for every Clockify code (R15, S6). This is the
-// one recorded exception to AGENTS.md rule 5 (docs/03 §6) — `getErrorCode` is never imported
-// anywhere in src/ (docs/16 release gate).
+// `code` as a JSON number, and some 4xx bodies carry none at all (R15, S6). This was written
+// because the SDK's `getErrorCode` required a string code and so returned `undefined` for every
+// code Clockify sends; clockify-sdk-ts-115@3.0.0 fixed that, and the two now agree on every shape
+// (UT-M01). The normalizer stays because this app pins its own error classification: every
+// user-facing failure reason and the P-TIMER/P-LOCK-REG blocker rules key off this string, and a
+// silent change in a transitive dependency must not be able to reclassify a user-visible error.
+// That is the one recorded exception to AGENTS.md rule 5 (docs/03 §6) — `getErrorCode` is never
+// imported anywhere in src/ (docs/16 release gate).
 
 import { ClockifyApiError } from "clockify-sdk-ts-115";
 
@@ -22,12 +26,16 @@ export function isAddonTokenInvalid(err: unknown): boolean {
 }
 
 /**
- * Log-safe summary of a caught error (docs/12 "Sensitive log leakage", docs/14 N3). The SDK's
- * `ClockifyApiError.message` embeds the full response body verbatim (`"Body: " + JSON.stringify`,
- * clockify-sdk-ts-115 `errors/ClockifyApiError.ts`) — logging it with a bare `String(error)`, as
- * every `onError` hook in `src/server.ts` used to, would print whatever Clockify's error response
- * happens to contain. Nothing here reads a webhook body or a Clockify response as "safe"; the rule
- * is narrower and unconditional: a `ClockifyApiError` is summarized as status + normalized code
+ * Log-safe summary of a caught error (docs/12 "Sensitive log leakage", docs/14 N3). This was
+ * written because `ClockifyApiError.message` used to embed the full response body verbatim, so the
+ * bare `String(error)` that every `onError` hook in `src/server.ts` once used printed whatever
+ * Clockify's error response happened to contain — and Clockify echoes submitted values into its
+ * error text. clockify-sdk-ts-115@4.0.0 removed the hazard at source: `.message` is now
+ * `"<message>\nStatus code: <n>"`, and the body reaches a string only through the opt-in
+ * `clockifyErrorDetail`, which this app does not import. The function stays as defence in depth
+ * against that default changing back, and because it is also where the code is normalized.
+ * Nothing here reads a webhook body or a Clockify response as "safe"; the rule is narrower and
+ * unconditional: a `ClockifyApiError` is summarized as status + normalized code
  * only, never its `message` or `body`. Every other error's `.message` is developer-authored text
  * from this codebase's own `throw` sites (docs/12 review confirms none of them interpolate
  * descriptions, custom-field values, or tokens), so it is safe to log as-is.

@@ -191,9 +191,8 @@ Notes:
   5xx/timeout/transport = unknown → AMBIGUOUS. Exact classification: `ClockifyApiTimeoutError`;
   `ClockifyApiError` with `statusCode === undefined`; `ClockifyApiError` with `statusCode >= 500`.
 - **Body-code normalizer (app-owned, `src/clockify/errors.ts`)**. Clockify sends the body `code`
-  as a JSON **number**, and some 4xx bodies carry no `code` at all (R15, live-probed). The SDK
-  `getErrorCode` only returns string codes, so it yields `undefined` for every Clockify code. The
-  app therefore reads the body itself and normalizes to a string — one function, used everywhere;
+  as a JSON **number**, and some 4xx bodies carry no `code` at all (R15, live-probed). The app
+  reads the body itself and normalizes to a string — one function, used everywhere;
   `getErrorCode` is never imported:
 
   ```ts
@@ -210,9 +209,14 @@ Notes:
   }
   ```
 
-  This is not an SDK workaround (AGENTS.md rule 5): `getErrorCode` is correct for its documented
-  contract — string codes — and Clockify's time-entry endpoints are outside that contract. The
-  upstream suggestion is recorded in docs/04 as non-blocking.
+  This is not an SDK workaround (AGENTS.md rule 5). It was written when `getErrorCode` accepted
+  string codes only, so it returned `undefined` for every code Clockify sends — a gap outside the
+  helper's documented contract, not a defect in it. `clockify-sdk-ts-115@3.0.0` closed the gap and
+  the two now agree on every shape the app classifies on (UT-M01 pins that agreement). The
+  normalizer stays for a different reason: this app pins its own error classification, because
+  every user-facing failure reason and the P-TIMER/P-LOCK-REG blocker rules key off this string,
+  and a silent change in a transitive dependency must not be able to reclassify a user-visible
+  error.
 - Compare the normalized code against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`,
   `"4005"`, `"3000"`). Message text is never parsed for classification (R6: messages are generic).
 - Auth errors: 401 code `"4017"` (addon token invalid) → installation is marked broken; component

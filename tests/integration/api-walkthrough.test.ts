@@ -567,6 +567,79 @@ describe("POST /api/entries/reconcile — a truncated check is not a check", () 
   });
 });
 
+// Every Clockify-touching route answers N8's three questions on a transport failure. Reconcile
+// was the one route without its own catch: a failed "Check now" escaped to the SDK's bare 500,
+// whose fallback rendering answers none of them.
+describe("POST /api/entries/reconcile — a failed check answers N8, not a bare 500", () => {
+  it("returns 502 with the transport message when the reconcile read fails", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+
+    const listResponse = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (listResponse.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const preflightResponse = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const plan = (preflightResponse.body as { plan: { id: string } }).plan;
+
+    // The state reconcile operates on: AMBIGUOUS with an unfinished attempt.
+    server.db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(entryId);
+    server.db
+      .prepare(
+        `INSERT INTO recreation_attempts (id, plan_id, recoverable_entry_id, started_at, outcome, baseline_json)
+         VALUES ('att-1', ?, ?, '2026-08-08T10:00:00Z', 'AMBIGUOUS', '[]')`,
+      )
+      .run(plan.id, entryId);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          // A non-retryable 400 rather than a thrown TypeError: a throw is a transport failure
+          // the SDK retries with real backoff, and this suite forbids wall-clock sleeps. Either
+          // way the reconcile read fails, which is what this asserts.
+          return jsonResponse({ message: "rejected", code: 501 }, 400);
+        }
+        return baseStub()(input, init);
+      }) as typeof fetch,
+    );
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/reconcile",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    expect(response.status).toBe(502);
+    const message = (response.body as { error: string }).error;
+    // A reconcile is a read: a failed check changes nothing, so "Nothing was created" is a fact.
+    expect(message).toContain("Nothing was created");
+    expect(message).toContain("Try again");
+
+    // The failed check recorded nothing and concluded nothing: no reconcile summary, and the row
+    // stays AMBIGUOUS — the truthful state.
+    const row = server.db.prepare("SELECT reconcile_json FROM recreation_attempts WHERE id='att-1'").get() as {
+      reconcile_json: string | null;
+    };
+    expect(row.reconcile_json).toBeNull();
+    const entryRow = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as {
+      lifecycle_state: string;
+    };
+    expect(entryRow.lifecycle_state).toBe("AMBIGUOUS");
+  });
+});
+
 // docs/10 §8 says a disabled addon replaces actions with a notice, and docs/00 says the UI never
 // decides what a user may do — so the server must refuse the actions too. A viewer already on the
 // confirm screen when the addon is disabled must not be able to complete a recreation.

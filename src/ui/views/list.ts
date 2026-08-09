@@ -118,20 +118,40 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   mount(ctx.root, ...nodes);
 }
 
+type SuggestionItems = readonly { readonly name?: string | null }[];
+
+/** One `/api/options` fetch per kind per component session, keyed on the session's own API client
+ * so nothing leaks between boots. This matters: `renderAdminControls` runs on *every* list render
+ * — the initial load, Apply filters, and both toggles — and each `kind` is a `collectPaged` walk,
+ * so without this a checkbox click would issue a full pagination sweep of `users.list` and
+ * `projects.list`. That is the per-interaction Clockify fan-out `LIST_PAGE_SIZE` exists to avoid.
+ * A failed fetch is not cached, so the next render tries again. */
+const suggestionCaches = new WeakMap<Ctx["api"], Map<string, Promise<SuggestionItems>>>();
+
+function loadSuggestions(ctx: Ctx, kind: "users" | "projects"): Promise<SuggestionItems> {
+  let byKind = suggestionCaches.get(ctx.api);
+  if (byKind === undefined) {
+    byKind = new Map();
+    suggestionCaches.set(ctx.api, byKind);
+  }
+  const cached = byKind.get(kind);
+  if (cached !== undefined) return cached;
+  const pending = ctx.api.get("/api/options", { kind }).then((res) => (res as { items: SuggestionItems }).items);
+  byKind.set(kind, pending);
+  return pending;
+}
+
 /** Fills a `<datalist>` with the current workspace's names, in the background. Suggestions are a
  * convenience only: the filter matches the names stored on each row, so free text must keep
  * working for a project or member that no longer exists — which is exactly the case this list is
  * for. A failed fetch therefore leaves an empty list and says nothing (docs/10 §2), and never
  * blocks the rows from rendering. */
 function fillSuggestions(ctx: Ctx, list: HTMLDataListElement, kind: "users" | "projects"): void {
-  void ctx.api
-    .get("/api/options", { kind })
-    .then((res) => {
-      for (const item of (res as { items: readonly { name?: string | null }[] }).items) {
-        if (item.name) list.appendChild(el("option", { value: item.name }));
-      }
+  void loadSuggestions(ctx, kind)
+    .then((items) => {
+      for (const item of items) if (item.name) list.appendChild(el("option", { value: item.name }));
     })
-    .catch(() => undefined);
+    .catch(() => suggestionCaches.get(ctx.api)?.delete(kind));
 }
 
 function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {

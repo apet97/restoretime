@@ -42,9 +42,11 @@ Nothing else. No dashboards, no charts.
 **User and project are filtered by name, not by id.** Nobody knows a 24-character Clockify id by
 heart, so an id box is a filter nobody can use. Both inputs are free text with a `<datalist>` of
 current workspace names attached (`/api/options?kind=users` and `kind=projects`, fetched in the
-background — a failure leaves the suggestions empty and never delays or blocks the rows). The query
-params are `userName` and `projectName`; `userId` and `projectId` still exist on the route and are
-the precise form.
+background — a failure leaves the suggestions empty and never delays or blocks the rows). Each kind
+is fetched **once per component session**: the filter bar re-renders on every list load, and each
+options kind is a `collectPaged` walk, so an uncached fetch would turn a checkbox click into a
+pagination sweep of the workspace. The query params are `userName` and `projectName`; `userId` and
+`projectId` still exist on the route and are the precise form.
 
 The match is against the **name stored on the row at deletion time**, never a Clockify lookup, and
 selecting a suggestion is never required. That is deliberate: a deleted project and a deactivated

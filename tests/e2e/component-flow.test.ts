@@ -791,8 +791,15 @@ describe("admin list filters by name", () => {
       ),
     );
 
+    // Counted, not just stubbed: each options kind is a `collectPaged` walk, and
+    // `renderAdminControls` runs on every list render. Without the per-session cache in
+    // `list.ts`, one Apply-filters click would re-walk both.
+    let userListCalls = 0;
+    let projectListCalls = 0;
     const clockify = (async (input: string | URL | Request, init?: RequestInit) => {
       const path = pathOf(input);
+      if (path.endsWith("/users")) userListCalls++;
+      if (path.endsWith("/projects")) projectListCalls++;
       // Clockify as it is now: only "Billing" survives, so "Legacy API" cannot come from here.
       if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Billing", archived: false }]);
       if (path.includes("/projects/proj-gone")) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
@@ -820,8 +827,12 @@ describe("admin list filters by name", () => {
     // "Legacy API" is deliberately absent — Clockify no longer has it. Free text must still reach it.
     expect(projectOptions).toEqual(["Billing"]);
 
+    expect(findFilterInput("User").getAttribute("list")).toBe("rt-user-names");
     const projectInput = findFilterInput("Project");
     expect(projectInput.getAttribute("list")).toBe("rt-project-names");
+    // One options walk per kind so far — the suggestions, not the rows. `/api/entries` reads
+    // users itself for the preflight, so `projectListCalls` is the clean signal here.
+    const projectListAfterFirstRender = projectListCalls;
     projectInput.value = "legacy";
     findButton("Apply filters").click();
 
@@ -831,5 +842,11 @@ describe("admin list filters by name", () => {
     findFilterInput("Project").value = "";
     findButton("Apply filters").click();
     await waitFor(() => text().includes("current work") && text().includes("legacy work"));
+
+    // Two more renders, and not one extra options walk: the cache is keyed per session, so a
+    // checkbox click can never turn into a pagination sweep of the workspace.
+    expect(projectListCalls).toBe(projectListAfterFirstRender);
+    expect(Array.from(document.querySelectorAll("#rt-project-names option"))).toHaveLength(1);
+    expect(userListCalls).toBeGreaterThan(0);
   });
 });

@@ -157,6 +157,11 @@ place a DOM environment is used. It deliberately does **not** attempt real-brows
 CSP, `frame-ancestors`, and iframe embedding belong to LV-01 against a live deployment. Keep it a
 small number of suites.
 
+`tests/e2e/component-flow.test.ts`'s "admin list filters by name" case (docs/10 §2) additionally
+counts Clockify calls: two further list renders after the first must issue **zero** extra
+`/api/options` walks, pinning the per-session suggestion cache. Verified real — removing the cache
+lookup makes the count assertion fail.
+
 `tests/e2e/xss-proof.test.ts` (**UT-X01 extension**, PASS-04) drives entity-encoded and
 markup-looking payloads in the description, project name, task name, tag names, owner name, and a
 custom-field value through every rendered view (list, detail, resolution widgets, confirm,

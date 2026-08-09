@@ -94,6 +94,11 @@ yet, so an honest gap is visible here rather than buried in a report.
       The docs/10 §8 **token-refresh** contract is also verified live now: the proactive dispatch
       fired at exactly 25 minutes and a call 106 s after the original token's expiry still
       succeeded (evidence "Live run 12"). Its reactive 401-retry half remains unit-covered only.
+      Re-run in full on `clockify-sdk-ts-115` **4.0.0** (evidence "Live run 14"): 11 passed, 0
+      skipped, 0 blocked — the suite is the only thing that exercises real Clockify error shapes,
+      and 4.0.0 changed how errors serialize, so this is the run that matters for that upgrade. The
+      same run closed LV-02's self-declared gap by the log inspection it asks for: 11
+      `webhook_received`, 11 `recoverable_created`, 11 persisted rows, 0 error lines.
       **Still unverified**: production (`app.clockify.me`) has never been exercised.
 - [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
       package is staged (`implementation/marketplace/`: manifest review, scope justification,
@@ -109,10 +114,12 @@ yet, so an honest gap is visible here rather than buried in a report.
       satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
       (401 without a token). The **authenticated** component render was out of scope for this drill;
       it has since been done separately on the developer environment (evidence "Live run 7").
-- [x] GitHub release tagged with notes — `v1.0.0-rc.7`, a **release candidate**, not `v1.0.0`.
-      rc.6 fixed the component CSP defect and rc.7 the false P-LOCK-REG warning; both were found by
-      driving the addon and the workspace through a real browser (evidence "Live run 7" and
-      "Live run 8"), which is why the candidate series moved twice after the passes closed.
+- [x] GitHub release tagged with notes — currently `v1.0.0-rc.9`, a **release candidate**, not
+      `v1.0.0`. rc.6 fixed the component CSP defect and rc.7 the false P-LOCK-REG warning; both
+      were found by driving the addon and the workspace through a real browser (evidence "Live
+      run 7" and "Live run 8"), which is why the candidate series moved twice after the passes
+      closed. rc.8 carried the UI sweep, and rc.9 the `clockify-sdk-ts-115` 4.0.0 upgrade and the
+      name filters.
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.

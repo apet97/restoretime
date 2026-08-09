@@ -893,3 +893,51 @@ Four `installations` rows remain in the local database, from the earlier dead-tu
 **installation row by `(workspace_id, addon_id)`**, so an uninstall can only remove the installation
 it was sent for. The rows carry no recoverable data — the entries table is empty — and no add-on is
 installed in the workspace.
+
+# Live run 14 — the whole live suite on SDK 4.0.0, developer environment
+
+2026-08-09, `https://developer.clockify.me`, workspace `69bda6b317a0c5babe34b4ff`, installation
+`6a78074acf7409222cb4054b` behind a fresh quick tunnel. First run of the suite since the
+`clockify-sdk-ts-115` 2.0.0 → 4.0.0 upgrade, which is the point: this suite is the only thing that
+exercises real Clockify error shapes, and 4.0.0 changed how errors serialize.
+
+```
+npm run test:live   ->  10 files, 11 tests, 11 passed, 0 skipped, 0 blocked   (32s)
+```
+
+Nothing was blocked, so every row ran with real credentials rather than reporting a missing var. A
+dev-environment API key was generated for the run (`RT-LIVE-SUITE-20260809`); the addon token came
+from the installation Clockify issued, decrypted through the app's own codec.
+
+Notable rows, in the suite's own words:
+
+- **LV-10(a)** — the create committed at Clockify (`6a7808aacf7409222cb40568`) despite the reported
+  transport failure; reconcile adopted it. `AMBIGUOUS -> RECREATED` proved live again on 4.0.0.
+- **LV-10(b)** — nothing was ever sent; the row stayed AMBIGUOUS through a real reconcile and moved
+  to IDLE on "not created".
+- **LV-07** — `onlyAdminsCanChangeBillableStatus=false`, `defaultBillableProjects=true` on the real
+  workspace; P-BILL fired for a regular viewer, matching the expectation.
+- **LV-08** — resolved P-CF-OPT and P-CF-REQ against the workspace's existing fields, creating and
+  deleting nothing of its own.
+
+## LV-02's receipt gap, closed by inspection
+
+LV-02 proves the *trigger* side and says so explicitly: confirming the deployed add-on received and
+persisted the row "requires operator log inspection". That inspection was done, and it is the half
+the test cannot assert:
+
+```
+metric:webhook_received     11
+metric:recoverable_created  11
+recoverable_entries          11 rows, detected_at 04:57:15Z … 04:57:40Z
+error-level log lines         0
+```
+
+Eleven deliveries, eleven rows, no errors — every probe deletion the suite made in its `finally`
+blocks arrived at the add-on and was persisted.
+
+## Workspace left as found
+
+A detailed report over the whole workspace for the day returns **0 entries**, and **0 `RT-PROBE-`
+rows across all users**; the entry LV-10(a) deliberately committed is gone. The suite's own cleanup
+did this — nothing was tidied by hand afterwards.

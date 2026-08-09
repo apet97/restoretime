@@ -169,7 +169,7 @@ Notes:
 
 | Method | Exact path | Request | Response |
 |---|---|---|---|
-| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (admin filters; validated, never widen workspace scope). The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — `broken` is `broken_at` read back (§6: reinstall notice) |
+| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (admin filters; validated, never widen workspace scope). The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — `broken` is `broken_at` read back (§6: reinstall notice) |
 | GET | `/api/entries/detail` | query: `id` (entry id) | full detail (source, state, latest plan, attempts, lineage) |
 | POST | `/api/entries/preflight` | body: `{ entryId, choices? }` | plan or `{ actionRequired: [...] }` or `{ blockers: [...] }` |
 | POST | `/api/entries/recreate` | body: `{ entryId, planId }` | attempt result (RECREATED/FAILED/AMBIGUOUS) |

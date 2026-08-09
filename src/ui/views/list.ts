@@ -185,6 +185,11 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     el("option", { value: "AMBIGUOUS" }, "Unknown result"),
   );
   statusSelect.value = filters.status;
+  // "Show dismissed" selects the DISMISSED lifecycle state, and this dropdown selects any other
+  // one, so the two controls answer the same question. Disabling the dropdown while the toggle is
+  // on says that outright, instead of accepting a pair the server has to reconcile behind the
+  // user's back (docs/10 §2).
+  statusSelect.disabled = filters.dismissed;
 
   const applyButton = el("button", { type: "button" }, "Apply filters");
   applyButton.addEventListener("click", () => {
@@ -192,7 +197,9 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     filters.projectName = projectInput.value.trim();
     filters.from = fromInput.value;
     filters.to = toInput.value;
-    filters.status = statusSelect.value;
+    // Not read while disabled: the toggle owns the state selection then, and taking the
+    // dropdown's stale value here would resurrect the contradiction this pair used to send.
+    filters.status = statusSelect.disabled ? "" : statusSelect.value;
     filters.search = searchInput.value.trim();
     load(ctx, filters);
   });
@@ -201,6 +208,8 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
   dismissedToggle.checked = filters.dismissed;
   dismissedToggle.addEventListener("change", () => {
     filters.dismissed = dismissedToggle.checked;
+    // Turning the toggle on drops any chosen status, so the next Apply cannot send both.
+    if (filters.dismissed) filters.status = "";
     load(ctx, filters);
   });
   const dismissedLabel = el("label", {}, dismissedToggle, " Show dismissed");

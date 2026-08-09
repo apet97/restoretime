@@ -253,3 +253,60 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
     expect(ids(db, { ownerName: "Grace", userId: "user-2" })).toEqual([]);
   });
 });
+
+// UT-L03 (docs/10 §2). `status` and `dismissed` both select a `lifecycle_state`, so a request
+// carrying both is contradictory rather than narrow. Before this was resolved the two were ANDed
+// into `lifecycle_state = 'FAILED' AND lifecycle_state = 'DISMISSED'`, which matches nothing and
+// reads to an admin as "no such entries exist" — the same lie `handleListEntries` already refuses
+// to tell for an unknown `status`.
+describe("UT-L03 status and dismissed resolve to one lifecycle state, never a contradiction", () => {
+  function seedStates(db: ReturnType<typeof openDatabase>): void {
+    for (const [id, state] of [
+      ["re-idle", "IDLE"],
+      ["re-failed", "FAILED"],
+      ["re-dismissed", "DISMISSED"],
+    ] as const) {
+      ingestDeletedEntry(db, {
+        id,
+        workspaceId: "ws-1",
+        sourceEntryId: id,
+        ownerId: "user-1",
+        detectedAt: "2026-08-08T09:00:00Z",
+        source: source({ entryId: id }),
+      });
+      db.prepare("UPDATE recoverable_entries SET lifecycle_state=? WHERE id=?").run(state, id);
+    }
+  }
+
+  function ids(db: ReturnType<typeof openDatabase>, filters: Parameters<typeof list>[2]): string[] {
+    return list(db, "ws-1", filters).rows.map((r) => r.id).sort();
+  }
+
+  it("keeps each filter's behaviour on its own", () => {
+    const db = openDatabase(":memory:");
+    seedStates(db);
+    // Default: dismissed rows are hidden, everything else shows.
+    expect(ids(db, {})).toEqual(["re-failed", "re-idle"]);
+    expect(ids(db, { status: "FAILED" })).toEqual(["re-failed"]);
+    expect(ids(db, { dismissed: true })).toEqual(["re-dismissed"]);
+    // An explicit DISMISSED status reaches the same row without the toggle.
+    expect(ids(db, { status: "DISMISSED" })).toEqual(["re-dismissed"]);
+  });
+
+  it("answers a contradictory pair with the dismissed rows, never with an empty list", () => {
+    const db = openDatabase(":memory:");
+    seedStates(db);
+    // `dismissed` wins: reaching a category the default hides is its only purpose. The point of
+    // the assertion is the non-emptiness — an empty result here would be indistinguishable from
+    // "this workspace has no dismissed entries".
+    expect(ids(db, { status: "FAILED", dismissed: true })).toEqual(["re-dismissed"]);
+    expect(ids(db, { status: "IDLE", dismissed: true })).toEqual(["re-dismissed"]);
+  });
+
+  it("dismissed:false is not a filter — it leaves the default hiding in place", () => {
+    const db = openDatabase(":memory:");
+    seedStates(db);
+    expect(ids(db, { dismissed: false })).toEqual(["re-failed", "re-idle"]);
+    expect(ids(db, { status: "FAILED", dismissed: false })).toEqual(["re-failed"]);
+  });
+});

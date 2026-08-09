@@ -887,4 +887,57 @@ describe("admin list filters by name", () => {
     expect(Array.from(document.querySelectorAll("#rt-project-names option"))).toHaveLength(1);
     expect(userListCalls).toBeGreaterThan(0);
   });
+
+  // "Show dismissed" and the status dropdown both select a `lifecycle_state`, so they answer the
+  // same question. The UI says so by disabling one while the other is on — a user who can send
+  // both is a user who can ask for an empty list without knowing it (docs/10 §2).
+  it("the status dropdown and Show dismissed are alternatives, not filters that stack", async () => {
+    const server = await bootServer();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    vi.stubGlobal("fetch", makeFetchImpl(server, baseClockifyStub()));
+
+    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: "admin-1",
+      workspaceRole: "admin",
+    });
+    await mountShell(server, token);
+    const { window } = createTestWindow(token);
+    boot({ window, fetchImpl: makeFetchImpl(server, baseClockifyStub()) });
+    await waitFor(() => text().includes("Deleted time entries"));
+
+    // Nullable on purpose: the filter bar is absent during the intermediate "Loading…" render, so
+    // a predicate that assumes the element is there fails on timing rather than on behaviour.
+    const status = () => document.querySelector("select");
+    const dismissedToggle = () =>
+      Array.from(document.querySelectorAll('input[type="checkbox"]')).find((el) =>
+        el.closest("label")?.textContent?.includes("Show dismissed"),
+      ) as HTMLInputElement;
+
+    // Choose a status, then reveal dismissed entries.
+    status()!.value = "FAILED";
+    findButton("Apply filters").click();
+    await waitFor(() => status()?.value === "FAILED");
+
+    dismissedToggle().checked = true;
+    dismissedToggle().dispatchEvent(new Event("change"));
+    // The chosen status is dropped and the control is disabled, so the pair cannot be sent.
+    await waitFor(() => status()?.disabled === true);
+    expect(status()!.value).toBe("");
+
+    // Applying again while disabled must not resurrect a stale value from the dropdown.
+    findButton("Apply filters").click();
+    await waitFor(() => status()?.disabled === true);
+    expect(status()!.value).toBe("");
+
+    // Turning the toggle off gives the dropdown back.
+    dismissedToggle().checked = false;
+    dismissedToggle().dispatchEvent(new Event("change"));
+    await waitFor(() => status()?.disabled === false);
+  });
 });

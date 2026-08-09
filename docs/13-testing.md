@@ -34,6 +34,7 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 | UT-M02 | `safeErrorSummary` (docs/12 "Sensitive log leakage", docs/14 "Logging"): a `ClockifyApiError` never surfaces `.message`/`.body` (which embed the full response verbatim) — only `{errorName, errorStatus, errorCode}`; a plain `Error` yields `{errorName, errorMessage}`; a non-`Error` throw degrades to `{errorName:"unknown"}` | Log-safe error fields |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
 | UT-L02 | Admin name filters at the store (docs/10 §2): substring match on the stored `ownerName`/`projectName`, ASCII case folded; `%`, `_` and `\` in a name are matched literally, not as wildcards; a `null` project name and an empty owner name never match; the name filters narrow alongside the id filters rather than replacing them. Pins the ASCII-only limit explicitly (`Ötzi` ≠ `ötzi`) so the documented caveat is asserted, not assumed | Filter honesty |
+| UT-L03 | Admin list state filters at the store (docs/10 §2): `status` and `dismissed` both select a `lifecycle_state`, so each works alone and a request carrying both resolves to one state instead of being ANDed into `lifecycle_state = 'FAILED' AND lifecycle_state = 'DISMISSED'` — a contradiction that matches nothing and reads as "no such entries exist". Verified real: restoring the old two-clause form makes the contradiction case fail with an empty list | Filter honesty |
 
 ## Contract (fixture-pinned) — `tests/contract/`
 

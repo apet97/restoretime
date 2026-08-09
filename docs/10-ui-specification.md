@@ -64,6 +64,16 @@ written down rather than discovered:
 `userName` is admin-only for the same reason `userId` is (docs/09); so is `kind=users`, the one
 options kind that enumerates people rather than workspace metadata.
 
+**Status and "Show dismissed" are alternatives, not filters that stack.** `DISMISSED` is a
+lifecycle state, so the toggle selects one state and the dropdown selects any other — they answer
+the same question about the same column. Turning the toggle on therefore clears the chosen status
+and disables the dropdown, and the dropdown's value is not read while it is disabled. The server
+resolves the pair the same way if one ever arrives anyway (`dismissed` wins, because reaching a
+category the default hides is its only purpose), so a hand-written query gets a coherent answer
+too. Neither may produce `lifecycle_state = 'FAILED' AND lifecycle_state = 'DISMISSED'`, which
+matches nothing and reads to an admin as "no such entries exist" — the same lie the route already
+refuses to tell for an unrecognized `status` (docs/09).
+
 ## 3. Detail view
 
 Two columns of fact, then differences.

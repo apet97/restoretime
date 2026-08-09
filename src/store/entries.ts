@@ -174,14 +174,19 @@ export function list(
     clauses.push("owner_id = @userId");
     params.userId = filters.userId;
   }
-  if (filters.status !== undefined) {
-    clauses.push("lifecycle_state = @status");
-    params.status = filters.status;
-  } else if (filters.dismissed !== true) {
+  // DISMISSED is a lifecycle state, not a second axis: `dismissed: true` selects it and `status`
+  // selects any other one, so the two are alternatives rather than filters that narrow together.
+  // Resolving them to a single state here is what keeps `status` and `dismissed` from ever being
+  // ANDed into `lifecycle_state = 'FAILED' AND lifecycle_state = 'DISMISSED'`, which matches
+  // nothing and reads to the admin as "no such entries exist" — the same lie the route already
+  // refuses to tell for an unknown `status` (docs/09, docs/10 §2). `dismissed` wins, because
+  // reaching a category the default hides is its only purpose.
+  const state = filters.dismissed === true ? "DISMISSED" : filters.status;
+  if (state !== undefined) {
+    clauses.push("lifecycle_state = @state");
+    params.state = state;
+  } else {
     clauses.push("lifecycle_state != 'DISMISSED'");
-  }
-  if (filters.dismissed === true) {
-    clauses.push("lifecycle_state = 'DISMISSED'");
   }
   if (filters.from !== undefined) {
     clauses.push("detected_at >= @from");

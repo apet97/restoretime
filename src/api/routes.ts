@@ -768,7 +768,18 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
-  const result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
+  // Every other Clockify-touching route catches its transport failures and answers N8's three
+  // questions; without this catch, "Check now" during an outage escaped to the SDK's bare 500.
+  // The message is safe here: a reconcile is a read — a failed check changes nothing (adoption
+  // happens only after a successful read), so "Nothing was created" is a fact, not a guess.
+  let result;
+  try {
+    result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
+  } catch (err) {
+    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    deps.onError?.(err, { route: "reconcile" });
+    return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
+  }
   const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
   return json(200, { result, entry: current ?? entry });
 }

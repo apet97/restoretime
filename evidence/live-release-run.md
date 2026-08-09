@@ -876,3 +876,20 @@ writes were made there, and no add-on was installed.
 ## Still not observed
 
 `theme: "DEFAULT"` again in the component JWT. No `theme: "DARK"` claim has ever been seen.
+
+## Workspace left as found
+
+The add-on was uninstalled at the end of the run and this time the `DELETED` call **did** arrive —
+the tunnel was still up when the button was pressed, which is the difference from run 11:
+
+```
+04:35:55Z  installation deleted  addonId 6a77fff4cf7409222cb40485  result "deleted"
+recoverable_entries  13 -> 0
+```
+
+Four `installations` rows remain in the local database, from the earlier dead-tunnel sessions whose
+`DELETED` calls never arrived. That is the documented shape, not a new defect:
+`uninstallWorkspace` (`src/store/cascade.ts`) deletes **entries by workspace** but the
+**installation row by `(workspace_id, addon_id)`**, so an uninstall can only remove the installation
+it was sent for. The rows carry no recoverable data — the entries table is empty — and no add-on is
+installed in the workspace.

@@ -177,7 +177,7 @@ Notes:
 | POST | `/api/entries/mark-not-created` | body: `{ entryId }` | requires AMBIGUOUS + bounded window (docs/07 §8) |
 | POST | `/api/entries/resolve-ambiguous` | body: `{ entryId, newEntryId }` | adoption or 409 on unique-index conflict |
 | POST | `/api/entries/dismiss` / `/api/entries/undismiss` | body: `{ entryId }` | 204 |
-| POST | `/api/entries/bulk-preflight` | body: `{ entryIds }` (max 50) | per-entry preflight lines; admin-only route |
+| POST | `/api/entries/bulk-preflight` | body: `{ ids }` (max 50) | per-entry preflight lines; admin-only route |
 | POST | `/api/entries/bulk-recreate` | body: `{ planIds }` (max 50) | per-entry outcomes; admin-only route |
 | GET | `/api/options` | query: `kind=projects\|users\|tasks\|tags\|customFields`, `projectId?` | current workspace entities for pickers and filter suggestions. `kind=users` is admin-only (docs/09) and returns `{id, name}` for every member including deactivated ones (`status: "ALL"`) |
 

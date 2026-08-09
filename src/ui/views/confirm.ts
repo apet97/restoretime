@@ -1,8 +1,8 @@
 // Confirm view (docs/10 §5). The exact planned values, warnings and differences, a fidelity
-// badge, and the one primary action. A plan older than 5 minutes is revalidated on confirm
-// regardless — that is a server-side rule (docs/07 §7); this view never checks the plan's age
-// itself, it just sends `planId` and handles whatever the server decides (a 200 outcome, or a 409
-// `stale` with a fresh plan to show instead).
+// badge, and the one primary action. Every confirm is revalidated server-side (docs/07 §7),
+// regardless of the plan's age; this view never checks the plan itself, it just sends `planId`
+// and handles whatever the server decides (a 200 outcome, or a 409 `stale` with a fresh plan to
+// show instead).
 
 import { el, mount } from "../dom.js";
 import { fidelityLabel, formatEntryHeader } from "../format.js";

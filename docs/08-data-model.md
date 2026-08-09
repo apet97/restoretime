@@ -23,6 +23,7 @@ before rows are written.
 | `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by **normalized** webhook path (the SDK model has no event field; live INSTALLED payloads can carry `//webhooks/...` — normalize by collapsing repeated slashes before storing/looking up, evidence/install-capture-2026-08-08.md) |
 | `status` | TEXT | `ACTIVE`/`INACTIVE` (STATUS_CHANGED) |
 | `installed_at` | INTEGER | epoch **milliseconds** (the SDK `ClockifyInstallationContext.installedAt` type is `number`); the app sets it to `Date.now()` at INSTALLED receipt (`{...payload, installedAt: Date.now()}` — the payload itself has no generation) |
+| `broken_at` | TEXT | set when Clockify rejects the installation's token (401 code `4017`, docs/03 §6); distinct from `status` — different remedy (reinstall, not re-enable). Cleared by a reinstall (the upsert sets it back to NULL). Migration 0002 |
 
 Store methods mirror the SDK in-memory semantics exactly: `load` → SELECT;
 `save` → UPSERT that **skips** when the existing row's `installed_at` is strictly newer than the
@@ -65,9 +66,10 @@ Constraints:
 | `created_by` | TEXT NOT NULL | viewer user id |
 | `created_at` | TEXT NOT NULL | |
 | `source_hash` | TEXT NOT NULL | sha256 of normalized source |
+| `choices_json` | TEXT NOT NULL | the choices the plan was built from — revalidation (docs/07 §7) reruns preflight with the identical choices, which is not implementable without storing them |
 | `resolution_json` | TEXT NOT NULL | per-dependency outcome |
 | `planned_request_json` | TEXT NOT NULL | exact createForUser body |
-| `warnings_json` / `blockers_json` | TEXT NOT NULL | |
+| `warnings_json` / `blockers_json` / `action_required_json` | TEXT NOT NULL | |
 | `fidelity` | TEXT NOT NULL | FULL/ADJUSTED/PARTIAL/IMPOSSIBLE |
 | `status` | TEXT NOT NULL | ACTIVE/STALE/CONSUMED |
 
@@ -91,7 +93,10 @@ Constraints:
 1. A row in `recoverable_entries` is created only by the webhook insert-if-absent.
 2. `RECREATED` implies `new_entry_id` present and one SUCCESS attempt pointing at it.
 3. At most one ACTIVE plan per entry (partial unique index).
-4. An attempt row exists for every transition out of RECREATING.
+4. An attempt row exists for every transition out of RECREATING — with one carve-out: a fenced
+   release of a claim that never issued a Clockify call (`releaseClaim`: a racing confirm consumed
+   the plan first, or the baseline read hit the page bound) puts back the pre-claim state with no
+   attempt row, because nothing was attempted.
 5. `source_json` never contains tokens, raw payloads, or rate objects.
 
 ## Retention and deletion

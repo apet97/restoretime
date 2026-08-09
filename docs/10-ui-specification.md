@@ -125,8 +125,8 @@ button activates only when the plan has no blockers and no open ACTION_REQUIRED 
 - The exact planned values (as in the detail view's NEW ENTRY column).
 - Warnings and differences.
 - Fidelity badge: **Complete** (FULL) / **Adjusted** (ADJUSTED) / **Partial** (PARTIAL).
-- Primary action: **Recreate entry**. A plan older than 5 minutes is revalidated on confirm
-  regardless (server-side rule, not visible).
+- Primary action: **Recreate entry**. Every confirm revalidates the plan server-side (docs/07 §7),
+  regardless of the plan's age (not visible). There is no age threshold.
 
 ## 6. Result views
 
@@ -160,7 +160,7 @@ Do not create the entry by hand yet.
 After the bounded reconcile finds nothing:
 
 ```text
-We checked Clockify 3 times in 10 minutes. The entry does not appear there.
+We checked Clockify N times. The entry does not appear there.
 If you can see the entry in Clockify, select "It exists". Otherwise select "It was not created".
 [It exists — let me pick it]   [It was not created]
 ```

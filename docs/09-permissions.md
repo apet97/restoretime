@@ -41,13 +41,13 @@ All paths are exact (the SDK router has no path parameters; docs/03 §5). `entry
 
 | Boundary | Check |
 |---|---|
-| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; admin filters (`userId`, project, date, status, search, dismissed) are validated but never widen the workspace scope |
+| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; admin filters (`userId`, `userName`, project, date, status, search, dismissed) are validated but never widen the workspace scope. `userId` and `userName` both name another person, so both are read only for an admin and silently ignored otherwise |
 | `GET /api/entries/detail` | row lookup scoped by claims workspace + entry id from query; then `canRead` else 404 (no existence leak) |
 | `POST /api/entries/preflight` | same scoping; then `canAct` |
 | `POST /api/entries/recreate` | same; plus P-PERM re-evaluated inside preflight (defense in depth) |
 | `POST /api/entries/reconcile` / `mark-not-created` / `resolve-ambiguous` / `dismiss` / `undismiss` | same scoping and `canAct` |
 | `POST /api/entries/bulk-preflight`, `POST /api/entries/bulk-recreate` | `isClockifyAdminRole` required on the route itself (admin-only), plus per-entry `canAct` and P-PERM inside the engine. A regular user gets 403 before any per-entry data is computed |
-| `GET /api/options` | workspace-scoped current projects/tasks/tags; available to any verified viewer in the workspace (these are current workspace entities, not deleted data) |
+| `GET /api/options` | workspace-scoped current projects/tasks/tags/custom fields; available to any verified viewer in the workspace (these are current workspace entities, not deleted data). `kind=users` is the exception — it enumerates people rather than workspace metadata, feeds the admin-only user filter, and returns 403 to a non-admin before any Clockify call |
 
 ## Rules that prevent the known attacks
 

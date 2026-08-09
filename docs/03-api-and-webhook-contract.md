@@ -169,7 +169,7 @@ Notes:
 
 | Method | Exact path | Request | Response |
 |---|---|---|---|
-| GET | `/api/entries` | query: `userId`, `projectId`, `from`, `to`, `status`, `search`, `dismissed` (admin filters; validated, never widen workspace scope) | `{ entries: EntrySummary[], }` |
+| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (admin filters; validated, never widen workspace scope). The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences | `{ entries: EntrySummary[], }` |
 | GET | `/api/entries/detail` | query: `id` (entry id) | full detail (source, state, latest plan, attempts, lineage) |
 | POST | `/api/entries/preflight` | body: `{ entryId, choices? }` | plan or `{ actionRequired: [...] }` or `{ blockers: [...] }` |
 | POST | `/api/entries/recreate` | body: `{ entryId, planId }` | attempt result (RECREATED/FAILED/AMBIGUOUS) |
@@ -179,7 +179,7 @@ Notes:
 | POST | `/api/entries/dismiss` / `/api/entries/undismiss` | body: `{ entryId }` | 204 |
 | POST | `/api/entries/bulk-preflight` | body: `{ entryIds }` (max 50) | per-entry preflight lines; admin-only route |
 | POST | `/api/entries/bulk-recreate` | body: `{ planIds }` (max 50) | per-entry outcomes; admin-only route |
-| GET | `/api/options` | query: `kind=projects\|tasks\|tags`, `projectId?` | current workspace entities for pickers |
+| GET | `/api/options` | query: `kind=projects\|users\|tasks\|tags\|customFields`, `projectId?` | current workspace entities for pickers and filter suggestions. `kind=users` is admin-only (docs/09) and returns `{id, name}` for every member including deactivated ones (`status: "ALL"`) |
 
 - Static: `GET /static/app.js` (UI bundle), `GET /icon.svg` (manifest icon), `GET /healthz`
   (no auth, docs/14). All exact paths.

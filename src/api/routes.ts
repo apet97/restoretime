@@ -155,7 +155,11 @@ const LIST_PAGE_SIZE = 50;
 
 async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLSearchParams) {
   const adminUserId = isAdmin(viewer) ? query.get("userId") : null;
+  // `userName` is admin-only for the same reason `userId` is (docs/09): it names another person.
+  // Both are silently ignored for a non-admin, whose `ownerId` clause pins the scope regardless.
+  const adminUserName = isAdmin(viewer) ? query.get("userName") : null;
   const projectId = query.get("projectId");
+  const projectName = query.get("projectName");
   const from = query.get("from");
   const to = query.get("to");
   const status = query.get("status");
@@ -165,7 +169,9 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     // non-admin: never widen the workspace scope — always the viewer's own entries.
     ...(!isAdmin(viewer) ? { ownerId: viewer.userId } : {}),
     ...(adminUserId ? { userId: adminUserId } : {}),
+    ...(adminUserName ? { ownerName: adminUserName } : {}),
     ...(projectId ? { projectId } : {}),
+    ...(projectName ? { projectName } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
     ...(status && isLifecycleState(status) ? { status } : {}),
@@ -873,6 +879,10 @@ async function handleUndismiss(deps: ApiRouteDeps, viewer: Viewer, body: unknown
 
 async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearchParams) {
   const kind = query.get("kind");
+  // `users` is the one kind that enumerates people rather than workspace metadata, and its only
+  // caller is the admin list filter — so it is gated here, before the client load, rather than
+  // gating `handleOptions` wholesale (the resolution widgets call the other four as any viewer).
+  if (kind === "users" && !isAdmin(viewer)) return errorJson(403, "admin role required");
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
   const { client } = clientResult;
@@ -884,6 +894,21 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
     if (kind === "projects") {
       const items = await collectPaged(client.projects.list.bind(client.projects), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });
+    }
+    if (kind === "users") {
+      // `status: "ALL"` on purpose: a deactivated member still owns deleted entries, and their
+      // name is exactly what an admin would type to find them (docs/10 §2). Same request shape
+      // `fetchSharedWorkspaceData` already makes.
+      const items = await collectPaged(client.users.list.bind(client.users), {
+        workspaceId: viewer.workspaceId,
+        status: "ALL",
+        "include-roles": false,
+      });
+      return json(200, {
+        items: items
+          .filter((u): u is typeof u & { id: string } => u.id !== undefined)
+          .map((u) => ({ id: u.id, name: u.name })),
+      });
     }
     if (kind === "tasks") {
       const projectId = query.get("projectId");
@@ -915,7 +940,7 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
           })),
       });
     }
-    return errorJson(400, "kind must be one of projects, tasks, tags, customFields");
+    return errorJson(400, "kind must be one of projects, users, tasks, tags, customFields");
   } catch (err) {
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();

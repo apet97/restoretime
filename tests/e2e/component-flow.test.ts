@@ -820,7 +820,13 @@ describe("admin list filters by name", () => {
     await waitFor(() => text().includes("legacy work") && text().includes("current work"));
 
     // Suggestions arrive after the rows, and never gate them: the list rendered above already.
-    await waitFor(() => document.querySelectorAll("#rt-user-names option").length > 0);
+    // Both datalists are awaited — they are two independent fetches, and waiting on one then
+    // reading the other is a race that only shows up on a slower machine.
+    await waitFor(
+      () =>
+        document.querySelectorAll("#rt-user-names option").length > 0 &&
+        document.querySelectorAll("#rt-project-names option").length > 0,
+    );
     const userOptions = Array.from(document.querySelectorAll("#rt-user-names option")).map((o) => o.getAttribute("value"));
     const projectOptions = Array.from(document.querySelectorAll("#rt-project-names option")).map((o) => o.getAttribute("value"));
     expect(userOptions).toEqual(["Ana Markovic"]);

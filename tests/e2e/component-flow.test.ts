@@ -573,6 +573,38 @@ describe("component E2E: disabled installation (docs/10 §8)", () => {
   });
 });
 
+describe("component E2E: broken installation (docs/11, docs/14 reinstall notice)", () => {
+  it("shows the reinstall notice on the list when the addon token was rejected", async () => {
+    const server = await bootServer();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    // The state a 401 code 4017 leaves behind (IT-08): `broken_at` set, `status` untouched.
+    server.db
+      .prepare("UPDATE installations SET broken_at=? WHERE workspace_id=? AND addon_id=?")
+      .run("2026-08-08T09:02:00Z", WORKSPACE_ID, ADDON_ID);
+
+    const clockify = baseClockifyStub();
+    vi.stubGlobal("fetch", makeFetchImpl(server, clockify));
+    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "member",
+    });
+    await mountShell(server, token);
+    const { window } = createTestWindow(token);
+    boot({ window, fetchImpl: makeFetchImpl(server, clockify) });
+    await waitFor(() => text().includes("Deleted time entries"));
+
+    expect(text()).toContain("Reinstall the addon from the Clockify Marketplace.");
+    // The list itself stays readable — a broken token blocks Clockify calls, not stored rows.
+    expect(text()).toContain("API investigation");
+  });
+});
+
 describe("component E2E: bulk flow (docs/10 §7, admin)", () => {
   it("reviews two ready entries and recreates both", async () => {
     const server = await bootServer();

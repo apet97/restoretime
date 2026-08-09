@@ -156,7 +156,7 @@ describe("GET /api/entries", () => {
     expect(response.status).toBe(200);
     // `truncated`/`limit` are part of the list contract: the server bounds the page, so the UI can
     // say "showing the N most recent" instead of letting a full page read as "everything".
-    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false, truncated: false, limit: 50 });
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false, broken: false, truncated: false, limit: 50 });
   });
 
   it("rejects a request with no Authorization header", async () => {

@@ -68,6 +68,13 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
       el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."),
     );
   }
+  // docs/03 §6 / docs/11 / docs/14: a rejected token (401 code 4017) needs a reinstall, not a
+  // retry — the generic "Clockify could not be reached" would send the user in circles.
+  if (data.broken) {
+    nodes.push(
+      el("p", { role: "alert" }, "RestoreTime's Clockify connection was rejected. Reinstall the addon from the Clockify Marketplace."),
+    );
+  }
   if (data.clockifyUnavailable) {
     nodes.push(el("p", { role: "status" }, "Clockify could not be reached; status and actions may be out of date."));
   }

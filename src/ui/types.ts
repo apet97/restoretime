@@ -46,6 +46,9 @@ export interface ListResponse {
   readonly entries: readonly ListRow[];
   readonly clockifyUnavailable: boolean;
   readonly disabled: boolean;
+  /** The installation's Clockify token was rejected (401 code 4017, docs/03 §6). Server fact:
+   * the remedy is a reinstall, and the notice must say so. */
+  readonly broken: boolean;
   /** Older rows matched the filters but were not returned (server bound, not a UI choice). */
   readonly truncated: boolean;
   readonly limit: number;

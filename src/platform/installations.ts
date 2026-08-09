@@ -212,6 +212,23 @@ export function getInstallationStatus(
   return row?.status;
 }
 
+/** Reads whether the installation is marked broken (`broken_at` set — docs/03 §6, docs/11,
+ * docs/14: "component shows a reinstall notice"). The read half of `markInstallationBroken`:
+ * without it the flag is write-only and the notice the docs promise can never render. Returns
+ * `false` when there is no row — an uninstalled workspace has nothing to reinstall. */
+export function isInstallationBroken(
+  db: Database.Database,
+  workspaceId: string,
+  addonId: string,
+): boolean {
+  const row = db
+    .prepare<[string, string], { broken_at: string | null }>(
+      "SELECT broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?",
+    )
+    .get(workspaceId, addonId);
+  return row !== undefined && row.broken_at !== null;
+}
+
 /** Imports the 32-byte AES-256-GCM token-encryption key from its hex env-var encoding. */
 export async function importTokenEncryptionKey(hex: string): Promise<webcrypto.CryptoKey> {
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {

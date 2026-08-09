@@ -32,7 +32,7 @@ import {
   VERIFICATION_READ_UNAVAILABLE,
 } from "../clockify/recreate.js";
 import { isAddonTokenInvalid } from "../clockify/errors.js";
-import { getInstallationStatus, markInstallationBroken } from "../platform/installations.js";
+import { getInstallationStatus, isInstallationBroken, markInstallationBroken } from "../platform/installations.js";
 import type { Logger } from "../log.js";
 import { emitMetric } from "../metrics.js";
 
@@ -187,7 +187,11 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
   if (clientResult) {
     try {
       shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
-    } catch {
+    } catch (err) {
+      // The list is usually the first surface a returning user opens, so a token rejection has to
+      // be recorded here too — otherwise `broken` below stays false until some other route
+      // happens to observe the 4017 first.
+      if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
       clockifyUnavailable = true;
     }
   } else {
@@ -222,6 +226,10 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     entries: summaries,
     clockifyUnavailable,
     disabled: installationStatus === "INACTIVE",
+    // docs/03 §6 / docs/11 / docs/14: a rejected addon token (401 code 4017) shows a reinstall
+    // notice. Read after the fetch above so a rejection observed by this very request already
+    // reports `broken: true`.
+    broken: isInstallationBroken(deps.db, viewer.workspaceId, viewer.addonId),
     truncated,
     limit: LIST_PAGE_SIZE,
   });
@@ -301,7 +309,12 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
     const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, entry.source, choices);
     result = runPreflight({ source: entry.source, viewer, choices, workspace: state, now: new Date() });
   } catch (err) {
-    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (isAddonTokenInvalid(err)) {
+      // The remedy for a rejected token is a reinstall, not a retry: the transport message's
+      // "try again in a moment" would send the user in circles (docs/03 §6, docs/11, docs/14).
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      return errorJson(503, NO_CLIENT_MESSAGE);
+    }
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     deps.onError?.(err, { route: "preflight" });
     return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
@@ -365,7 +378,13 @@ async function confirmPlan(
     const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, entry.source, plan.choices);
     fresh = runPreflight({ source: entry.source, viewer, choices: plan.choices, workspace: state, now: new Date() });
   } catch (err) {
-    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (isAddonTokenInvalid(err)) {
+      // Same rule as `handlePreflight`: a rejected token maps to the reinstall guidance
+      // (`no-client` renders NO_CLIENT_MESSAGE), never "try again in a moment". Nothing was sent
+      // to Clockify — the revalidation read failed before any claim or create.
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      return { kind: "no-client" };
+    }
     if (err instanceof PreflightTruncatedError) return { kind: "revalidate-truncated", message: err.message };
     deps.onError?.(err, { route: "recreate.revalidate" });
     return { kind: "revalidate-error" };
@@ -561,7 +580,10 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
   try {
     shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
   } catch (err) {
-    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (isAddonTokenInvalid(err)) {
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      return errorJson(503, NO_CLIENT_MESSAGE);
+    }
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     deps.onError?.(err, { route: "bulk-preflight" });
     return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
@@ -943,7 +965,10 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
     return errorJson(400, "kind must be one of projects, users, tasks, tags, customFields");
   } catch (err) {
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
-    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (isAddonTokenInvalid(err)) {
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      return errorJson(503, NO_CLIENT_MESSAGE);
+    }
     deps.onError?.(err, { route: "options" });
     return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
   }

@@ -260,6 +260,49 @@ describe("N8 error-message sweep", () => {
     expect(answersWhatNext(message)).toBe(true);
   });
 
+  it("a rejected addon token (401 code 4017) on preflight: says reinstall — not 'try again' — and the list reports broken", async () => {
+    const { server, token, entryId } = await setup();
+    // Every Clockify read now rejects the addon token — the exact state after Clockify revokes it.
+    vi.stubGlobal(
+      "fetch",
+      (async () => jsonResponse({ message: "Addon token invalid", code: 4017 }, 401)) as typeof fetch,
+    );
+
+    const res = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, choices: {} },
+    });
+    expect(res.status).toBe(503);
+    const message = (res.body as { error: string }).error;
+    // The remedy is a reinstall. "Try again in a moment" (the transport message) would send the
+    // user in circles, because a rejected token never recovers on its own (docs/03 §6, docs/11).
+    expect(message.toLowerCase()).toContain("reinstall");
+    expect(message).toContain("Nothing was created");
+    expect(answersWhetherCreated(message)).toBe(true);
+    expect(answersWhatNext(message)).toBe(true);
+
+    // The observation was recorded (IT-08's flag)…
+    const row = server.db
+      .prepare("SELECT broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get(WORKSPACE_ID, ADDON_ID) as { broken_at: string | null };
+    expect(row.broken_at).not.toBeNull();
+
+    // …and the list surface reports it, so the component can show the reinstall notice
+    // (docs/11 "Notice view", docs/14 "component shows a reinstall notice").
+    const list = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.status).toBe(200);
+    expect((list.body as { broken: boolean }).broken).toBe(true);
+    expect((list.body as { clockifyUnavailable: boolean }).clockifyUnavailable).toBe(true);
+  });
+
   it("a genuine transport failure (revalidation read fails): safely states nothing was created", async () => {
     const { server, token, entryId } = await setup();
     const preflight = await server.addon.handle({

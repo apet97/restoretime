@@ -51,7 +51,9 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [x] `npm run typecheck`, `lint`, `test`, `build` green on `main` — verified on `main` after the
       PASS-05 merge: 33 test files, 299 tests, plus 18 E2E; `git diff --check` clean; `gitleaks
       detect` reports no leaks. (Re-verified 2026-08-09 after the `clockify-sdk-ts-115` 4.0.0
-      upgrade and the name filters: 37 test files, 324 tests, plus 20 E2E, same three clean.)
+      upgrade and the name filters: 37 test files, 324 tests, plus 20 E2E, same three clean.
+      Re-verified 2026-08-09 after the broken-installation notice: 37 test files, 325 tests, plus
+      21 E2E, same three clean.)
       (`implementation/passes/PASS-05-release.md` "Git requirements": PR review and merge precede
       the tag).
 - [x] No dependency beyond `implementation/DEPENDENCIES.md`; no dead code; no TODO/FIXME in `src/`

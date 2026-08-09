@@ -204,3 +204,10 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
   (verified on the developer environment, evidence "Live run 10") — so a user cannot navigate to the
   notice. It covers the iframe that was already open when the status changed. The protection that
   matters is the server-side `actionGuard` refusal, because that stale iframe can still POST.
+- Broken installation (401 code 4017, docs/03 §6): the list view shows a notice — "RestoreTime's
+  Clockify connection was rejected. Reinstall the addon from the Clockify Marketplace." — from the
+  `broken` flag on `GET /api/entries` (`broken_at` read back, IT-08 records it). The rows stay
+  readable: a rejected token blocks Clockify calls, not stored data. On every other surface the
+  4017 maps to the reinstall guidance server-side: preflight, confirm revalidation, bulk preflight,
+  and `/api/options` return the same "Reinstall the addon" message that a missing installation
+  does, never "try again in a moment" — a rejected token does not recover on its own.

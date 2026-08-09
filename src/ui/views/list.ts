@@ -9,8 +9,8 @@ import { renderApiError, runAction, withLoading } from "./shared.js";
 import type { BulkPreflightRow, ListResponse, ListRow } from "../types.js";
 
 interface ListFilterState {
-  userId: string;
-  projectId: string;
+  userName: string;
+  projectName: string;
   from: string;
   to: string;
   status: string;
@@ -22,8 +22,8 @@ interface ListFilterState {
 
 function freshFilters(): ListFilterState {
   return {
-    userId: "",
-    projectId: "",
+    userName: "",
+    projectName: "",
     from: "",
     to: "",
     status: "",
@@ -36,8 +36,8 @@ function freshFilters(): ListFilterState {
 
 async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListResponse> {
   const query: Record<string, string> = {};
-  if (ctx.isAdminRole && filters.userId) query.userId = filters.userId;
-  if (filters.projectId) query.projectId = filters.projectId;
+  if (ctx.isAdminRole && filters.userName) query.userName = filters.userName;
+  if (filters.projectName) query.projectName = filters.projectName;
   if (filters.from) query.from = `${filters.from}T00:00:00.000Z`;
   if (filters.to) query.to = `${filters.to}T23:59:59.999Z`;
   if (ctx.isAdminRole && filters.status) query.status = filters.status;
@@ -118,9 +118,52 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   mount(ctx.root, ...nodes);
 }
 
+type SuggestionItems = readonly { readonly name?: string | null }[];
+
+/** One `/api/options` fetch per kind per component session, keyed on the session's own API client
+ * so nothing leaks between boots. This matters: `renderAdminControls` runs on *every* list render
+ * — the initial load, Apply filters, and both toggles — and each `kind` is a `collectPaged` walk,
+ * so without this a checkbox click would issue a full pagination sweep of `users.list` and
+ * `projects.list`. That is the per-interaction Clockify fan-out `LIST_PAGE_SIZE` exists to avoid.
+ * A failed fetch is not cached, so the next render tries again. */
+const suggestionCaches = new WeakMap<Ctx["api"], Map<string, Promise<SuggestionItems>>>();
+
+function loadSuggestions(ctx: Ctx, kind: "users" | "projects"): Promise<SuggestionItems> {
+  let byKind = suggestionCaches.get(ctx.api);
+  if (byKind === undefined) {
+    byKind = new Map();
+    suggestionCaches.set(ctx.api, byKind);
+  }
+  const cached = byKind.get(kind);
+  if (cached !== undefined) return cached;
+  const pending = ctx.api.get("/api/options", { kind }).then((res) => (res as { items: SuggestionItems }).items);
+  byKind.set(kind, pending);
+  return pending;
+}
+
+/** Fills a `<datalist>` with the current workspace's names, in the background. Suggestions are a
+ * convenience only: the filter matches the names stored on each row, so free text must keep
+ * working for a project or member that no longer exists — which is exactly the case this list is
+ * for. A failed fetch therefore leaves an empty list and says nothing (docs/10 §2), and never
+ * blocks the rows from rendering. */
+function fillSuggestions(ctx: Ctx, list: HTMLDataListElement, kind: "users" | "projects"): void {
+  void loadSuggestions(ctx, kind)
+    .then((items) => {
+      for (const item of items) if (item.name) list.appendChild(el("option", { value: item.name }));
+    })
+    .catch(() => suggestionCaches.get(ctx.api)?.delete(kind));
+}
+
 function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
-  const projectInput = el("input", { type: "text", placeholder: "Project id", value: filters.projectId });
-  const userInput = el("input", { type: "text", placeholder: "User id", value: filters.userId });
+  // Filtering by name, not by id: nobody knows a 24-character Clockify id by heart, and the names
+  // shown on each row are the ones stored at deletion time, so what you type matches what you see
+  // (docs/10 §2).
+  const projectList = el("datalist", { id: "rt-project-names" });
+  const userList = el("datalist", { id: "rt-user-names" });
+  const projectInput = el("input", { type: "text", placeholder: "Project name", list: "rt-project-names", value: filters.projectName });
+  const userInput = el("input", { type: "text", placeholder: "User name", list: "rt-user-names", value: filters.userName });
+  fillSuggestions(ctx, userList, "users");
+  fillSuggestions(ctx, projectList, "projects");
   const fromInput = el("input", { type: "date", value: filters.from });
   const toInput = el("input", { type: "date", value: filters.to });
   const searchInput = el("input", { type: "text", placeholder: "Search description", value: filters.search });
@@ -138,8 +181,8 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
 
   const applyButton = el("button", { type: "button" }, "Apply filters");
   applyButton.addEventListener("click", () => {
-    filters.userId = userInput.value.trim();
-    filters.projectId = projectInput.value.trim();
+    filters.userName = userInput.value.trim();
+    filters.projectName = projectInput.value.trim();
     filters.from = fromInput.value;
     filters.to = toInput.value;
     filters.status = statusSelect.value;
@@ -168,7 +211,9 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     "section",
     { "aria-label": "Filters" },
     el("label", {}, "User", userInput),
+    userList,
     el("label", {}, "Project", projectInput),
+    projectList,
     el("label", {}, "From", fromInput),
     el("label", {}, "To", toInput),
     el("label", {}, "Status", statusSelect),

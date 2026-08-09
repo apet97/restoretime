@@ -39,6 +39,31 @@ Admin filters above the list: user, project, date range, status, free-text searc
 dismissed" toggle. Bulk mode: row checkboxes, a counter, and one **Review selected** action.
 Nothing else. No dashboards, no charts.
 
+**User and project are filtered by name, not by id.** Nobody knows a 24-character Clockify id by
+heart, so an id box is a filter nobody can use. Both inputs are free text with a `<datalist>` of
+current workspace names attached (`/api/options?kind=users` and `kind=projects`, fetched in the
+background — a failure leaves the suggestions empty and never delays or blocks the rows). Each kind
+is fetched **once per component session**: the filter bar re-renders on every list load, and each
+options kind is a `collectPaged` walk, so an uncached fetch would turn a checkbox click into a
+pagination sweep of the workspace. The query params are `userName` and `projectName`; `userId` and
+`projectId` still exist on the route and are the precise form.
+
+The match is against the **name stored on the row at deletion time**, never a Clockify lookup, and
+selecting a suggestion is never required. That is deliberate: a deleted project and a deactivated
+member are exactly the rows this product exists for, and neither appears in any current options
+list, so resolving a typed name to an id would silently fail to find them. Three consequences,
+written down rather than discovered:
+
+- **A rename in Clockify does not reach rows already stored.** An entry deleted before the rename
+  keeps the old name and is found by the old name. The row genuinely records the name as it was.
+- **Matching folds ASCII case only** — SQLite's built-in `LIKE`. `Ötzi` does not match `ötzi`. The
+  same has always been true of the free-text description search.
+- **An entry whose webhook carried no user name** (stored as `""`) is not reachable by any user
+  filter; clear the filter to see it.
+
+`userName` is admin-only for the same reason `userId` is (docs/09); so is `kind=users`, the one
+options kind that enumerates people rather than workspace metadata.
+
 ## 3. Detail view
 
 Two columns of fact, then differences.

@@ -33,6 +33,7 @@ requirement (docs/02) or an edge case (docs/11). IDs are stable; docs reference 
 | UT-M01 | Clockify error mapping through `clockifyErrorCode` (docs/03 §6): body `{"code": 501}` (a JSON **number**) → `"501"`; 400/`"501"`, 401/`"4017"`, 403/`"4030"` force-timer, 403/`"1003"` locked → their user-facing reasons; **code-absent 404** → status-only reason; non-`ClockifyApiError` → `undefined`. Also pins that the SDK `getErrorCode` agrees with the app normalizer on every shape the app classifies on — it did not before `clockify-sdk-ts-115@3.0.0`, and this assertion is what makes a future divergence fail here instead of in a result view (R15, FP-1/FP-2) | Failure honesty |
 | UT-M02 | `safeErrorSummary` (docs/12 "Sensitive log leakage", docs/14 "Logging"): a `ClockifyApiError` never surfaces `.message`/`.body` (which embed the full response verbatim) — only `{errorName, errorStatus, errorCode}`; a plain `Error` yields `{errorName, errorMessage}`; a non-`Error` throw degrades to `{errorName:"unknown"}` | Log-safe error fields |
 | UT-L01 | Lineage linking on ingestion (webhook id == existing `new_entry_id`) | Chain A→B→C |
+| UT-L02 | Admin name filters at the store (docs/10 §2): substring match on the stored `ownerName`/`projectName`, ASCII case folded; `%`, `_` and `\` in a name are matched literally, not as wildcards; a `null` project name and an empty owner name never match; the name filters narrow alongside the id filters rather than replacing them. Pins the ASCII-only limit explicitly (`Ötzi` ≠ `ötzi`) so the documented caveat is asserted, not assumed | Filter honesty |
 
 ## Contract (fixture-pinned) — `tests/contract/`
 
@@ -70,6 +71,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-17 | Performance sanity + N+1 fix (pass file §Scope item 9; `tests/integration/performance.test.ts`). Seeds 5000 `recoverable_entries` rows (50 actionable across 5 distinct projects, 4950 filler). A counting fetch stub proves `GET /api/entries` issues exactly one project/task lookup set per distinct project (never per row — the PASS-02 N+1 in `fetchEntryWorkspaceState`, fixed by `src/clockify/preflight-data.ts`'s per-request `ProjectTaskCache`); p95 over 15 sequential calls is **recorded** and checked only against a catastrophe ceiling (`LOCAL_P95_CATASTROPHE_MS`), because a wall-clock budget measures spare CPU rather than the code — the load-independent guard is the call-count assertion (non-SLA — see docs/14 "Performance") |
 | IT-18 | Metrics emission (docs/14 "Metrics"; `tests/integration/metrics.test.ts`). One scripted flow touches every documented emission point (webhook received/rejected/duplicate, recoverable_created, preflight_blockers/action_required, recreate_attempt/success/failed/ambiguous, ambiguous_adopted/not_created, authz_denied); asserts the SET of distinct `metric:*` names emitted equals `METRIC_NAMES` exactly — catches an extra undocumented counter as well as a missing one |
 | IT-19 | Error-message sweep (docs/02 N8, docs/10 §8; `tests/integration/error-message-sweep.test.ts`). Drives the real routes into the weakest user-facing failure strings PASS-04 found (several paths shared one bare "Clockify could not be reached; try again" regardless of whether a mutation might be in flight) and asserts the fixed text answers, per situation: what happened, whether anything was created, what to do next |
+| IT-20 | Name filters over `/api/*` (docs/10 §2; `tests/integration/name-filters.test.ts`). An entry on a project Clockify has since deleted is found by its stored project name while that project is absent from `/api/options?kind=projects` — the case an id-resolving filter would silently miss, which is why the design exists. Also: a deactivated member's entry is found by their stored name; `userName` is silently ignored for a non-admin, exactly as `userId` is; `/api/options?kind=users` returns `{id, name}` including deactivated members and 403s a non-admin, while the other option kinds stay open |
 
 Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by recorded response
 shapes (create 201, get, listForUser, errors). The Clockify SDK stays real; only the network is
@@ -154,6 +156,11 @@ the real esbuild bundle and the SDK bridge (which takes an injected `window`), a
 place a DOM environment is used. It deliberately does **not** attempt real-browser verification:
 CSP, `frame-ancestors`, and iframe embedding belong to LV-01 against a live deployment. Keep it a
 small number of suites.
+
+`tests/e2e/component-flow.test.ts`'s "admin list filters by name" case (docs/10 §2) additionally
+counts Clockify calls: two further list renders after the first must issue **zero** extra
+`/api/options` walks, pinning the per-session suggestion cache. Verified real — removing the cache
+lookup makes the count assertion fail.
 
 `tests/e2e/xss-proof.test.ts` (**UT-X01 extension**, PASS-04) drives entity-encoded and
 markup-looking payloads in the description, project name, task name, tag names, owner name, and a

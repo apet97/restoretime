@@ -127,6 +127,13 @@ export interface ListFilters {
   readonly ownerId?: string; // set for non-admin viewers (docs/09)
   readonly userId?: string; // admin filter
   readonly projectId?: string;
+  /** Substring match on the owner/project name **as captured at deletion time** (docs/10 §2).
+   * Deliberately not a Clockify lookup: a deleted project and a deactivated user are exactly the
+   * rows this product exists for, and neither appears in any current options list — so resolving
+   * a name to an id would silently fail to find them. The trade-off is that a later rename in
+   * Clockify does not reach rows already stored. */
+  readonly ownerName?: string;
+  readonly projectName?: string;
   readonly from?: string;
   readonly to?: string;
   readonly status?: LifecycleState;
@@ -135,6 +142,14 @@ export interface ListFilters {
   /** Caps how many rows come back. The list route always sets this: every returned row costs a
    * preflight with its own Clockify lookups, so an unbounded read is an unbounded fan-out. */
   readonly limit?: number;
+}
+
+/** A `LIKE` pattern matching `value` anywhere in a column. SQLite's own wildcards (`%`, `_`) and
+ * the escape character are neutralized, so a user searching for `50%` finds the literal text
+ * rather than every row. Case-insensitive for ASCII only — that is SQLite's built-in `LIKE`, and
+ * it applies equally to the description search and the two name filters (docs/10 §2). */
+function likeContains(value: string): string {
+  return `%${value.replace(/[%_\\]/g, "\\$&")}%`;
 }
 
 /** `list` fetched one row beyond `limit`, meaning older rows exist that were not returned. */
@@ -182,7 +197,17 @@ export function list(
   }
   if (filters.search !== undefined && filters.search.length > 0) {
     clauses.push("json_extract(source_json, '$.description') LIKE @search ESCAPE '\\'");
-    params.search = `%${filters.search.replace(/[%_\\]/g, "\\$&")}%`;
+    params.search = likeContains(filters.search);
+  }
+  if (filters.ownerName !== undefined && filters.ownerName.length > 0) {
+    clauses.push("json_extract(source_json, '$.ownerName') LIKE @ownerName ESCAPE '\\'");
+    params.ownerName = likeContains(filters.ownerName);
+  }
+  if (filters.projectName !== undefined && filters.projectName.length > 0) {
+    // A project-less entry stores `null` here, and `NULL LIKE …` is NULL, so it never matches —
+    // which is what filtering by a project name should do.
+    clauses.push("json_extract(source_json, '$.projectName') LIKE @projectName ESCAPE '\\'");
+    params.projectName = likeContains(filters.projectName);
   }
 
   // Fetch one past the cap so "there are more" is observed, never guessed from a full page.

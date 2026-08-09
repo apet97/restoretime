@@ -11,6 +11,10 @@ yet, so an honest gap is visible here rather than buried in a report.
 - [x] `TIME_ENTRY_DELETED` ingestion verifies, normalizes, persists, and acks; duplicates are
       no-ops (IT-01, IT-02, CT-01…CT-05).
 - [x] A regular user sees only their own deleted entries; an admin sees the workspace's (IT-07).
+- [x] An admin can find an entry by the user's or project's **name**, including when the project has
+      since been deleted from Clockify and the member deactivated — the rows that exist to be found
+      (UT-L02, IT-20, and the list-filter E2E case). Neither name filter widens a non-admin's scope,
+      and `/api/options?kind=users` is admin-only.
 - [x] Preflight produces plans that match docs/07 rule-for-rule (UT-P01…P16).
 - [x] A confirmed, valid plan recreates the entry through `createForUser`; the success view shows
       the new entry, fidelity, and differences (F9, F12; LV-03, LV-04) — proven offline
@@ -46,8 +50,8 @@ yet, so an honest gap is visible here rather than buried in a report.
 
 - [x] `npm run typecheck`, `lint`, `test`, `build` green on `main` — verified on `main` after the
       PASS-05 merge: 33 test files, 299 tests, plus 18 E2E; `git diff --check` clean; `gitleaks
-      detect` reports no leaks. (Re-verified on the `clockify-sdk-ts-115` 4.0.0 upgrade,
-      2026-08-09: 36 test files, 310 tests, plus 19 E2E, same three clean.)
+      detect` reports no leaks. (Re-verified 2026-08-09 after the `clockify-sdk-ts-115` 4.0.0
+      upgrade and the name filters: 37 test files, 324 tests, plus 20 E2E, same three clean.)
       (`implementation/passes/PASS-05-release.md` "Git requirements": PR review and merge precede
       the tag).
 - [x] No dependency beyond `implementation/DEPENDENCIES.md`; no dead code; no TODO/FIXME in `src/`

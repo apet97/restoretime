@@ -817,3 +817,79 @@ Not covered: the **reactive** half — a 401 mid-call triggering a refresh and o
 session-expired notice when that retry also 401s. That path is unit-covered in `src/ui/api.ts`'s
 tests but has never fired live, because the proactive refresh keeps it from being reached. Forcing it
 would mean invalidating a token mid-session, which nothing in the platform offers.
+
+# Live run 13 — the name filters, proved against real Clockify data
+
+2026-08-09, developer environment (`https://developer.clockify.me`, workspace
+`69bda6b317a0c5babe34b4ff`, "Marketplace Workspace"). Add-on reinstalled against a fresh quick
+tunnel; installation `6a77fff4cf7409222cb40485`. 13 stored rows survived from earlier runs, owned by
+three different people — the fixture this needed, and one no offline test can fake.
+
+The previous installation's `DELETED` call never arrived: it was addressed to the tunnel hostname
+from the 03:33 session, which was gone. That is exactly the delivery-dependent purge documented in
+run 11, observed a second time. The rows staying put is what made this run possible.
+
+## What was checked, and how
+
+The component rendered in the real Clockify iframe with the new controls: the two admin boxes now
+read **"User name"** and **"Project name"**, not "User id" / "Project id". Typing `Mike` and clicking
+**Apply filters** narrowed the list from 13 rows to the two `RT-PROBE-LV04` entries owned by
+`Mike Admin` — in the iframe, against the live API, with the real add-on token.
+
+The same claims, driven directly against the tunnel with the component's own JWT
+(`workspaceRole: "OWNER"`):
+
+```
+GET /api/options?kind=users        -> 10 members, {id, name}: "Pete Regular", "Mike Admin", …
+GET /api/entries?userName=Mike     -> 2 rows, both ownerName "Mike Admin"
+GET /api/entries?userName=mike     -> 2 rows          (ASCII case folding, live)
+GET /api/entries?projectName=1111  -> 12 rows         (substring, not equality)
+GET /api/entries?projectName=nosuch-> 0 rows          (a miss is a miss, not a fallback)
+GET /api/entries?projectName=%     -> 0 rows          (`%` is literal; a wildcard would return 12)
+```
+
+The last line is the one worth keeping. If the escaping regressed, `%` would match every row, and
+the count would be 12 rather than 0.
+
+## The suggestions, read out of the real DOM
+
+Loading the component URL top-level (the same signed URL the iframe uses) and reading the two
+`<datalist>` elements:
+
+```
+#rt-user-names     10 options — "Pete Regular", "Mike Admin", "George Regular", …
+#rt-project-names  36 options — "11111", "Acme Corp - Auto Project", "RC-FINAL-20260721-0048", …
+```
+
+Both populated from `/api/options`, in a real browser, after the rows had already rendered. No CSP
+directive was needed: a `<datalist>` loads no resource, which is why this one is safe where a font
+or an image would not have been.
+
+## One SDK call, confirmed against production shapes too
+
+`users.list` with `status: "ALL"` and `"include-roles": false` — the only new Clockify request this
+change makes — was additionally run against a separate real workspace on `api.clockify.me` using an
+operator-supplied throwaway API key. It returned 10 members including two with `status: "LIMITED"`,
+confirming the request shape and that `"ALL"` really does return non-`ACTIVE` members. Read-only; no
+writes were made there, and no add-on was installed.
+
+## Still not observed
+
+`theme: "DEFAULT"` again in the component JWT. No `theme: "DARK"` claim has ever been seen.
+
+## Workspace left as found
+
+The add-on was uninstalled at the end of the run and this time the `DELETED` call **did** arrive —
+the tunnel was still up when the button was pressed, which is the difference from run 11:
+
+```
+04:35:55Z  installation deleted  addonId 6a77fff4cf7409222cb40485  result "deleted"
+recoverable_entries  13 -> 0
+```
+
+Four `installations` rows remain in the local database, from the earlier dead-tunnel sessions whose
+`DELETED` calls never arrived. That is the documented shape, not a new defect:
+`uninstallWorkspace` (`src/store/cascade.ts`) deletes **entries by workspace** but the
+**installation row by `(workspace_id, addon_id)`**, so an uninstall can only remove the installation
+it was sent for. The rows carry no recoverable data — the entries table is empty — and no add-on is
+installed in the workspace.

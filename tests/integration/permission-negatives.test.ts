@@ -314,6 +314,20 @@ describe("permission negatives sweep: forged/other user (neither owner nor admin
     // query param is silently ignored for a non-admin viewer.
     expect(body.entries.map((e) => e.id)).not.toContain(entryId);
   });
+
+  it("GET /api/entries as a non-admin never returns another user's row, even asking for it by userName", async () => {
+    const token = await tokenFor({ user: OTHER_MEMBER_ID, role: "member" });
+    const res = await server.addon.handle(req("GET", "/api/entries", token, undefined, { userName: "User One" }));
+    expect(res.status).toBe(200);
+    // Same contract as `userId` above: naming the person instead of their id changes nothing.
+    expect((res.body as { entries: { id: string }[] }).entries.map((e) => e.id)).not.toContain(entryId);
+  });
+
+  it("GET /api/options?kind=users is admin-only — a member cannot enumerate the workspace's people", async () => {
+    const token = await tokenFor({ user: OTHER_MEMBER_ID, role: "member" });
+    const res = await server.addon.handle(req("GET", "/api/options", token, undefined, { kind: "users" }));
+    expect(res.status).toBe(403);
+  });
 });
 
 describe("permission negatives sweep: demoted admin (created a plan while admin, now a member) -> 403 where the viewer already knows the row exists, 404 elsewhere", () => {

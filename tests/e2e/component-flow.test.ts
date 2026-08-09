@@ -745,3 +745,114 @@ describe("the shipped bundle", () => {
     expect(document.documentElement.dataset.clockifyTheme).toBe("dark");
   });
 });
+
+// The admin filters name people and projects, not ids (docs/10 §2). The value being typed is the
+// name stored on the row at deletion time, which is why a project Clockify no longer has is still
+// findable — the case an id-resolving filter would silently miss.
+describe("admin list filters by name", () => {
+  function findFilterInput(labelText: string): HTMLInputElement {
+    const label = Array.from(document.querySelectorAll('section[aria-label="Filters"] label')).find(
+      (l) => l.textContent?.trim().startsWith(labelText),
+    );
+    const input = label?.querySelector("input");
+    if (!input) throw new Error(`no ${labelText} filter input found (screen text: ${text()})`);
+    return input as HTMLInputElement;
+  }
+
+  it("filters on a deleted project's stored name, and suggests current names without requiring one", async () => {
+    const server = await bootServer();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    // One entry on a project that has since been deleted, one on a project that still exists.
+    await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({
+          id: "entry-gone",
+          description: "legacy work",
+          projectId: "proj-gone",
+          project: { id: "proj-gone", name: "Legacy API" },
+        }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({
+          id: "entry-live",
+          description: "current work",
+          projectId: "proj-live",
+          project: { id: "proj-live", name: "Billing" },
+        }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+
+    // Counted, not just stubbed: each options kind is a `collectPaged` walk, and
+    // `renderAdminControls` runs on every list render. Without the per-session cache in
+    // `list.ts`, one Apply-filters click would re-walk both.
+    let userListCalls = 0;
+    let projectListCalls = 0;
+    const clockify = (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path.endsWith("/users")) userListCalls++;
+      if (path.endsWith("/projects")) projectListCalls++;
+      // Clockify as it is now: only "Billing" survives, so "Legacy API" cannot come from here.
+      if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Billing", archived: false }]);
+      if (path.includes("/projects/proj-gone")) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
+      if (path.includes("/projects/proj-live")) return jsonResponse({ id: "proj-live", name: "Billing", archived: false });
+      return baseClockifyStub()(input, init);
+    }) as typeof fetch;
+    vi.stubGlobal("fetch", makeFetchImpl(server, clockify));
+
+    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: "admin-1",
+      workspaceRole: "admin",
+    });
+    await mountShell(server, token);
+    const { window } = createTestWindow(token);
+    boot({ window, fetchImpl: makeFetchImpl(server, clockify) });
+    await waitFor(() => text().includes("legacy work") && text().includes("current work"));
+
+    // Suggestions arrive after the rows, and never gate them: the list rendered above already.
+    // Both datalists are awaited — they are two independent fetches, and waiting on one then
+    // reading the other is a race that only shows up on a slower machine.
+    await waitFor(
+      () =>
+        document.querySelectorAll("#rt-user-names option").length > 0 &&
+        document.querySelectorAll("#rt-project-names option").length > 0,
+    );
+    const userOptions = Array.from(document.querySelectorAll("#rt-user-names option")).map((o) => o.getAttribute("value"));
+    const projectOptions = Array.from(document.querySelectorAll("#rt-project-names option")).map((o) => o.getAttribute("value"));
+    expect(userOptions).toEqual(["Ana Markovic"]);
+    // "Legacy API" is deliberately absent — Clockify no longer has it. Free text must still reach it.
+    expect(projectOptions).toEqual(["Billing"]);
+
+    expect(findFilterInput("User").getAttribute("list")).toBe("rt-user-names");
+    const projectInput = findFilterInput("Project");
+    expect(projectInput.getAttribute("list")).toBe("rt-project-names");
+    // One options walk per kind so far — the suggestions, not the rows. `/api/entries` reads
+    // users itself for the preflight, so `projectListCalls` is the clean signal here.
+    const projectListAfterFirstRender = projectListCalls;
+    projectInput.value = "legacy";
+    findButton("Apply filters").click();
+
+    await waitFor(() => text().includes("legacy work") && !text().includes("current work"));
+
+    // And the filter clears back to both rows, rather than sticking.
+    findFilterInput("Project").value = "";
+    findButton("Apply filters").click();
+    await waitFor(() => text().includes("current work") && text().includes("legacy work"));
+
+    // Two more renders, and not one extra options walk: the cache is keyed per session, so a
+    // checkbox click can never turn into a pagination sweep of the workspace.
+    expect(projectListCalls).toBe(projectListAfterFirstRender);
+    expect(Array.from(document.querySelectorAll("#rt-project-names option"))).toHaveLength(1);
+    expect(userListCalls).toBeGreaterThan(0);
+  });
+});

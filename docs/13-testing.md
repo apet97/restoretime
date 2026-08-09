@@ -89,7 +89,9 @@ should surface then, not at release. They are **additive**: they add no release 
   `tests/live/`, so `npm run test:live` never picks it up and the release workflow never runs it.
 - Environment (all three required, exact names): `CK_DEV_WORKSPACE_ID`, `CK_DEV_ADDON_ID`,
   `CK_DEV_ADDON_TOKEN`. The token is the installation `authToken` captured when the addon was
-  installed on `developer.clockify.me`; the operator supplies it, and it never enters the repo.
+  installed on `developer.clockify.me`; it never enters the repo. `scripts/live-env.sh` assembles
+  all three (and the `CK_LIVE_*` set) from `.env.live` plus the stored installation — see
+  "Assembling the environment" below.
 - Precondition: a live installation for that workspace/addon pair. A quick-tunnel restart changes
   `baseUrl` and forces a reinstall (evidence/install-capture-2026-08-08.md), which invalidates the
   captured token — that is the "blocked" case, not a failure.
@@ -101,10 +103,23 @@ should surface then, not at release. They are **additive**: they add no release 
 |---|---|---|
 | DS-01 | `workspaces.get` and `customFields.listForWorkspace` (`"entity-type": ["TIMEENTRY"]`) succeed with the addon token and deserialize into the SDK models the preflight reads | R23 stays true for the app's own client |
 | DS-02 | A deliberate 4xx (create without `projectId` in a `forceProjects` workspace) maps through `clockifyErrorCode` to `"501"`, and a 404 maps with `undefined` | R15 / UT-M01 against live bodies, not fixtures |
-| DS-03 | `users.list` + `projects.list` + `timeEntries.createForUser` + `timeEntries.get` + `timeEntries.delete` round-trip with the exact request shapes docs/03 §2–§3 mandate. Probe descriptions are prefixed `RT-PROBE-` and every created entry is deleted | R11 request shapes as the app builds them |
+| DS-03 | `users.list` + `projects.list` + `customFields.listForWorkspace` + `timeEntries.createForUser` + `timeEntries.get` + `timeEntries.delete` round-trip with the exact request shapes docs/03 §2–§3 mandate, **including the `customFields` arm** for every active required field. Probe descriptions are prefixed `RT-PROBE-` and every created entry is deleted | R11 request shapes as the app builds them |
 
 Gate: DS-01…DS-03 pass, or the PASS-02 report records "blocked" with the exact missing variable.
 `LV-01…LV-10` and the docs/16 release gates are unchanged.
+
+**First run with credentials: 2026-08-09.** Until then every DS row had only ever reported
+"blocked", so the suite had never executed. All three pass now, and running it found one thing: the
+developer workspace has two **active required custom fields**, and DS-03's create omitted
+`customFields` entirely, so Clockify rejected it `400 {"message":" <field names>", "code":501}`.
+That is not a product defect — P-CF-REQ resolves those fields before the app ever builds a create
+(docs/07 §3, proved live by LV-08) — it means DS-03 was round-tripping a shape *the app cannot
+produce*. It now supplies a value for each required field, which makes the row prove more, not
+less. Its failure path also surfaces `clockifyErrorDetail(err)`: since `clockify-sdk-ts-115@4.0.0`
+an error's `message` is body-free, so a raw rethrow read only "BadRequestError / Status code: 400"
+and named no field — useless in the one suite whose purpose is real response bodies. That accessor
+is confined to `tests/dev-smoke/`; `src/` still reaches Clockify errors only through
+`safeErrorSummary` (docs/12, IT-15).
 
 ## Live suite (sacrificial workspace, release gate) — `tests/live/`
 
@@ -144,6 +159,30 @@ the local in-process harness is never substituted for them.
 | LV-08 | Custom-field lifecycle: removed option → P-CF-OPT resolution; new required field without default → P-CF-REQ input → success |
 | LV-09 | Reconcile-read pinning on the real addon path: description-filtered `listForUser` reflects a fresh create immediately (round-2 API-key proof: A1/A2); fingerprint round-trip (start/end epoch, description bytes, tagIds set); running entry visible with `end:null` in the unfiltered list. The windowed query is never used (R10) |
 | LV-10 | Mandatory ambiguity drill via the chaos hook (`src/clockify/chaos-fetch.ts`): the suite runs with `RT_CHAOS_FETCH` set (test-only env flag, rejected unless `NODE_ENV=test`, mirroring `RT_TEST_CRASH_MID_ATTEMPT`). Two modes, one per leg: (a) `RT_CHAOS_FETCH=lose-response` — the app's fetch wrapper performs the real `createForUser` POST (Clockify commits it), then reports a `ClockifyApiTimeoutError` to the caller → AMBIGUOUS → reconcile must adopt the committed entry → RECREATED. (b) `RT_CHAOS_FETCH=fail-before-send` — the wrapper throws before the real fetch is ever called → nothing committed → AMBIGUOUS → bounded reconcile finds nothing → user "not created" path → IDLE. The hook mechanics are proved offline against a mocked transport in `tests/integration/chaos-fetch-drill.test.ts`; LV-10 itself repeats both legs against the real sacrificial workspace |
+
+### Assembling the environment
+
+Six variables across the two suites all describe one installation, and two of them cannot be typed
+from memory: the addon token exists only inside the encrypted installation record, and a
+cloudflared quick tunnel's hostname changes on every start. `scripts/live-env.sh` assembles the set
+and runs a command with it:
+
+```bash
+scripts/live-env.sh https://<tunnel>.trycloudflare.com npm run test:live
+scripts/live-env.sh https://<tunnel>.trycloudflare.com npm run test:dev-smoke
+```
+
+- Stable credentials live in `.env.live` (gitignored; `.env.live.example` is the committed
+  template). `CK_LIVE_API_KEY` must be a **developer-environment** key — a production key
+  authenticates against `api.clockify.me` and is rejected `401` by the developer environment, and
+  the live suite creates and deletes real time entries, so a dev-only key is what makes pointing it
+  at production impossible rather than merely discouraged.
+- `CK_LIVE_ADDON_TOKEN` / `CK_DEV_ADDON_TOKEN` are decrypted from the newest installation by
+  `scripts/read-installation.mjs`, through the same codec `createServer` writes with — a token that
+  script cannot read is one the server could not have used either. It is piped through command
+  substitution, so it never lands on disk.
+- Preconditions: `npm run build`, an installed add-on on the workspace, and `var/key.hex`. Lose
+  `var/key.hex` and every captured installation token is undecryptable.
 
 ## E2E (component flow) — `tests/e2e/`
 

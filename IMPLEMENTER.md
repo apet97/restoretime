@@ -26,7 +26,7 @@ decisions as constraints when you change it.
 | SDK | Path | Published version and source |
 |---|---|---|
 | addon platform | `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk` | `@apet97/clockify-addon-sdk@1.3.0`; release source `64e668afd7bf330be4908c58d8671bdd27951608`; source docs HEAD `a753715623291952f5070f19bec946df78e78537` |
-| Clockify REST | `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` | `clockify-sdk-ts-115@5.0.1`; tag source `702e4a4d97eacd72841074c2a78e1486332924c3`; remote `main` matched the tag at the release audit |
+| Clockify REST | `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` | `clockify-sdk-ts-115@5.1.0`; tag source `94fe318f473daa9eda7b3cfc038a51429c3dee14`; remote `main` matched the tag at the release audit |
 
 Use them. Do not modify them, do not duplicate their behavior, do not work around a defect in the
 app — report the defect as a blocker. One exception is already decided and must not stop you: the

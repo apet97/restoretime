@@ -1193,7 +1193,7 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
   try {
     // These feed the replacement pickers, so a truncated list is worse than an error: the user
     // cannot find the right project and substitutes a wrong one. docs/03 note 5 lists all three
-    // as iterPages reads; `collectPaged` raises rather than returning a partial page.
+    // as bounded SDK reads; `collectPaged` raises rather than returning a partial result.
     if (kind === "projects") {
       const items = await collectPaged(client.projects.list.bind(client.projects), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });

@@ -8,7 +8,7 @@ implementation: the addon-token REST success path (R11) and addon-mode webhook d
 ## Setup
 
 - Capture server: `tools/install-capture/server.mjs` (Node; the recorded run used add-on SDK
-  1.2.0 and Clockify SDK 2.0.0). The current dev-tool lock uses 1.3.0 and 5.0.1. A run with the
+  1.2.0 and Clockify SDK 2.0.0). The current dev-tool lock uses 1.3.0 and 5.1.0. A run with the
   current lock would be new evidence. This dev tool is superseded by PASS-01. Installation records stored encrypted (SDK AES-GCM codec,
   `var/key.hex` 0600, `var/installations.json` 0600, both gitignored).
 - Tunnel: `cloudflared tunnel --url http://127.0.0.1:8791` → quick-tunnel URL

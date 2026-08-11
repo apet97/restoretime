@@ -3,7 +3,7 @@
 The product is done when every current-candidate statement is true and verified.
 
 PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
-upgrades `@apet97/clockify-addon-sdk` to 1.3.0 and `clockify-sdk-ts-115` to 5.0.1. Older local and
+uses `@apet97/clockify-addon-sdk` 1.3.0 and `clockify-sdk-ts-115` 5.1.0. Older local and
 live results remain useful history, but they are not proof for this dependency pair. A checked box
 below either describes a current static fact or identifies itself as historical evidence.
 
@@ -26,7 +26,9 @@ below either describes a current static fact or identifies itself as historical 
 - [x] Concurrent recreation of the same source is impossible (IT-03).
 - [x] An unknown-outcome create becomes AMBIGUOUS and resolves per docs/07 §8; no automatic retry
       exists anywhere (IT-04; the LV-10 chaos-hook mechanics are additionally proved offline in
-      `tests/integration/chaos-fetch-drill.test.ts`). The SDK's own retry layer is pinned too:
+      `tests/integration/chaos-fetch-drill.test.ts`). SDK 5.1 `classifyWriteOutcome()` owns the
+      write taxonomy. A 304 `ClockifyApiError` is `unknown`; the app reports it and keeps the
+      result, row, and attempt AMBIGUOUS. The SDK's own retry layer is pinned too:
       `tests/integration/write-retry-invariant.test.ts` proves `createForUser` reaches the
       transport exactly once on a 500, a 429 with `Retry-After`, and a rejected fetch — so the
       invariant survives an SDK default changing under us, not only app code changing.
@@ -40,8 +42,8 @@ below either describes a current static fact or identifies itself as historical 
       not imported anywhere (`grep -rn "^import.*clockifyErrorDetail" src/` → no matches; the only
       mention in `src/` is the docblock in `src/clockify/errors.ts` explaining why). Log safety
       rests on `safeErrorSummary` alone (docs/12, docs/14 N3; IT log-audit).
-- [x] Bounded list reads use `iterPages` and surface the page bound instead of returning a partial
-      result (IT-14).
+- [x] Bounded list reads use SDK `PaginatedList.collect()` and surface `truncated: true` instead of
+      returning a partial result (IT-14).
 - [x] Recreated-deleted-recreated chains show lineage (IT-06).
 - [x] Uninstall purges the workspace's data (IT-11) — and **proved live**: a real uninstall on the
       developer workspace took `recoverable_entries` 132, `recreation_plans` 11,
@@ -49,11 +51,12 @@ below either describes a current static fact or identifies itself as historical 
 
 ## Quality bars
 
-- [x] Current 1.3.0/5.0.1 candidate passes `npm run typecheck`, `lint`, `test`, `build`, and E2E.
-      Verified 2026-08-10 with Node 22.23.1: typecheck, lint, and build passed; 37 files and 380
+- [x] Current 1.3.0/5.1.0 candidate passes `npm run typecheck`, `lint`, `test`, `build`, and E2E.
+      Verified 2026-08-11 with Node 22.23.1: typecheck, lint, and build passed; 37 files and 381
       non-E2E tests passed; 8 files and 42 E2E tests passed; `git diff --check` passed. Root and
-      install-capture dependency audits reported zero vulnerabilities. A scan of every tracked or
-      unignored file reported no secret. Historical runs were green on `main` after the
+      install-capture production dependency audits reported zero vulnerabilities. `gitleaks
+      detect --no-banner --redact` scanned 85 commits and found no leak. Historical runs
+      were green on `main` after the
       PASS-05 merge: 33 test files, 299 tests, plus 18 E2E; `git diff --check` clean; `gitleaks
       detect` reports no leaks. (Re-verified 2026-08-09 after the `clockify-sdk-ts-115` 4.0.0
       upgrade and the name filters: 37 test files, 324 tests, plus 20 E2E, same three clean.
@@ -77,12 +80,15 @@ below either describes a current static fact or identifies itself as historical 
 
 ## Release gates
 
-- [x] Current 1.3.0/5.0.1 candidate passes live suite LV-01…LV-10 against a real installed add-on on
-      the sacrificial developer workspace. Verified 2026-08-10: dev smoke passed 3/3; the full live
+- [x] Current 1.3.0/5.1.0 candidate passes live suite LV-01…LV-10 against a real installed add-on on
+      the sacrificial developer workspace. Verified 2026-08-11: dev smoke passed 3/3; the full live
       suite passed 11/11 with no skip or block; the running service recorded 11 matching webhook
       receipt and persistence metrics with no error line; and the real Clockify iframe rendered the
-      list and detail views with no Chrome warning or error. See `evidence/live-release-run.md`
-      "Live run 15". **Production remains unverified.** Historical evidence follows: LV-01…LV-10 passed
+      deleted-entry list. The component console had zero visible messages. The Clockify parent page
+      had its own migration-status 404 and sandbox warning. A final bounded read across all 10
+      workspace users found zero active `RT-PROBE-` entries, and the original Force timer setting
+      was restored. See `evidence/live-release-run.md`
+      "Live run 16". **Production remains unverified.** Historical evidence follows: LV-01…LV-10 passed
       (LV-10 proves the ambiguity protocol live; it is not optional) — **run on the developer
       environment**, `10 passed | 1 skipped`, reproduced twice
       (evidence/live-release-run.md "Live run 2").
@@ -135,5 +141,5 @@ below either describes a current static fact or identifies itself as historical 
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.
-- [ ] Current 1.3.0/5.0.1 release candidate tagged. **Open**: no tag or release evidence binds the
+- [ ] Current 1.3.0/5.1.0 release candidate tagged. **Open**: no tag or release evidence binds the
       current dependency pair to a tested and deployed artifact.

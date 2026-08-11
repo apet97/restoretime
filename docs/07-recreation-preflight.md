@@ -20,7 +20,8 @@ After authorization, fetch in parallel via the installation's client (docs/04):
 1. `workspaces.get` → `workspaceSettings` (forceProjects/forceTasks/forceTags/forceDescription,
    onlyAdminsCanChangeBillableStatus where present, lock fields) (R12).
 2. `users.list` with the exact request `{ workspaceId, status: "ALL", "include-roles": false,
-   "page-size": 200 }` (paginated via `iterPages`, `maxPages: 10`) → owner record. On this route
+   "page-size": 200 }` (collected with `paginatedList(...).collect()`, `maxPages: 10`) → owner
+   record. On this route
    `user.status` is the workspace membership status; the owner is unavailable when the user is
    absent from the list or `status !== "ACTIVE"` (docs/03 note 1).
 3. `projects.get(source.projectId)` if set — gone is **404 or 400 with body code `501`**
@@ -152,11 +153,10 @@ claim (§6) → baseline snapshot → createForUser → branch:
 
 **Baseline snapshot**: immediately before the create, list the owner's entries with the
 **description filter** (`listForUser` with `description` = source description; fallback when the
-description is empty: the unfiltered list). Both reads paginate via `iterPages`
-(`pageSize: 200, maxPages: 10`; the bound is hit when a yielded page has
-`page === maxPages && hasNextPage` — docs/03 note 5, the reason `iterAll` cannot be used. A
-baseline that hits the bound is treated as a failed preflight — "workspace too large to verify;
-try again" — never a partial baseline). Record the
+description is empty: the unfiltered list). Both reads use `paginatedList(...).collect()` with
+`pageSize: 200` and `maxPages: 10`. If the SDK returns `truncated: true`, the baseline is unsafe.
+Treat it as a failed preflight: "workspace too large to verify; try again". Never use a partial
+baseline. Record the
 matching entry IDs as the attempt's baseline. Never use the `start`/`end`-windowed query: it is
 eventually consistent and unreliable for fresh entries (R10 — a new entry stayed invisible >45 s
 in the windowed variant, while description-filtered and unfiltered lists reflect creates
@@ -180,16 +180,16 @@ Branches:
 | Outcome | Transition | Behavior |
 |---|---|---|
 | 201 with body | RECREATING → (verify) | The 201 alone is definitive: the entry exists with that ID. `timeEntries.get(newId)`; diff planned vs actual (§9); store attempt SUCCESS, new id, diffs; state RECREATED. If the verification read fails after SDK read-retries, the state is still RECREATED: the diff falls back to the 201 body (it is the created entry) and records "verification read unavailable" — the diff is a report, never a gate |
-| 4xx | RECREATING → FAILED | Map reason via `statusCode` + `clockifyErrorCode(err)` (docs/03 §6 — the app normalizer, never the SDK `getErrorCode`; a 4xx with no body code maps on status alone); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
-| 5xx, timeout, connection reset | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Reconcile immediately once (below), then lazily |
+| SDK `definitely-failed` 4xx | RECREATING → FAILED | Map reason via `statusCode` + `clockifyErrorCode(err)` (docs/03 §6 — the app normalizer, never the SDK `getErrorCode`; a 4xx with no body code maps on status alone); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
+| SDK `possibly-committed` or `unknown` | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Report `unknown` as an unexpected error. Reconcile immediately once (below), then lazily |
 
 **Reconcile (AMBIGUOUS)** — runs inline once, on each detail view while AMBIGUOUS (max once per
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
 and has had ≥3 checks shows the "not found" choice. When that choice is already allowed, a detail
 view does not run another lazy check because that check would refresh the timestamp and hide the
 choice. Explicit "Check now" still starts a new check. List reads use the same description-filtered
-read as the baseline, `iterPages`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
-stays AMBIGUOUS and reports the bound.
+read as the baseline, collected by `paginatedList(...).collect()` (`pageSize: 200, maxPages: 10`).
+An SDK result with `truncated: true` stays AMBIGUOUS and reports the bound.
 
 ```text
 delta = listForUser(owner, description=source.description) − baseline, fingerprint-filtered

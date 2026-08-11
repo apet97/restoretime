@@ -50,13 +50,14 @@ reads on 408/429/5xx with backoff by default; that behavior is kept (N7).
 | Tag current state + options | `tags.list` | `GET /workspaces/{ws}/tags` |
 | Custom-field definitions (type, defaults, status) | `customFields.listForWorkspace` with `"entity-type": ["TIMEENTRY"]` (the request field is an **array**, see note 6) | `GET /workspaces/{ws}/custom-fields` |
 | Post-create verification | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` |
-| Ambiguity reconciliation (baseline + delta) | `timeEntries.listForUser` (`start`, `end`, `description`) | `GET /workspaces/{ws}/user/{uid}/time-entries` |
+| Ambiguity reconciliation (baseline + delta) | `timeEntries.listForUser` (`description`; unfiltered when empty) | `GET /workspaces/{ws}/user/{uid}/time-entries` |
 
 Notes:
 
 1. `users.list`: the generated request type marks `"include-roles": boolean` as **required** —
-   always pass `false`. `"page-size": 200` is the API maximum; paginate with the SDK `iterPages`
-   helper (`pageSize: 200, maxPages: 10`; see note 5). On this workspace-scoped route the returned user's
+   always pass `false`. `"page-size": 200` is the API maximum; paginate with the SDK
+   `paginatedList(...).collect()` helper (`pageSize: 200, maxPages: 10`; see note 5). On this
+   workspace-scoped route the returned user's
    `status` field carries the **membership** status (values `PENDING`/`ACTIVE`/`DECLINED`/
    `INACTIVE`; live capture `agent-3/g0-users.json` shows `"ACTIVE"`, and the 2026-08-08
    install-capture probe returned `ACTIVE` for all ten dev-workspace users). The SDK types it
@@ -74,18 +75,15 @@ Notes:
    also known-wrong vs live (wrapper vs bare array); irrelevant because the feed is banned.
 5. Every list read that can exceed one page (`users.list`, `tags.list`, `projects.list`,
    `tasks.list`, `customFields.listForWorkspace`, reconcile/baseline `timeEntries.listForUser`)
-   paginates via the SDK **`iterPages`** helper (package root) with `{ pageSize: 200, maxPages: 10 }`.
-   `iterPages` is mandatory, not `iterAll`: it yields `{items, page, pageSize, hasNextPage}`, and
-   the design requires detecting that the bound was hit — which `iterAll` (items only) cannot
-   express. Exact stop condition:
+   uses the SDK **`paginatedList(...).collect()`** helper (package root) with
+   `{ pageSize: 200, maxPages: 10 }`. The helper returns `{ items, truncated }`. The app must read
+   `truncated` because a partial result is unsafe. Exact pattern:
 
    ```ts
-   const items = [];
-   let truncated = false;
-   for await (const p of iterPages(fetcher, request, { pageSize: 200, maxPages: 10 })) {
-     items.push(...p.items);
-     if (p.page === 10 && p.hasNextPage) truncated = true;   // bound reached, more remain
-   }
+   const { items, truncated } = await paginatedList(fetcher, request, {
+     pageSize: 200,
+     maxPages: 10,
+   }).collect();
    ```
 
    `truncated === true` fails the preflight with "workspace too large to verify; try again"
@@ -122,17 +120,15 @@ Notes:
   - `type` is never sent: the create default is `REGULAR` and only `REGULAR` sources are
     recreated (R17).
 - Retry: never. The SDK never retries POST (matches N7).
-- Outcome classification (exact; the caught value is always an SDK error):
-  - `ClockifyApiTimeoutError` → AMBIGUOUS (docs/07 §8).
-  - `ClockifyApiError` with `statusCode === undefined` (transport failure: DNS, reset, TLS) →
-    AMBIGUOUS.
-  - `ClockifyApiError` with `statusCode >= 500` → AMBIGUOUS.
-  - `ClockifyApiError` with a 4xx `statusCode` → FAILED with a mapped reason (R15). The reason
-    keys on the body code read through the app's `clockifyErrorCode(err)` normalizer (§6), which
-    returns a string (`"4030"`, `"1003"`, `"501"`, `"4017"`, `"4005"`) or `undefined` when the
-    body carries no code. A 4xx without a code maps on `statusCode` alone.
-  - Any other thrown value is a bug: crash-log it and treat the attempt as AMBIGUOUS (the create
-    may have committed; never guess).
+- Outcome classification uses the SDK `classifyWriteOutcome(err)` helper:
+  - `possibly-committed` → AMBIGUOUS (docs/07 §8).
+  - `definitely-failed` plus `ClockifyApiError` → FAILED with a mapped reason (R15). The reason
+    uses the body code from the app's `clockifyErrorCode(err)` normalizer (§6). It returns a
+    string (`"4030"`, `"1003"`, `"501"`, `"4017"`, `"4005"`) or `undefined` when the body has no
+    code. A 4xx without a code maps on `statusCode` alone.
+  - `unknown`, or a `definitely-failed` value that is not `ClockifyApiError`, is reported as an
+    unexpected error and becomes AMBIGUOUS. The create can have committed, so the app never
+    guesses.
 - Response: created entry. Verification still fetches it with `timeEntries.get` and diffs against
   the plan (F12); a 201 body alone is not the final check. If the verification read fails after
   SDK read-retries, the 201 still determines RECREATED — the diff falls back to the 201 body and
@@ -188,9 +184,10 @@ Notes:
 
 ## 6. Error model consumed from Clockify
 
-- Status classes per R15: 4xx = rejected (validation is atomic, R3) → FAILED with mapping;
-  5xx/timeout/transport = unknown → AMBIGUOUS. Exact classification: `ClockifyApiTimeoutError`;
-  `ClockifyApiError` with `statusCode === undefined`; `ClockifyApiError` with `statusCode >= 500`.
+- The SDK `classifyWriteOutcome` helper owns the status taxonomy. A 4xx SDK error is
+  `definitely-failed` and maps to FAILED. A 5xx, timeout, or transport error is
+  `possibly-committed` and maps to AMBIGUOUS. An `unknown` result is reported and maps to
+  AMBIGUOUS.
 - **Body-code normalizer (app-owned, `src/clockify/errors.ts`)**. Clockify sends the body `code`
   as a JSON **number**, and some 4xx bodies carry no `code` at all (R15, live-probed). The app
   reads the body itself and normalizes to a string — one function, used everywhere;

@@ -509,8 +509,8 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
 
 ### S6 — Clockify REST SDK type facts the app must match exactly
 
-- FACT (source-verified at the then-pinned `clockify-sdk-ts-115@2.0.0`, 2026-08-08; the app moved to
-  `@4.0.0` on 2026-08-09 — every item below still holds except the first, which is annotated):
+- FACT (source-verified at the then-pinned `clockify-sdk-ts-115@2.0.0`, 2026-08-08; later releases
+  superseded two helper facts as annotated. The current app uses `@5.1.0`):
   - `getErrorCode(err)` accepts only **string** body codes (`errors.ts`: `typeof direct === "string"`).
     Clockify sends numbers → it returns `undefined`. The app uses its own normalizer (R15, docs/03 §6).
     *(Superseded by `@3.0.0`, which reads numeric codes. The normalizer is kept deliberately — it
@@ -528,9 +528,12 @@ See `docs/04-sdk-integration-map.md` for the full map. Load-bearing facts:
     `AccountStatus` (drift, docs/03 note 1) but `"ACTIVE"` is a member, so `=== "ACTIVE"` typechecks.
   - `CreateForUserTimeEntriesRequest` is a **union** of a flattened shape and a `{body: …}`
     envelope. The app always builds the flattened variant (`CreateForUserTimeEntriesRequestFlattened`).
-  - `iterAll` yields items only; `iterPages` yields `{items, page, pageSize, hasNextPage}`. Only
-    `iterPages` can detect the page bound the design requires (docs/03 note 5).
+  - `iterAll` yields items only; `iterPages` yields `{items, page, pageSize, hasNextPage}`. At
+    `@2.0.0`, only `iterPages` could detect the page bound the design requires.
+    *(Superseded by `@5.1.0`: `paginatedList(...).collect()` returns `{items, truncated}`. The app
+    now uses this SDK result for bounded reads. `iterAll` still cannot report truncation.)*
   - `iterAll`/`iterPages`/`getErrorCode` are exported from the package root (`wrapper/index.ts`).
+    `@5.1.0` also exports `paginatedList` and `classifyWriteOutcome` from the package root.
 - EVIDENCE: `evidence/fresh-pass-2026-08-08.md` §SDK source re-verification.
 - CONSEQUENCE: docs/03, docs/04, docs/07 and PASS-02 state these shapes verbatim. A weaker
   implementation model must not infer them.

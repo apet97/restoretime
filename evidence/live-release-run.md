@@ -995,3 +995,74 @@ local service, and quick tunnel were deliberately left running for continued dev
 
 This is developer-environment proof only. No Marketplace submission was made, no public privacy
 route was added, and `https://app.clockify.me` remains unverified.
+
+# Live run 16 — SDK 5.1.0 release candidate, developer installation
+
+2026-08-11, `https://developer.clockify.me`, workspace `69bda6b317a0c5babe34b4ff`, installation
+`6a7a984fd5ef43cee805c541`. Clockify installed the add-on from a fresh quick-tunnel manifest. The
+portal reported **Addon successfully installed**, and the sidebar showed **Time Entry Recovery**.
+The service recorded the verified `INSTALLED` lifecycle event.
+
+## SDK source and package proof
+
+The tested dependency was `clockify-sdk-ts-115@5.1.0`. The two lockfiles contain this published
+integrity:
+
+```text
+sha512-29noGvWST6XPXR9qA44mhStvMcg2hQgkafMajsTvMxIIvz8YNkKFGH2qVQYB3O/Ws+0EEttA14EqHDCF92rtkg==
+```
+
+The npm package has a SLSA provenance attestation. Its GitHub tag and release point to source
+commit `94fe318f473daa9eda7b3cfc038a51429c3dee14`. The published package contains the ESM and CommonJS
+helpers, declarations, `classifyWriteOutcome()`, and `PaginatedList.collect()`.
+
+## Local proof
+
+All commands used Node 22.23.1.
+
+```text
+npm run typecheck              passed
+npm run lint                   passed
+npm test                       37 files, 381 tests passed
+npm run build                  passed
+npm run test:e2e               8 files, 42 tests passed
+git diff --check               passed
+root production audit          0 vulnerabilities
+install-capture audit          0 vulnerabilities
+gitleaks detect                85 commits scanned, no leaks found
+```
+
+## Developer and live proof
+
+```text
+npm run test:dev-smoke  ->  3 files, 3 tests, 3 passed
+npm run test:live       -> 10 files, 11 tests, 11 passed, 0 skipped, 0 blocked
+```
+
+The first full-suite attempt found that the workspace was in `STOPWATCH_ONLY` mode. Six tests that
+create completed entries could not run in that mode. This was an environment condition, not an SDK
+failure. The workspace was put in manual-entry mode for the test. No code change was needed. The
+second full run passed all 11 tests.
+
+LV-10(a) proved the ambiguous-write protocol with SDK 5.1.0. The create committed after the caller
+saw a transport failure. Reconcile found and adopted the one matching entry. LV-10(b) failed before
+the send. The row stayed AMBIGUOUS through the real check, then returned to IDLE after the explicit
+not-created decision.
+
+During the successful run, the service recorded 11 `metric:webhook_received` lines and 11 matching
+`metric:recoverable_created` lines. It recorded no error-level line. The real Clockify iframe
+rendered the deleted-entry list as John Owner. The component console had zero visible messages.
+The Clockify parent page logged its own migration-status 404 and sandbox warning; neither message
+came from RestoreTime.
+
+## Cleanup and boundary
+
+The suite deleted its active Clockify probe entries. A final bounded read checked all 10 workspace
+users. It found two older active probes from previous developer runs. Those two exact entries were
+deleted. The repeated read found zero active `RT-PROBE-` entries and zero truncated reads. Deletion
+webhooks remain as recoverable rows, as the product requires. This run did not create a temporary
+credential. The original Force timer setting was restored after the run. The add-on, local service,
+and quick tunnel remain available for continued developer work.
+
+This is developer-environment proof only. Production `https://app.clockify.me` proof and the
+Marketplace release inputs remain open. No Marketplace submission was made.

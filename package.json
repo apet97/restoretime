@@ -21,7 +21,7 @@
   "dependencies": {
     "@apet97/clockify-addon-sdk": "^1.3.0",
     "better-sqlite3": "^11",
-    "clockify-sdk-ts-115": "^5.0.1"
+    "clockify-sdk-ts-115": "^5.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7",

@@ -1,12 +1,12 @@
 // The preflight data fetch (docs/07 §2): six lookups through the installation's Clockify client,
 // assembled into the pure src/domain/preflight.ts `WorkspaceState` input. Every bounded list read
-// uses `iterPages` (never `iterAll` — only `iterPages` can detect the page bound, docs/03 note 5).
+// uses `PaginatedList.collect()` so the SDK reports when more pages remain (docs/03 note 5).
 //
 // Split in two so `GET /api/entries` can share the four workspace-level lookups across every
 // listed row and only repeat the two per-entry lookups (project, task) — "one fetch set per
 // request, share across rows" (pass file API scope).
 
-import { ClockifyApiError, iterPages, type ClockifyApi, type ClockifyClient } from "clockify-sdk-ts-115";
+import { ClockifyApiError, paginatedList, type ClockifyApi, type ClockifyClient } from "clockify-sdk-ts-115";
 import { clockifyErrorCode } from "./errors.js";
 import type { DeletedTimeEntry, PreflightChoices } from "../domain/entry.js";
 import { resolveEffectiveIds, type CustomFieldDef, type LookupResult, type TaskLookupResult, type WorkspaceState } from "../domain/preflight.js";
@@ -29,12 +29,10 @@ export async function collectPaged<TReq extends { page?: number; "page-size"?: n
   fetcher: (request: TReq) => PromiseLike<readonly TItem[]>,
   baseRequest: Omit<TReq, "page" | "page-size">,
 ): Promise<TItem[]> {
-  const items: TItem[] = [];
-  let truncated = false;
-  for await (const page of iterPages(fetcher, baseRequest, { pageSize: PAGE_SIZE, maxPages: MAX_PAGES })) {
-    items.push(...page.items);
-    if (page.page === MAX_PAGES && page.hasNextPage) truncated = true;
-  }
+  const { items, truncated } = await paginatedList(fetcher, baseRequest, {
+    pageSize: PAGE_SIZE,
+    maxPages: MAX_PAGES,
+  }).collect();
   if (truncated) throw new PreflightTruncatedError();
   return items;
 }

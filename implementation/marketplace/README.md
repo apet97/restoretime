@@ -32,7 +32,7 @@ These counts and the paste-ready values are in `listing-copy.md`.
 
 ## Release-proof boundary
 
-The current 1.3.0/5.0.1 SDK pair does not yet have current live proof in this package. Production
-`app.clockify.me` proof is also open. Do not use these Markdown files, generated assets, an older
-developer-environment run, or a workflow definition as proof that the current candidate was
-deployed, tested, approved, or submitted. Track those gates in `docs/16-definition-of-done.md`.
+The current 1.3.0/5.1.0 SDK pair has developer-environment proof in
+`evidence/live-release-run.md` "Live run 16". Production `app.clockify.me` proof is still open. Do
+not use these Markdown files, generated assets, or a workflow definition as proof that the current
+candidate was approved or submitted. Track those gates in `docs/16-definition-of-done.md`.

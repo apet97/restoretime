@@ -4,9 +4,9 @@
 // testable (UT-M01, UT-P13).
 
 import {
+  classifyWriteOutcome,
   ClockifyApiError,
-  ClockifyApiTimeoutError,
-  iterPages,
+  paginatedList,
   type ClockifyApi,
   type ClockifyClient,
 } from "clockify-sdk-ts-115";
@@ -55,16 +55,10 @@ async function listForUserPaged(
   description: string,
 ): Promise<{ items: TimeEntry[]; truncated: boolean }> {
   const baseRequest = description.length > 0 ? { workspaceId, userId, description } : { workspaceId, userId };
-  const items: TimeEntry[] = [];
-  let truncated = false;
-  for await (const page of iterPages(client.timeEntries.listForUser.bind(client.timeEntries), baseRequest, {
+  return paginatedList(client.timeEntries.listForUser.bind(client.timeEntries), baseRequest, {
     pageSize: PAGE_SIZE,
     maxPages: MAX_PAGES,
-  })) {
-    items.push(...page.items);
-    if (page.page === MAX_PAGES && page.hasNextPage) truncated = true;
-  }
-  return { items, truncated };
+  }).collect();
 }
 
 /** Baseline truncation is fatal (docs/07 §8: "treated as a failed preflight … never a partial
@@ -163,13 +157,11 @@ export type CreateOutcome =
   | { readonly kind: "AMBIGUOUS" };
 
 /**
- * Outcome classification (docs/03 §3, exact order — R15):
- * 1. `ClockifyApiTimeoutError` -> AMBIGUOUS.
- * 2. `ClockifyApiError` with `statusCode === undefined` (transport failure) -> AMBIGUOUS.
- * 3. `ClockifyApiError` with `statusCode >= 500` -> AMBIGUOUS.
- * 4. `ClockifyApiError` with a 4xx `statusCode` -> FAILED, mapped via `clockifyErrorCode`.
- * 5. Any other thrown value is a bug: never guessed, treated as AMBIGUOUS (the create may have
- *    committed).
+ * Outcome classification (docs/03 §3 — R15):
+ * 1. SDK `possibly-committed` -> AMBIGUOUS.
+ * 2. SDK `definitely-failed` plus `ClockifyApiError` -> FAILED, mapped via `clockifyErrorCode`.
+ * 3. SDK `unknown` or an unrecognized error -> report it and use AMBIGUOUS. The create may have
+ *    committed.
  *
  * A 201 is definitive: `timeEntries.get` verifies it, but a failed verification read still
  * yields RECREATED — the diff falls back to the 201 body (fact 11, IT-13).
@@ -183,14 +175,14 @@ async function executeCreate(
   try {
     created = await client.timeEntries.createForUser(buildCreateBody(plannedRequest));
   } catch (err) {
-    if (err instanceof ClockifyApiTimeoutError) return { kind: "AMBIGUOUS" };
-    if (err instanceof ClockifyApiError) {
-      if (err.statusCode === undefined || err.statusCode >= 500) return { kind: "AMBIGUOUS" };
+    const writeOutcome = classifyWriteOutcome(err);
+    if (writeOutcome === "possibly-committed") return { kind: "AMBIGUOUS" };
+    if (writeOutcome === "definitely-failed" && err instanceof ClockifyApiError) {
       const code = clockifyErrorCode(err);
       return { kind: "FAILED", status: err.statusCode, code, message: describeClockifyCreateFailure(err.statusCode, code) };
     }
-    // docs/03 §3: not an SDK error, so this is a bug. The create may still have committed, so the
-    // outcome stays AMBIGUOUS — but it must never disappear without a trace.
+    // docs/03 §3: an unknown classification is a bug or an unrecognized response. The create may
+    // still have committed, so the outcome stays AMBIGUOUS — but the error must not disappear.
     onUnexpectedError?.(err);
     return { kind: "AMBIGUOUS" };
   }
@@ -359,9 +351,8 @@ export interface AttemptRecreationInput {
   readonly claimToken: string;
   readonly recreatedBy: string;
   readonly now: Date;
-  /** Called with a thrown value that is not an SDK error. docs/03 §3: "Any other thrown value is
-   * a bug: crash-log it and treat the attempt as AMBIGUOUS." Without this the one error class the
-   * contract demands be logged is the only one that vanishes silently. */
+  /** Called when the SDK write classifier returns `unknown`, or when a definite failure is not a
+   * `ClockifyApiError`. docs/03 §3 requires a report and an AMBIGUOUS result. */
   readonly onUnexpectedError?: (error: unknown) => void;
   /** Called when the create failed because the addon token itself was rejected (401/4017, R11) —
    * the caller marks the installation broken (IT-08). Never called for any other outcome. */

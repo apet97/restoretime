@@ -11,7 +11,7 @@ far — `happy-dom`, at PASS-03.
 | Package | Version | Why |
 |---|---|---|
 | `@apet97/clockify-addon-sdk` | ^1.3.0 | Addon platform: manifest, verification, lifecycle, installation-store contract, encryption codec, webhook-path normalization, node adapter, iframe bridge, secure responses. Published from `64e668afd7bf330be4908c58d8671bdd27951608`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk`. |
-| `clockify-sdk-ts-115` | ^5.0.1 | Clockify REST: `createForUser`, reads for preflight, error model, retry policy. The 5.0.1 tag source is `702e4a4d97eacd72841074c2a78e1486332924c3`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk`. |
+| `clockify-sdk-ts-115` | ^5.1.0 | Clockify REST: `createForUser`, reads for preflight, error model, retry policy. The 5.1.0 tag source is `94fe318f473daa9eda7b3cfc038a51429c3dee14`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk`. |
 | `better-sqlite3` | ^11 | Durable store. Synchronous prepared statements; no ORM. |
 
 Transitive: `jose` (via the addon SDK). Never imported directly by app code.
@@ -40,11 +40,11 @@ dotenv (process env only) · npm-run-all/concurrently (plain npm scripts).
 ## Registry note — decided
 
 Both SDK packages come from the **npm registry**. The current lockfile resolves
-`@apet97/clockify-addon-sdk@1.3.0` and `clockify-sdk-ts-115@5.0.1` and records their integrity
+`@apet97/clockify-addon-sdk@1.3.0` and `clockify-sdk-ts-115@5.1.0` and records their integrity
 hashes. The add-on SDK package maps to release source
 `64e668afd7bf330be4908c58d8671bdd27951608`; its source docs HEAD is
 `a753715623291952f5070f19bec946df78e78537`. The Clockify SDK package maps to tag source
-`702e4a4d97eacd72841074c2a78e1486332924c3`; the published tag and remote `main` matched this
+`94fe318f473daa9eda7b3cfc038a51429c3dee14`; the published tag and remote `main` matched this
 commit at the release audit. These source references do not replace the lockfile
 integrity values. Vendored tarballs remain rejected because they add a manual refresh step with no
 proven benefit.

@@ -1,12 +1,11 @@
 // IT-04, IT-05, IT-08, IT-13 (docs/13). Real SQLite temp file + a stub `fetch` injected into
 // `createClockifyClient` (docs/13 mock-transport contract): the Clockify SDK stays real, only the
-// network is stubbed, so real SDK error classes (ClockifyApiTimeoutError, ClockifyApiError) drive
-// the classification under test.
+// network is stubbed, so the real SDK client, error types, and write classifier drive the tests.
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClockifyClient } from "clockify-sdk-ts-115";
+import { ClockifyApiError, createClockifyClient } from "clockify-sdk-ts-115";
 import { openDatabase } from "../../src/store/db.js";
 import * as entries from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
@@ -198,6 +197,60 @@ describe("IT-05 dependency deleted between plan and create", () => {
     const row = entries.getById(db, WORKSPACE_ID, entry.id);
     expect(row?.lifecycleState).toBe("FAILED");
     expect(row?.newEntryId).toBeNull();
+  });
+});
+
+describe("SDK 5.1 write-outcome classification", () => {
+  it("an explicit 304 SDK error stays AMBIGUOUS and reports the unexpected error", async () => {
+    const db = freshDb();
+    const entry = seedEntry(db);
+    seedPlan(db, entry.id);
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "tok-1",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+
+    const fetchStub: typeof fetch = async (input, init) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        return jsonResponse([]);
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) {
+        // The SDK normally blocks HTTP redirects before the generated request layer can retain
+        // their status. This explicit SDK error covers the classifier's documented 3xx `unknown`
+        // branch without replacing the real client or the rest of its request path.
+        throw new ClockifyApiError({ statusCode: 304 });
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    };
+    const client = createClockifyClient({
+      addonToken: "tok",
+      baseUrl: "https://developer.clockify.me/api/v1",
+      timeoutInSeconds: 30,
+      fetch: fetchStub,
+    });
+
+    const unexpected: unknown[] = [];
+    const result = await attemptRecreation({
+      db,
+      client,
+      entryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      planId: "plan-1",
+      plannedRequest: PLANNED,
+      claimToken: "tok-1",
+      recreatedBy: USER_ID,
+      now: new Date("2026-08-08T09:02:00Z"),
+      onUnexpectedError: (error) => unexpected.push(error),
+    });
+
+    expect(result.outcome).toBe("AMBIGUOUS");
+    expect(unexpected).toHaveLength(1);
+    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(attempts.getById(db, "tok-1")?.outcome).toBe("AMBIGUOUS");
   });
 });
 

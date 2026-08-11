@@ -1,9 +1,9 @@
 # Privacy text (docs/15 "Privacy text: what is stored (docs/08), uninstall purge behavior (F17),
 no raw payload retention (ADR-009)")
 
-Written for the Marketplace review and for end users (workspace admins deciding whether to
-install). Simplified Technical English throughout; every claim below cites the code or doc that
-makes it true, not aspiration.
+Written for the Marketplace review and for workspace admins who decide whether to install the
+add-on. The text uses ASD-STE100-informed clear English. Every claim below maps to current behavior
+or to identified historical evidence.
 
 ## What RestoreTime stores
 
@@ -53,24 +53,26 @@ enforced by the same automated log-content test named above.
 
 ## Retention
 
-A deleted entry's copy stays in RestoreTime's database until it is recreated, dismissed, or the
-addon is removed from the workspace. RestoreTime has no separate expiry timer — the copy's
-lifetime tracks the recovery decision, not a clock (docs/08 "Retention and deletion").
+RestoreTime keeps the normalized deleted-entry copy after recreation or dismissal. These actions
+change its lifecycle state but do not delete the stored source fields. RestoreTime has no separate
+expiry timer. The copy remains until the add-on is removed and the uninstall lifecycle call reaches
+RestoreTime (docs/08 "Retention and deletion").
 
 ## Uninstalling
 
-Removing RestoreTime from a workspace deletes every row RestoreTime holds for that workspace —
-the installation record and every deleted-entry copy — in one operation (docs/08 F17, verified by
-`tests/integration/uninstall.test.ts` and by a real uninstall of 132 rows, evidence "Live run 10").
-Nothing is kept "in case you reinstall."
+When Clockify's `DELETED` lifecycle call reaches RestoreTime, RestoreTime hard-deletes every row it
+holds for that workspace in one transaction. This includes the installation record and every
+deleted-entry copy (docs/08 F17; `tests/integration/uninstall.test.ts`). A historical developer-
+environment run also observed an uninstall purge of 132 rows (evidence "Live run 10"). No workspace
+row remains after that transaction commits.
 
-One honest qualification: the deletion is triggered by Clockify calling RestoreTime's `DELETED`
+One qualification applies: the deletion is triggered by Clockify calling RestoreTime's `DELETED`
 lifecycle endpoint. If RestoreTime's host is unreachable at that moment, the call cannot arrive and
 the data is not deleted then — Clockify still removes the add-on on its side, so the two can
-disagree. This was observed, not theorised (evidence "Live run 11"). An operator whose host was down
-during an uninstall should confirm the purge ran, or delete that workspace's rows directly.
-Disabling the addon (without uninstalling) is different: it keeps the data, because the addon can
-be re-enabled.
+disagree. A historical developer-environment run observed this condition (evidence "Live run 11").
+An operator whose host was down during an uninstall should confirm that the purge ran or delete that
+workspace's rows directly. Disabling the add-on without uninstalling it keeps the data because the
+add-on can be re-enabled.
 
 ## Data RestoreTime never touches
 

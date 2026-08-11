@@ -64,10 +64,24 @@ export interface NewPlan {
   readonly fidelity: Fidelity;
 }
 
-/** Marks any existing ACTIVE plan for the entry STALE, then inserts the new plan as ACTIVE — one
- * transaction (docs/07 §5: "mark previous ACTIVE plans for the entry STALE"). */
+export class PlanEntryNotActionableError extends Error {
+  constructor() {
+    super("cannot create an active plan for an entry in its current state");
+  }
+}
+
+/** Checks that the entry is still actionable, marks any existing ACTIVE plan STALE, and inserts
+ * the new ACTIVE plan in one immediate transaction. A preflight can spend time on Clockify reads;
+ * this final check prevents it from attaching a fresh plan after a concurrent recreation has
+ * already moved the entry to a non-actionable state. */
 export function createActive(db: Database.Database, plan: NewPlan): RecreationPlan {
-  const run = db.transaction((p: NewPlan) => {
+  const run = db.transaction((p: NewPlan): RecreationPlan => {
+    const actionable = db.prepare<[string], { id: string }>(
+      `SELECT id FROM recoverable_entries
+       WHERE id=? AND lifecycle_state IN ('IDLE','FAILED')`,
+    ).get(p.recoverableEntryId);
+    if (!actionable) throw new PlanEntryNotActionableError();
+
     db.prepare(
       "UPDATE recreation_plans SET status='STALE' WHERE recoverable_entry_id=? AND status='ACTIVE'",
     ).run(p.recoverableEntryId);
@@ -91,13 +105,13 @@ export function createActive(db: Database.Database, plan: NewPlan): RecreationPl
       actionRequiredJson: JSON.stringify(p.actionRequired),
       fidelity: p.fidelity,
     });
+    const row = db.prepare<[string], PlanRow>(
+      "SELECT * FROM recreation_plans WHERE id = ?",
+    ).get(p.id);
+    if (!row) throw new Error("plan insert did not persist");
+    return rowToPlan(row);
   });
-  run(plan);
-  const row = db
-    .prepare<[string], PlanRow>("SELECT * FROM recreation_plans WHERE id = ?")
-    .get(plan.id);
-  if (!row) throw new Error("plan insert did not persist");
-  return rowToPlan(row);
+  return run.immediate(plan);
 }
 
 export function getById(db: Database.Database, id: string): RecreationPlan | undefined {
@@ -124,10 +138,6 @@ export function listForEntry(db: Database.Database, recoverableEntryId: string):
     )
     .all(recoverableEntryId);
   return rows.map(rowToPlan);
-}
-
-export function markStale(db: Database.Database, id: string): void {
-  db.prepare("UPDATE recreation_plans SET status='STALE' WHERE id = ? AND status='ACTIVE'").run(id);
 }
 
 /** ACTIVE -> CONSUMED, guarded (a plan can execute at most once — ADR-006). Returns undefined

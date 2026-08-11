@@ -1,8 +1,8 @@
 # IMPLEMENTER
 
-You are implementing **RestoreTime**, a Clockify Marketplace add-on that recovers deleted time
-entries by recreating them as new entries. The platform behavior is already validated by live
-campaigns. Your job is to write the code and prove it — not to rediscover what to build.
+You are maintaining **RestoreTime**, a Clockify Marketplace add-on that recreates deleted time
+entries as new entries. The product is implemented. Treat the evidence baseline and architecture
+decisions as constraints when you change it.
 
 ## Read first, in this order
 
@@ -16,16 +16,17 @@ campaigns. Your job is to write the code and prove it — not to rediscover what
 6. `docs/03-api-and-webhook-contract.md` + `docs/04-sdk-integration-map.md` — exact API and SDK
    surface to use.
 7. `docs/05-architecture.md`, `docs/08-data-model.md`, `docs/09-permissions.md`.
-8. `docs/10-ui-specification.md` … `docs/17-decisions.md` as your pass requires.
+8. `docs/10-ui-specification.md` … `docs/17-decisions.md` as your change requires.
 9. `adr/` — the ten decisions. They are binding.
-10. `implementation/ROADMAP.md` then your pass file in `implementation/passes/`.
+10. `implementation/ROADMAP.md` and `implementation/passes/` only when you need the history of the
+    original implementation.
 
 ## Source SDKs (read-only)
 
-| SDK | Path | Pinned commit |
+| SDK | Path | Published version and source |
 |---|---|---|
-| addon platform | `~/Downloads/working/addons-me/addon-ts-sdk` | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` (= HEAD) |
-| Clockify REST | `~/Downloads/working/addons-me/clockify-ts-sdk` | inspected `b33e5b0227ece3de613adf6071039cc648bc35c8`; HEAD advanced to `f2d82d17b04131968f5ee3138f040cafa27ad29b` (docs-only + one error-name JSON fix; zero diff in load-bearing paths — docs/04) |
+| addon platform | `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk` | `@apet97/clockify-addon-sdk@1.3.0`; release source `64e668afd7bf330be4908c58d8671bdd27951608`; source docs HEAD `a753715623291952f5070f19bec946df78e78537` |
+| Clockify REST | `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` | `clockify-sdk-ts-115@5.1.0`; tag source `94fe318f473daa9eda7b3cfc038a51429c3dee14`; remote `main` matched the tag at the release audit |
 
 Use them. Do not modify them, do not duplicate their behavior, do not work around a defect in the
 app — report the defect as a blocker. One exception is already decided and must not stop you: the
@@ -38,7 +39,7 @@ probes. A bare **`fact N`** citation anywhere in this repo means row `N` of the 
 `evidence/sdk-verification-2026-08-08.md`. Fresh-pass probes use **`FP-n`**
 (`evidence/fresh-pass-2026-08-08.md`).
 
-## Critical invariants (violating one is a failed pass)
+## Critical invariants
 
 1. Recreation, never restoration. The new entry is a new entity (new ID, new timestamps, never
    part of any approval request or invoice, current rates — ADR-001, R9).
@@ -61,14 +62,10 @@ probes. A bare **`fact N`** citation anywhere in this repo means row `N` of the 
 13. App routes are exact paths. The addon SDK router has no path parameters (fact 2): `/api/*` uses exact paths with `entryId` in the JSON body (POST) or query (GET); identity and workspace scope come from verified claims only.
 14. `CLOCKIFY_PARENT_ORIGIN` (env var) is the Clockify app origin of the environment (production `https://app.clockify.me`, developer `https://developer.clockify.me`); it feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin` (fact 12).
 
-## Execute
+## Current development
 
-```text
-PASS-01 → PASS-02 → PASS-03 → PASS-04 → PASS-05
-```
-
-Each pass file is a complete prompt: scope, interfaces, invariants, tests, gates, report format.
-A pass is done when its gates are green and its report exists in `implementation/reports/`.
+Make one focused change at a time. Run the applicable commands below. Use the historical pass files
+as evidence and rationale, not as unfinished implementation instructions.
 
 ## Commands
 
@@ -77,21 +74,22 @@ npm ci
 npm run typecheck
 npm run lint
 npm run test          # unit + contract + integration (offline)
-npm run test:e2e      # after PASS-03
+npm run test:e2e      # bundled UI product journeys
 npm run build
-npm run test:dev-smoke # PASS-02 onward; env-gated, additive, never a release gate
-npm run test:live     # PASS-05 only; env-gated
+npm run test:dev-smoke # env-gated developer-environment checks; not a release gate
+npm run test:live     # env-gated current-candidate release evidence
 ```
 
 ## Git expectations
 
-One branch per pass (`pass-NN-*`), logical commits, PR to `main`, CI green, squash-merge. Never
-commit secrets, tokens, or real workspace data. Sanitized fixtures only (PASS-02 verifies).
+Use a focused branch and logical commits. Merge through a reviewed pull request with CI green.
+Never commit secrets, tokens, or real workspace data. Use sanitized fixtures only.
 
 ## Definition of done
 
-`docs/16-definition-of-done.md`. The release gate includes the live suite — it is the only way to
-close the addon-token success-path question (docs/01 R11). Do not fake it.
+`docs/16-definition-of-done.md` separates historical evidence, current local gates, Marketplace
+package completeness, and production proof. Do not reuse an older live run as proof for a changed
+release candidate.
 
 ## If the evidence seems wrong
 

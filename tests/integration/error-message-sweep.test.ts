@@ -21,6 +21,8 @@ import {
 import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import * as plans from "../../src/store/plans.js";
+import * as entries from "../../src/store/entries.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
 
 const ADDON_KEY = "restoretime-n8";
 const WORKSPACE_ID = "ws-1";
@@ -132,10 +134,10 @@ function answersWhatHappened(text: string): boolean {
   return text.length > 0;
 }
 function answersWhetherCreated(text: string): boolean {
-  return /\b(nothing (was|new) created|entry was created|it is not yet known whether)/i.test(text);
+  return /\b(nothing (was|new) created|entry was created|it is not (?:yet )?known whether)/i.test(text);
 }
 function answersWhatNext(text: string): boolean {
-  return /(try again|open this entry|reinstall|wait a moment|do not create it by hand)/i.test(text);
+  return /(try again|open (?:this|the) entry|reinstall|wait a moment|do not create it by hand)/i.test(text);
 }
 
 describe("N8 error-message sweep", () => {
@@ -160,7 +162,7 @@ describe("N8 error-message sweep", () => {
     expect(answersWhatNext(message)).toBe(true);
   });
 
-  it("already-claimed: distinguishes from a plain error, states nothing new was created by this click", async () => {
+  it("not-actionable: a recreating entry is rejected before another confirm can run", async () => {
     const { server, token, entryId } = await setup();
     const preflight = await server.addon.handle({
       method: "POST",
@@ -170,8 +172,8 @@ describe("N8 error-message sweep", () => {
       body: { entryId, choices: {} },
     });
     const planId = (preflight.body as { plan: { id: string } }).plan.id;
-    // Pre-claim the row directly, simulating a second, concurrent confirm that already won the
-    // race — the exact "already-claimed" branch.
+    // Pre-claim the row directly. The route must reject this current state before it loads
+    // Clockify or tries to claim the entry again.
     server.db
       .prepare("UPDATE recoverable_entries SET lifecycle_state='RECREATING', claim_token='other-attempt', claim_expires_at=? WHERE id=?")
       .run(new Date(Date.now() + 60_000).toISOString(), entryId);
@@ -185,21 +187,12 @@ describe("N8 error-message sweep", () => {
     });
     expect(res.status).toBe(409);
     const message = (res.body as { error: string }).error;
-    expect(message).toContain("already recreating this entry");
-    expect(message).toContain("Nothing new was created");
+    expect(message).toContain("cannot use this plan in its current state");
+    expect(message).toContain("Nothing was created");
     expect(answersWhatNext(message)).toBe(true);
   });
 
-  // "plan-consumed" (routes.ts `confirmPlan`) is the response for a `plans.consumeActive` guard
-  // failure that happens AFTER `entries.claim()` already succeeded, with no `await` between the
-  // two calls — better-sqlite3 is synchronous, so nothing else in this single Node process can
-  // interleave in that gap. A request replaying an already-consumed `planId` is caught earlier, by
-  // `isPlanUsable`'s ACTIVE check reading the plan fresh (that is the "stale" branch, exercised by
-  // `tests/integration/revalidation-drill.test.ts`). This makes the HTTP-level branch unreachable
-  // through this app's current single-process request handling — recorded as a PASS-04 finding,
-  // not weakened into a fake test. The invariant it exists to protect (a plan can be consumed
-  // exactly once) is real and is tested directly at the store layer instead.
-  it("plan-consumed: the underlying store guard (consumeActive is exactly-once) still holds, and the improved message text is what a route would show if this branch were ever reached", async () => {
+  it("plan-consumed: a replay is rejected before revalidation and tells the user to get a current plan", async () => {
     const { server, token, entryId } = await setup();
     const preflight = await server.addon.handle({
       method: "POST",
@@ -215,9 +208,7 @@ describe("N8 error-message sweep", () => {
     const second = plans.consumeActive(server.db, planId);
     expect(second).toBeUndefined(); // exactly-once, proven at the layer that actually enforces it
 
-    // A stale replay of the same (now-consumed) planId is caught earlier and answers N8 on its
-    // own path (proven by revalidation-drill.test.ts's STALE assertions) — confirmed here too,
-    // narrowly, for this exact request shape.
+    // A replay cannot revalidate or create with a plan that another request already consumed.
     const res = await server.addon.handle({
       method: "POST",
       path: "/api/entries/recreate",
@@ -226,7 +217,10 @@ describe("N8 error-message sweep", () => {
       body: { entryId, planId },
     });
     expect(res.status).toBe(409);
-    expect((res.body as { stale?: boolean }).stale).toBe(true);
+    const message = (res.body as { error: string }).error;
+    expect(message).toContain("already used by another attempt");
+    expect(message).toContain("Nothing was created");
+    expect(answersWhatNext(message)).toBe(true);
   });
 
   it("attempt-error (unknown outcome): explicitly does NOT claim nothing was created, and forbids hand-creating", async () => {
@@ -251,13 +245,54 @@ describe("N8 error-message sweep", () => {
     delete process.env.RT_TEST_CRASH_MID_ATTEMPT;
 
     expect(res.status).toBe(502);
-    const message = (res.body as { error: string }).error;
+    const body = res.body as { error: string; unknownResult?: boolean };
+    const message = body.error;
+    expect(body.unknownResult).toBe(true);
     // The defining N8 property of this exact message: it is honest about not knowing, rather than
     // reusing the "nothing was created" claim a read failure can make safely.
     expect(message).not.toContain("Nothing was created");
-    expect(message.toLowerCase()).toContain("not yet known whether");
+    expect(message.toLowerCase()).toContain("not known whether");
     expect(message.toLowerCase()).toContain("do not create it by hand");
     expect(answersWhatNext(message)).toBe(true);
+  });
+
+  it("bulk keeps a post-attempt error as an unknown result, not an operational failure", async () => {
+    const { server, keys, entryId } = await setup();
+    const adminToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "admin",
+    });
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: { entryId, choices: {} },
+    });
+    const planId = (preflight.body as { plan: { id: string } }).plan.id;
+
+    process.env.RT_TEST_CRASH_MID_ATTEMPT = "1";
+    const res = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: { planIds: [planId] },
+    });
+    delete process.env.RT_TEST_CRASH_MID_ATTEMPT;
+
+    expect(res.status).toBe(200);
+    expect((res.body as { results: unknown[] }).results).toEqual([
+      {
+        entryId,
+        planId,
+        outcome: "AMBIGUOUS",
+        message:
+          "The recreation might have reached Clockify, but RestoreTime did not get a clear result. It is not known whether the entry was created. Do not create it by hand. Wait a moment, then open this entry again to check its status.",
+      },
+    ]);
   });
 
   it("a rejected addon token (401 code 4017) on preflight: says reinstall — not 'try again' — and the list reports broken", async () => {
@@ -338,5 +373,57 @@ describe("N8 error-message sweep", () => {
     const message = (res.body as { error: string }).error;
     expect(message).toContain("Nothing was created");
     expect(answersWhatNext(message)).toBe(true);
+  });
+
+  it("manual ambiguity resolution masks a deterministic provider rejection for a member", async () => {
+    const { server, token, entryId } = await setup();
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, choices: {} },
+    });
+    const planId = (preflight.body as { plan: { id: string } }).plan.id;
+    const attemptId = "manual-resolution-attempt";
+    entries.claim(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      claimToken: attemptId,
+      now: new Date("2026-08-08T12:00:00Z"),
+    });
+    entries.setAmbiguous(server.db, { id: entryId, workspaceId: WORKSPACE_ID, claimToken: attemptId });
+    insertAttemptFixture(server.db, {
+      id: attemptId,
+      planId,
+      recoverableEntryId: entryId,
+      startedAt: "2026-08-08T12:00:00Z",
+      baseline: [],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      (async (input, init) => {
+        const path = pathOf(input);
+        if (methodOf(input, init) === "GET" && path.endsWith("/time-entries/candidate-id")) {
+          return jsonResponse({ message: "read rejected", code: 0 }, 403);
+        }
+        return stableClockifyStub()(input, init);
+      }) as typeof fetch,
+    );
+
+    const res = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/resolve-ambiguous",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, newEntryId: "candidate-id" },
+    });
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe(
+      "This entry cannot be used for this recreation.",
+    );
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });

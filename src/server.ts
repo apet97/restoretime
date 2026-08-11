@@ -10,6 +10,7 @@ import {
   createClockifySignatureParser,
   createClockifyHtmlResponse,
   createValidatedClockifyAddon,
+  normalizeClockifyWebhookPath,
   wrapClockifyInstallationStoreWithEncryption,
   withClockifyDeletedLifecycleRequest,
   withClockifyInstalledLifecycleRequest,
@@ -28,7 +29,6 @@ import { uninstallWorkspace } from "./store/cascade.js";
 import {
   createSqliteInstallationStore,
   importTokenEncryptionKey,
-  normalizeWebhookPath,
   updateInstallationStatus,
 } from "./platform/installations.js";
 import { handleDeletedEntryWebhook } from "./ingest/webhook.js";
@@ -190,7 +190,7 @@ export async function createServer(
         async getExpectedWebhookAuthToken({ workspaceId, addonId }) {
           const installation = await installations.load(workspaceId, addonId);
           return installation?.webhooks?.find(
-            (webhook) => normalizeWebhookPath(webhook.path) === WEBHOOK_PATH,
+            (webhook) => normalizeClockifyWebhookPath(webhook.path) === WEBHOOK_PATH,
           )?.authToken;
         },
         // A lookup that finds no stored token is a wiring failure, not an attack: the

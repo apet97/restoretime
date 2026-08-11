@@ -1,11 +1,17 @@
 # 04 — SDK integration map
 
-Two read-only source SDKs. Pinned commits at planning time:
+Two read-only source SDKs. The lockfile contains the package integrity values. The source commits
+below identify the published releases and the newer documentation or branch heads that were
+inspected separately.
 
-| SDK | Package | Version | Commit |
-|---|---|---|---|
-| `~/Downloads/working/addons-me/addon-ts-sdk` (`addon-sdk/` workspace) | `@apet97/clockify-addon-sdk` | 1.2.0 | `d86e45971a579a4fb2b12b9a85ed5b567322f7b7` |
-| `~/Downloads/working/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 4.0.0 | `e6fe4a21582676f2d2d85c8f364e7229a4a2ee1f` (`release: SDK, CLI, and TypeScript MCP 4.0.0`). Upgraded from 2.0.0 on 2026-08-09; the two majors fixed `getErrorCode`'s numeric codes (3.0.0) and made `ClockifyApiError.message` body-free (4.0.0) — both defects this app had already found and worked around, so the changes are recorded below rather than acted on |
+| SDK | Package | Version | Published source | Newer source reference |
+|---|---|---|---|---|
+| `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk` (`addon-sdk/` workspace) | `@apet97/clockify-addon-sdk` | 1.3.0 | `64e668afd7bf330be4908c58d8671bdd27951608` | docs HEAD `a753715623291952f5070f19bec946df78e78537` |
+| `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 5.1.0 | 5.1.0 tag source `94fe318f473daa9eda7b3cfc038a51429c3dee14` | remote `main` matched the tag at the release audit |
+
+The published-source commit, not the newer docs or branch head, binds each registry package to
+source. Developer-environment proof for the 1.3.0/5.1.0 pair is in
+`evidence/live-release-run.md` "Live run 16". Production proof is still open.
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work
 around a defect in the app — fix upstream first (AGENTS.md).
@@ -17,7 +23,7 @@ around a defect in the app — fix upstream first (AGENTS.md).
 | Manifest definition | `.` / `./clockify` | `ClockifyManifest.v1_5Builder()` (canonical; the const object has `v1_5Builder`/`v1_4Builder`/`v1_6Builder` — there is no `builder()`), `ClockifyScope`, `ClockifyComponent.v1_5Builder()`, `ClockifyWebhook.v1_5Builder()`, `ClockifyLifecycleEvent.v1_5Builder()` | `clockify/clockify-manifest.ts`, `clockify/clockify-models.ts`, `clockify/generated/v1_5.ts` | `tests/builders.test.ts`, parity tests |
 | Manifest validation at boot | `./clockify` | `createValidatedClockifyAddon(manifest)` | `clockify/clockify-addon.ts` | `tests/manifest-validation.test.ts` |
 | Webhook registration | `./clockify` | `addon.registerWebhook(webhook, handler)`; builder `onTimeEntryDeleted().path(...)` | `clockify/clockify-addon.ts`, `generated/v1_5.ts` | `tests/clockify-dispatch.test.ts` |
-| Webhook verification | `./clockify` | `withClockifyVerifiedWebhookRequest(parser, {expectedEventType, getExpectedWebhookAuthToken}, handler)` — note the options argument is SECOND; the lookup callback receives `{workspaceId, addonId, eventType}` (no path). Stored webhook tokens are keyed by normalized path; the app maps `eventType → path` through the single declared webhook constant and normalizes paths (live: INSTALLED payloads can carry `//webhooks/...` — evidence/install-capture-2026-08-08.md) | `clockify/clockify-request-handlers.ts`, `clockify-request-verifiers.ts` | `tests/request-verification.test.ts`, `tests/parity/mileage-webhook.test.ts` |
+| Webhook verification | `./clockify` | `withClockifyVerifiedWebhookRequest(parser, {expectedEventType, getExpectedWebhookAuthToken}, handler)` — note the options argument is SECOND; the lookup callback receives `{workspaceId, addonId, eventType}` (no path). Stored webhook tokens are keyed by the SDK's `normalizeClockifyWebhookPath()` on write and lookup. This covers live INSTALLED paths such as `//webhooks/...` (evidence/install-capture-2026-08-08.md) | `clockify/clockify-request-handlers.ts`, `clockify-request-verifiers.ts`, `clockify-lifecycle.ts` | `tests/request-verification.test.ts`, `tests/lifecycle-helpers.test.ts` |
 | JWT parser | `./clockify` | `createClockifySignatureParser(addonKey)` (pinned platform key) | `clockify/clockify-signature-parser.ts`, `clockify-public-key.ts` | `tests/signature.test.ts`, `tests/public-key.test.ts` |
 | Component registration | `./clockify` | `registerComponent(component, handler)`; builder `.sidebar().allowEveryone().path(...).label(...)` | `clockify/clockify-addon.ts`, `generated/v1_5.ts` | `tests/clockify.test.ts` |
 | Component verification (viewer identity) | `./clockify` | `withClockifyVerifiedComponentRequest(parser, handler, options?)` — handler is SECOND (differs from the webhook wrapper). Query `?auth_token`, requires `exp`; claims: `user`, `workspaceId`, `workspaceRole`, `theme`, `language`, URLs | `clockify/clockify-request-handlers.ts` | `tests/request-verification.test.ts` |
@@ -51,7 +57,7 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 | Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequestFlattened` (the request type is a **union** with a `{body: …}` envelope — always build the flattened variant) | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
 | Post-create fetch | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` | — | `TimeEntry` | Verification diff input (F12) |
 | Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `description` (never `start`/`end` windows — proved laggy for fresh entries, R10) | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
-| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `UserDtoV1[]` | Exact request: `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `iterPages` pagination. `"include-roles"` is REQUIRED by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
+| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `UserDtoV1[]` | Exact request: `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `paginatedList(...).collect()`. `"include-roles"` is REQUIRED by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
 | Project check/options | `projects.get` / `projects.list` | `GET …/projects[/{id}]` | — | `Project` | gone = 404 **or** 400 body code `501` ("Project doesn't belong to Workspace") — live-probed on a genuinely deleted project, evidence/error-shapes-2026-08-08.md; `archived` flag present |
 | Task check/options | `tasks.get` / `tasks.list` | `GET …/projects/{pid}/tasks[/{id}]` | — | `Task` | `status` field |
 | Tag check/options | `tags.list` | `GET /workspaces/{ws}/tags` | — | `Tag[]` | `archived` flag present |
@@ -66,13 +72,15 @@ construction). The app opts into neither, and **this is now pinned by a test** r
 inherited on trust: `tests/integration/write-retry-invariant.test.ts` sends a 500, a 429 with
 `Retry-After`, and a rejected transport at `createForUser` and asserts the transport saw exactly
 one call each — a retried write is a duplicate entry in a customer's timesheet (ADR-007).
-Errors are `ClockifyApiError` with `statusCode` +
-parsed body; timeouts are `ClockifyApiTimeoutError` — which only fires when the app sets
-`timeoutInSeconds` (the default is no timeout; the app passes `timeoutInSeconds: 30`).
-`iterAll`/`iterPages` (package root, `wrapper/index.ts`) auto-paginate any list method
-(`page`/`page-size`) with `{ pageSize, maxPages }` bounds. The app uses **`iterPages` only**: its
-`{items, page, pageSize, hasNextPage}` envelope is the sole way to detect that the page bound was
-hit, which the design requires (docs/03 note 5). `iterAll` yields items and cannot express it.
+Errors are `ClockifyApiError` with `statusCode` and a parsed body. Timeouts are
+`ClockifyApiTimeoutError`, which only fires when the app sets `timeoutInSeconds` (the default has
+no timeout; the app passes `timeoutInSeconds: 30`). The app passes caught write errors to
+`classifyWriteOutcome()`. It treats `definitely-failed` as FAILED only for a `ClockifyApiError`,
+and treats `possibly-committed` and `unknown` as AMBIGUOUS. It reports `unknown` errors.
+`paginatedList(...).collect()` (package root, `wrapper/index.ts`) auto-paginates a list method
+(`page`/`page-size`) with `{ pageSize, maxPages }` bounds and returns `{items, truncated}`. Every
+bounded app read uses this SDK result. A truncated preflight fails, and a truncated reconcile
+stays AMBIGUOUS (docs/03 note 5).
 
 **Error-code extraction — the app normalizes, `getErrorCode` is not imported.** The app owns a
 five-line normalizer (`src/clockify/errors.ts` `clockifyErrorCode`, source in docs/03 §6) that
@@ -85,7 +93,8 @@ null body — UT-M01 pins the agreement). The normalizer is kept deliberately: t
 error classification so a transitive-dependency change cannot silently reclassify a user-visible
 failure reason. Not an SDK workaround (AGENTS.md rule 5).
 
-**Error strings are body-free as of 4.0.0.** `ClockifyApiError.message` no longer embeds the
+**Error strings have been body-free since 4.0.0; the current dependency is 5.1.0.**
+`ClockifyApiError.message` no longer embeds the
 response body — it is `"<message>\nStatus code: <n>"`. The body reaches a string only through the
 opt-in `clockifyErrorDetail(err)`, which the app **does not import**: it is the one accessor that
 can carry request data, and RestoreTime's log-safety rule (docs/12, docs/14 N3) has no room for it

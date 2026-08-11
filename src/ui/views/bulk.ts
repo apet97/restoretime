@@ -14,6 +14,7 @@ function rowReason(row: BulkPreflightRow): string {
   if (row.status === "blocked") return row.plan?.blockers[0]?.message ?? "Blocked.";
   if (row.status === "needs-input") return row.plan?.actionRequired[0]?.message ?? "Needs your input.";
   if (row.status === "not-found") return "This entry could not be found.";
+  if (row.status === "not-actionable") return "This entry changed after you selected it. Open the entry to see its current status.";
   return "";
 }
 
@@ -22,6 +23,7 @@ const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
   "needs-input": "Needs your input",
   blocked: "Blocked",
   "not-found": "Not found",
+  "not-actionable": "State changed",
   error: "Error",
 };
 
@@ -102,6 +104,7 @@ const OUTCOME_LABEL: Record<string, string> = {
 function rowMessage(row: BulkRecreateRow): string {
   if (row.outcome === "ERROR") return row.message;
   if (row.outcome === "FAILED") return row.message;
+  if (row.outcome === "AMBIGUOUS" && row.message) return row.message;
   // The raw Clockify id said nothing to the person reading it — the "Open" button beside this row
   // is what actually reaches the new entry.
   if (row.outcome === "RECREATED") return "The new entry is in Clockify.";

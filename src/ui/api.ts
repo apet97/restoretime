@@ -1,5 +1,5 @@
 // The /api/* client (docs/10 §8). The token lives in memory only — inside the closure created by
-// `createTokenAuthority` (src/ui/bridge.ts) — never in `localStorage`, the DOM, a URL, or a log.
+// `createTokenAuthority` (src/ui/bridge.ts) — never in `localStorage`, the DOM, an API URL, or a log.
 // On a 401 this dispatches one refresh, waits up to 5 s, and retries the call exactly once with the
 // new token; a timeout or a second 401 is a session-expired condition, not a retry loop.
 

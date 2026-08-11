@@ -1,41 +1,38 @@
-# Marketplace submission package (docs/15 "Marketplace submission prerequisites")
+# Marketplace text package
 
-Staged for the Clockify Marketplace review. This directory holds everything the operator does not
-have to write from scratch; it does **not** hold anything only the operator can supply.
+This directory contains the reviewable Marketplace text that engineering can prepare from the
+product. Text-package completeness is not production release proof and does not mean that the
+add-on was submitted.
 
 ## Files here
 
 | File | Content |
 |---|---|
 | `manifest-review.md` | The reviewable manifest: every field `buildManifest()` (`src/manifest.ts`) sets, as the reviewer will see it at `GET /manifest`, with a pointer to source for each |
+| `listing-copy.md` | Paste-ready tagline, short and long descriptions, feature list, screenshot caption candidates, category candidates, support copy, field map, and exact character counts |
 | `scope-justification.md` | Per-scope justification text (one paragraph per requested OAuth scope) |
 | `privacy-policy.md` | What is stored, what is not, retention, and uninstall behavior — derived from docs/08 (data model) and docs/12 (security) |
-| `terminology-check.md` | The ASD-STE100 / mandated-terminology audit run against every user-facing string in `src/ui/` and `src/api/` (docs/00, docs/10 §"Terms used in the UI") — real grep output, not an assertion |
+| `terminology-check.md` | The ASD-STE100 / mandated-terminology audit run against `README.md`, all application source under `src/`, and the paste-ready listing, privacy, and scope text — real grep output, not an assertion |
 
-## What only the operator can supply
+## Text-package status
 
-These are not filled in here because no one but the operator has them. Each is named explicitly so
-the release checklist (docs/16) has one line per gap, not a vague "TBD":
+The manifest review, listing copy, scope reasons, privacy text, and terminology record are present.
+The short description is 119 of 140 characters. The long description is 1,482 of 1,500 characters.
+These counts and the paste-ready values are in `listing-copy.md`.
 
-1. **Icon artwork.** The current sidebar icon (`ADDON_ICON_SVG`, `src/server.ts`) is a small
-   circular-arrow SVG built for the sidebar tile — functional, not a designed marketplace listing
-   icon. If the Marketplace listing requires a separate, larger, brand-reviewed icon asset, the
-   operator supplies it.
-2. **Screenshots.** None exist. The operator captures these from a real installed instance (they
-   necessarily show the running product, which does not exist until step 3 of docs/15's release
-   pipeline has happened).
-3. **Long-form listing description.** `buildManifest()`'s `.description(...)` call is the short,
-   in-manifest description Clockify itself displays close to the install button; a Marketplace
-   listing page typically wants a longer write-up (features, screenshots captions, FAQ). Draft
-   text for that longer page is the operator's call — it is marketing copy, not manifest content,
-   and mixing the two would make this package overreach into decisions this pass was not asked to
-   make.
-4. **Production host.** `PUBLIC_BASE_URL`, DNS, and TLS termination for the production deployment.
-   Every file in this package describes the product as its code defines it; none of them can name
-   a host that does not exist yet.
+## Inputs still required
 
-## Everything else here is real content, not a placeholder
+1. **Other image assets.** A reviewable 300 × 300 icon is present in `assets/`. No banner,
+   screenshot, or video asset is present.
+2. **Production and public URLs.** The production `PUBLIC_BASE_URL`, Support URL, Privacy URL,
+   Security URL, and Terms URL are not supplied.
+3. **Monitored contact.** The final support, privacy, and security contact is not supplied.
+4. **Portal and legal decisions.** The exact category taxonomy, terms, legal approval, pricing, and
+   submission action remain outside this text package.
 
-The manifest fields, scope list, and privacy text below are read directly from the shipped code
-(`src/manifest.ts`, `src/config.ts`, `docs/08-data-model.md`, `docs/12-security.md`) — they are
-what the reviewer will actually see, not a draft written ahead of the code.
+## Release-proof boundary
+
+The current 1.3.0/5.1.0 SDK pair has developer-environment proof in
+`evidence/live-release-run.md` "Live run 16". Production `app.clockify.me` proof is still open. Do
+not use these Markdown files, generated assets, or a workflow definition as proof that the current
+candidate was approved or submitted. Track those gates in `docs/16-definition-of-done.md`.

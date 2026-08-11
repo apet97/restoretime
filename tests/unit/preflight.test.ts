@@ -91,6 +91,25 @@ describe("UT-P01 P-RUN / P-RUN-END", () => {
     expect(ruleIds(result.actionRequired)).toContain("P-RUN-END");
   });
 
+  it("compares completedEnd by instant, not by its ISO string", () => {
+    const result = preflight({
+      source: source({ wasRunning: true, end: null }),
+      // 11:30 at UTC+02 is 09:30 UTC, before the 10:00 UTC start.
+      choices: { runningMode: "completed", completedEnd: "2026-08-08T11:30:00+02:00" },
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-RUN-END");
+    expect(result.plannedRequest.end).toBeUndefined();
+  });
+
+  it("rejects an invalid completedEnd", () => {
+    const result = preflight({
+      source: source({ wasRunning: true, end: null }),
+      choices: { runningMode: "completed", completedEnd: "not-a-date" },
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-RUN-END");
+    expect(result.plannedRequest.end).toBeUndefined();
+  });
+
   it("completed mode with a valid completedEnd resolves and adjusts fidelity", () => {
     const result = preflight({
       source: source({ wasRunning: true, end: null }),
@@ -171,6 +190,14 @@ describe("UT-P05 P-TAG-GONE / P-TAG-REQ", () => {
     expect(ruleIds(result.actionRequired)).toContain("P-TAG-REQ");
   });
 
+  it("no source tags, forceTags on, no addTagIds -> ACTION_REQUIRED", () => {
+    const result = preflight({
+      source: source({ tags: [] }),
+      workspace: workspace({ forceTags: true, currentTags: new Map() }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-TAG-REQ");
+  });
+
   it("all tags dropped, forceTags on, addTagIds provided -> no P-TAG-REQ", () => {
     const result = preflight({
       choices: { dropTagIds: ["tag-1"], addTagIds: ["tag-2"] },
@@ -178,6 +205,26 @@ describe("UT-P05 P-TAG-GONE / P-TAG-REQ", () => {
     });
     expect(ruleIds(result.actionRequired)).not.toContain("P-TAG-REQ");
     expect(result.plannedRequest.tagIds).toEqual(["tag-2"]);
+  });
+
+  it("a missing replacement tag stays unresolved and is not sent", () => {
+    const result = preflight({
+      source: source({ tags: [] }),
+      choices: { addTagIds: ["tag-missing"] },
+      workspace: workspace({ currentTags: new Map() }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-TAG-GONE");
+    expect(result.plannedRequest.tagIds).toBeUndefined();
+  });
+
+  it("an archived replacement tag stays unresolved and is not sent", () => {
+    const result = preflight({
+      source: source({ tags: [] }),
+      choices: { addTagIds: ["tag-archived"] },
+      workspace: workspace({ currentTags: new Map([["tag-archived", { id: "tag-archived", archived: true }]]) }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-TAG-ARCH");
+    expect(result.plannedRequest.tagIds).toBeUndefined();
   });
 });
 
@@ -436,6 +483,78 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     expect(result.actionRequired.some((a) => a.ruleId === "P-CF-OPT")).toBe(true);
   });
 
+  it.each([
+    { type: "DROPDOWN_SINGLE" as const, value: ["A"] },
+    { type: "DROPDOWN_MULTIPLE" as const, value: "A" },
+  ])("rejects the wrong source value shape for $type", ({ type, value }) => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type, allowedValues: ["A", "B"], defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it.each([
+    { type: "DROPDOWN_SINGLE" as const, value: ["A"] },
+    { type: "DROPDOWN_MULTIPLE" as const, value: "A" },
+  ])("rejects the wrong user value shape for $type", ({ type, value }) => {
+    const result = preflight({
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type, allowedValues: ["A", "B"], defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it.each([
+    { type: "TXT" as const, value: ["not", "text"] },
+    { type: "LINK" as const, value: false },
+  ])("rejects a non-string source value for $type", ({ type, value }) => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type, allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it.each([
+    { type: "TXT" as const, value: true },
+    { type: "LINK" as const, value: ["not", "a-link"] },
+  ])("rejects a non-string user value for $type", ({ type, value }) => {
+    const result = preflight({
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type, allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it.each([
+    { type: "TXT" as const, sourceValue: "source text", emptyInput: "" },
+    { type: "DROPDOWN_MULTIPLE" as const, sourceValue: ["A"], emptyInput: [] },
+  ])("preserves a usable optional $type source when explicit input is empty", ({ type, sourceValue, emptyInput }) => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: sourceValue }] }),
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value: emptyInput }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: false, type, allowedValues: type === "DROPDOWN_MULTIPLE" ? ["A", "B"] : null, defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).not.toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toEqual([{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: sourceValue }]);
+    expect(result.fidelity).toBe("FULL");
+  });
+
   it("P-CF-WRITE rejects a non-numeric value for a NUMBER field instead of letting the create fail", () => {
     const result = preflight({
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "not-a-number" }] }),
@@ -445,6 +564,39 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     });
     expect(result.actionRequired.some((a) => a.message.includes("needs a number"))).toBe(true);
     expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it("P-CF-WRITE rejects a string source value for a CHECKBOX field", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "true" }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "CHECKBOX", allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(result.actionRequired.some((item) => item.message.includes("checkbox value"))).toBe(true);
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it("P-CF-WRITE rejects a string user value for a CHECKBOX field", () => {
+    const result = preflight({
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value: "false" }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "CHECKBOX", allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(result.actionRequired.some((item) => item.message.includes("checkbox value"))).toBe(true);
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it("P-CF-REQ accepts false as an explicit CHECKBOX value", () => {
+    const result = preflight({
+      choices: { customFieldInputs: [{ customFieldId: "cf-1", value: false }] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "CHECKBOX", allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).not.toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toEqual([{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: false }]);
   });
 
   it("P-CF-OPT dropped -> warning, PARTIAL", () => {
@@ -459,6 +611,32 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
     expect(result.fidelity).toBe("PARTIAL");
   });
 
+  it("does not drop a required value when the field has no usable default", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "source-value" }] }),
+      choices: { dropCustomFieldIds: ["cf-1"] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.warnings.some((warning) => warning.code === "CF_VALUE_DROPPED")).toBe(false);
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
+  it("allows an explicit drop when a required field has a usable default", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "source-value" }] }),
+      choices: { dropCustomFieldIds: ["cf-1"] },
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "TXT", allowedValues: null, defaultValue: "default-value" }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).not.toContain("P-CF-REQ");
+    expect(result.warnings.some((warning) => warning.code === "CF_VALUE_DROPPED")).toBe(true);
+    expect(result.plannedRequest.customFields).toBeUndefined();
+  });
+
   it("P-CF-REQ: required field with no usable value -> ACTION_REQUIRED after source -> default resolution fails", () => {
     const result = preflight({
       source: source({ customFieldValues: [] }),
@@ -467,6 +645,17 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
       }),
     });
     expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+  });
+
+  it("P-CF-REQ: an empty multi-select value is not usable", () => {
+    const result = preflight({
+      source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: [] }] }),
+      workspace: workspace({
+        customFields: [{ id: "cf-1", name: "Field cf-1", active: true, required: true, type: "DROPDOWN_MULTIPLE", allowedValues: ["A", "B"], defaultValue: null }],
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).toContain("P-CF-REQ");
+    expect(result.plannedRequest.customFields).toBeUndefined();
   });
 
   it("P-CF-REQ resolved via workspaceDefaultValue when the source had none — no ACTION_REQUIRED, fidelity-neutral", () => {

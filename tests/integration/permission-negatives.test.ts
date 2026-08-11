@@ -169,6 +169,89 @@ const ROUTES: readonly RouteSpec[] = [
   // recreate is exercised separately below: it is the one route with the 403-not-404 asymmetry.
 ];
 
+describe("detail lineage authorization", () => {
+  it("hides another member's lineage while preserving same-owner and admin access", async () => {
+    const foreignParent = entries.ingestDeletedEntry(server.db, {
+      id: "foreign-parent",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "foreign-source",
+      ownerId: OTHER_MEMBER_ID,
+      detectedAt: "2026-08-08T08:00:00Z",
+      source: {
+        ...SOURCE,
+        entryId: "foreign-source",
+        ownerId: OTHER_MEMBER_ID,
+        ownerName: "Other Member",
+        description: "private lineage description",
+      },
+    }).entry;
+    server.db.prepare(
+      "UPDATE recoverable_entries SET parent_recoverable_id=? WHERE id=?",
+    ).run(foreignParent.id, entryId);
+
+    const memberToken = await tokenFor({ user: OWNER_ID, role: "member" });
+    const member = await server.addon.handle(req(
+      "GET",
+      "/api/entries/detail",
+      memberToken,
+      undefined,
+      { id: entryId },
+    ));
+    expect(member.status).toBe(200);
+    expect((member.body as { lineage: { parent: unknown } }).lineage.parent).toBeNull();
+    expect((member.body as { entry: { parentRecoverableId: string | null } }).entry.parentRecoverableId).toBeNull();
+    const memberDetailJson = JSON.stringify(member.body);
+    expect(memberDetailJson).not.toContain(foreignParent.id);
+    expect(memberDetailJson).not.toContain("private lineage description");
+    expect(memberDetailJson).not.toContain("Other Member");
+
+    const memberList = await server.addon.handle(req("GET", "/api/entries", memberToken));
+    expect(memberList.status).toBe(200);
+    expect(JSON.stringify(memberList.body)).not.toContain(foreignParent.id);
+    expect((memberList.body as {
+      entries: Array<{ id: string; parentRecoverableId: string | null }>;
+    }).entries.find((row) => row.id === entryId)?.parentRecoverableId).toBeNull();
+
+    const ownParent = entries.ingestDeletedEntry(server.db, {
+      id: "own-parent",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "own-source",
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T08:30:00Z",
+      source: { ...SOURCE, entryId: "own-source", description: "owned lineage description" },
+    }).entry;
+    server.db.prepare(
+      "UPDATE recoverable_entries SET parent_recoverable_id=? WHERE id=?",
+    ).run(ownParent.id, entryId);
+    const sameOwner = await server.addon.handle(req(
+      "GET",
+      "/api/entries/detail",
+      memberToken,
+      undefined,
+      { id: entryId },
+    ));
+    expect(sameOwner.body).toMatchObject({
+      entry: { parentRecoverableId: ownParent.id },
+      lineage: { parent: { id: ownParent.id, source: { description: "owned lineage description" } } },
+    });
+
+    server.db.prepare(
+      "UPDATE recoverable_entries SET parent_recoverable_id=? WHERE id=?",
+    ).run(foreignParent.id, entryId);
+    const admin = await server.addon.handle(req(
+      "GET",
+      "/api/entries/detail",
+      await tokenFor({ user: DEMOTED_ADMIN_ID, role: "admin" }),
+      undefined,
+      { id: entryId },
+    ));
+    expect(admin.body).toMatchObject({
+      entry: { parentRecoverableId: foreignParent.id },
+      lineage: { parent: { id: foreignParent.id, source: { description: "private lineage description" } } },
+    });
+  });
+});
+
 describe("permission negatives sweep: expired token -> 401 on every route, no row changed", () => {
   for (const route of ROUTES) {
     it(route.name, async () => {
@@ -274,13 +357,21 @@ describe("permission negatives sweep: forged/cross-workspace viewer -> 404 with 
     vi.unstubAllGlobals();
   });
 
-  it("bulk-recreate as a cross-workspace admin reports the plan's entry as not-found; no mutation", async () => {
+  it("bulk-recreate does not reveal whether a plan exists in another workspace", async () => {
     const before = snapshotRow();
     const token = await tokenFor({ workspaceId: OTHER_WORKSPACE_ID, user: "someone", role: "admin" });
-    const res = await server.addon.handle(req("POST", "/api/entries/bulk-recreate", token, { planIds: [planIdByDemotedAdmin] }));
+    const unknownPlanId = "plan-that-does-not-exist";
+    const res = await server.addon.handle(req("POST", "/api/entries/bulk-recreate", token, {
+      planIds: [planIdByDemotedAdmin, unknownPlanId],
+    }));
     expect(res.status).toBe(200);
-    const body = res.body as { results: { planId: string; outcome: string }[] };
-    expect(body.results[0]?.outcome).toBe("ERROR");
+    const body = res.body as {
+      results: { planId: string; entryId: string | null; outcome: string; message: string }[];
+    };
+    expect(body.results).toEqual([
+      { planId: planIdByDemotedAdmin, entryId: null, outcome: "ERROR", message: "not found" },
+      { planId: unknownPlanId, entryId: null, outcome: "ERROR", message: "not found" },
+    ]);
     expect(snapshotRow()).toEqual(before);
   });
 });
@@ -303,6 +394,56 @@ describe("permission negatives sweep: forged/other user (neither owner nor admin
     const res = await server.addon.handle(req("POST", "/api/entries/recreate", token, { entryId, planId: planIdByDemotedAdmin }));
     expect(res.status).toBe(404);
     expect(snapshotRow()).toEqual(before);
+  });
+
+  it("an own plan does not reveal whether an unrelated entry id exists", async () => {
+    const ownEntry = entries.ingestDeletedEntry(server.db, {
+      id: "re-other-member",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "entry-other-member",
+      ownerId: OTHER_MEMBER_ID,
+      detectedAt: "2026-08-08T09:01:00Z",
+      source: {
+        ...SOURCE,
+        entryId: "entry-other-member",
+        ownerId: OTHER_MEMBER_ID,
+        ownerName: "User Two",
+      },
+    }).entry;
+    const ownPlan = plans.createActive(server.db, {
+      id: "plan-by-other-member",
+      recoverableEntryId: ownEntry.id,
+      createdBy: OTHER_MEMBER_ID,
+      createdAt: "2026-08-08T09:01:30Z",
+      sourceHash: "hash",
+      choices: {},
+      resolution: [],
+      plannedRequest: {
+        workspaceId: WORKSPACE_ID,
+        userId: OTHER_MEMBER_ID,
+        start: SOURCE.start,
+        end: SOURCE.end ?? "2026-08-08T11:00:00Z",
+      },
+      warnings: [],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    const token = await tokenFor({ user: OTHER_MEMBER_ID, role: "member" });
+    const existing = await server.addon.handle(req("POST", "/api/entries/recreate", token, {
+      entryId,
+      planId: ownPlan.id,
+    }));
+    const missing = await server.addon.handle(req("POST", "/api/entries/recreate", token, {
+      entryId: "missing-entry-id",
+      planId: ownPlan.id,
+    }));
+
+    expect({ status: existing.status, body: existing.body }).toEqual({
+      status: missing.status,
+      body: missing.body,
+    });
+    expect(existing.status).toBe(404);
   });
 
   it("GET /api/entries as a non-admin never returns another user's row, even asking for it by userId", async () => {

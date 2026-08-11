@@ -946,3 +946,123 @@ The add-on was then uninstalled (`installation deleted … result "deleted"`, lo
 the API key this run created was **deleted**: `RT-LIVE-SUITE-20260809` no longer appears in Manage
 API keys, and a request carrying it now returns `401`. A run that mints a credential has not left
 the workspace as it found it until that credential is gone.
+
+# Live run 15 — current SDK pair, developer installation
+
+2026-08-10, `https://developer.clockify.me`, workspace `69bda6b317a0c5babe34b4ff`, installation
+`6a791a612a539b0829b7e226`. Clockify installed the add-on from the current quick-tunnel manifest in
+Workspace settings → Add-ons. The UI reported **Addon successfully installed**, the sidebar added
+**Time Entry Recovery**, and the service recorded the verified `INSTALLED` lifecycle event.
+
+Current dependencies in the tested service and container:
+
+```text
+@apet97/clockify-addon-sdk  1.3.0
+clockify-sdk-ts-115         5.0.1
+```
+
+## Automated developer proof
+
+```text
+npm run test:dev-smoke  ->  3 files, 3 tests, 3 passed
+npm run test:live       -> 10 files, 11 tests, 11 passed, 0 skipped, 0 blocked
+```
+
+The first live-suite attempt stopped at one stale test assertion: inline reconciliation had already
+adopted the committed entry and the current API correctly returned `RECREATED`, while the test still
+expected the older intermediate `AMBIGUOUS` response. The test now requires the response outcome
+and returned entry state to agree, while still allowing real Clockify read-after-write delay. The
+complete suite then passed.
+
+LV-10(a) again proved that a create can commit while the caller receives a transport failure; the
+reconcile path adopted the one matching entry and ended in `RECREATED`. LV-10(b) proved the
+fail-before-send path: no entry was created, the row stayed `AMBIGUOUS` through a real check, and
+the explicit not-created decision returned it to `IDLE`.
+
+## Webhook and browser inspection
+
+During the successful suite, the running service recorded 11 `metric:webhook_received` lines and
+11 matching `metric:recoverable_created` lines, with no error-level line. The real Clockify iframe
+then rendered the deleted-entry list and one full detail/preflight view. The detail showed the
+deleted and planned values, differences, and the available actions. The Chrome console had zero
+warning or error entries after both views loaded.
+
+The suite removed its active Clockify probe entries. Their deletion webhooks remain as recoverable
+rows in the installed developer add-on, which is the product's expected behavior. The add-on,
+local service, and quick tunnel were deliberately left running for continued development.
+
+## Boundary
+
+This is developer-environment proof only. No Marketplace submission was made, no public privacy
+route was added, and `https://app.clockify.me` remains unverified.
+
+# Live run 16 — SDK 5.1.0 release candidate, developer installation
+
+2026-08-11, `https://developer.clockify.me`, workspace `69bda6b317a0c5babe34b4ff`, installation
+`6a7a984fd5ef43cee805c541`. Clockify installed the add-on from a fresh quick-tunnel manifest. The
+portal reported **Addon successfully installed**, and the sidebar showed **Time Entry Recovery**.
+The service recorded the verified `INSTALLED` lifecycle event.
+
+## SDK source and package proof
+
+The tested dependency was `clockify-sdk-ts-115@5.1.0`. The two lockfiles contain this published
+integrity:
+
+```text
+sha512-29noGvWST6XPXR9qA44mhStvMcg2hQgkafMajsTvMxIIvz8YNkKFGH2qVQYB3O/Ws+0EEttA14EqHDCF92rtkg==
+```
+
+The npm package has a SLSA provenance attestation. Its GitHub tag and release point to source
+commit `94fe318f473daa9eda7b3cfc038a51429c3dee14`. The published package contains the ESM and CommonJS
+helpers, declarations, `classifyWriteOutcome()`, and `PaginatedList.collect()`.
+
+## Local proof
+
+All commands used Node 22.23.1.
+
+```text
+npm run typecheck              passed
+npm run lint                   passed
+npm test                       37 files, 381 tests passed
+npm run build                  passed
+npm run test:e2e               8 files, 42 tests passed
+git diff --check               passed
+root production audit          0 vulnerabilities
+install-capture audit          0 vulnerabilities
+gitleaks detect                85 commits scanned, no leaks found
+```
+
+## Developer and live proof
+
+```text
+npm run test:dev-smoke  ->  3 files, 3 tests, 3 passed
+npm run test:live       -> 10 files, 11 tests, 11 passed, 0 skipped, 0 blocked
+```
+
+The first full-suite attempt found that the workspace was in `STOPWATCH_ONLY` mode. Six tests that
+create completed entries could not run in that mode. This was an environment condition, not an SDK
+failure. The workspace was put in manual-entry mode for the test. No code change was needed. The
+second full run passed all 11 tests.
+
+LV-10(a) proved the ambiguous-write protocol with SDK 5.1.0. The create committed after the caller
+saw a transport failure. Reconcile found and adopted the one matching entry. LV-10(b) failed before
+the send. The row stayed AMBIGUOUS through the real check, then returned to IDLE after the explicit
+not-created decision.
+
+During the successful run, the service recorded 11 `metric:webhook_received` lines and 11 matching
+`metric:recoverable_created` lines. It recorded no error-level line. The real Clockify iframe
+rendered the deleted-entry list as John Owner. The component console had zero visible messages.
+The Clockify parent page logged its own migration-status 404 and sandbox warning; neither message
+came from RestoreTime.
+
+## Cleanup and boundary
+
+The suite deleted its active Clockify probe entries. A final bounded read checked all 10 workspace
+users. It found two older active probes from previous developer runs. Those two exact entries were
+deleted. The repeated read found zero active `RT-PROBE-` entries and zero truncated reads. Deletion
+webhooks remain as recoverable rows, as the product requires. This run did not create a temporary
+credential. The original Force timer setting was restored after the run. The add-on, local service,
+and quick tunnel remain available for continued developer work.
+
+This is developer-environment proof only. Production `https://app.clockify.me` proof and the
+Marketplace release inputs remain open. No Marketplace submission was made.

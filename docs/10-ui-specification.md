@@ -28,6 +28,7 @@ Status: Ready to recreate
 - "Detected" is the receipt time (W14). The UI never says "Deleted at".
 - Empty state: "No deleted time entries. When you delete a time entry in Clockify, it appears
   here."
+- A "Show dismissed" toggle lets the viewer find and undismiss an entry that they dismissed.
 - The list is bounded server-side (50 most recently detected). Every returned row costs a preflight
   with its own Clockify lookups, so an unbounded list scales API traffic with the backlog. When rows
   were withheld the list says so — "Showing the 50 most recently detected entries. Use the filters
@@ -35,9 +36,9 @@ Status: Ready to recreate
 
 ## 2. List view (admin additions)
 
-Admin filters above the list: user, project, date range, status, free-text search. A "Show
-dismissed" toggle. Bulk mode: row checkboxes, a counter, and one **Review selected** action.
-Nothing else. No dashboards, no charts.
+Admin filters above the list: user, project, date range, status, and free-text search. Bulk mode:
+row checkboxes, a counter, and one **Review selected** action. Nothing else. No dashboards, no
+charts. The common "Show dismissed" control from §1 remains available.
 
 **User and project are filtered by name, not by id.** Nobody knows a 24-character Clockify id by
 heart, so an id box is a filter nobody can use. Both inputs are free text with a `<datalist>` of
@@ -92,6 +93,10 @@ Owner: Ana Markovic                    Owner: Ana Markovic
 A **Dismiss** action sits beside "Continue to confirm" (docs/06: IDLE/FAILED → DISMISSED). Without
 it the "Show dismissed" toggle in §2 has nothing to reveal and a list can only ever grow. The
 inverse, **Undismiss**, is on the dismissed entry's own view.
+
+If the entry is part of a recreation chain, the detail view shows **Recreation chain** with
+**Open previous deleted entry** and **Open next deleted entry** actions as applicable. The server
+returns only related entries that the viewer can read. The browser does not infer access.
 
 Then a **Differences** section that always lists the system differences:
 
@@ -161,8 +166,8 @@ Nothing was created. You can change your selections and try again.
 Unknown result (AMBIGUOUS):
 
 ```text
-We do not know whether Clockify created this entry. The request was sent, but Clockify's answer
-did not arrive.
+We do not know whether Clockify created this entry. The recreation might have reached Clockify,
+but RestoreTime did not get a clear result.
 Do not create the entry by hand yet.
 [Check now]   Last checked: 15:43:10
 ```

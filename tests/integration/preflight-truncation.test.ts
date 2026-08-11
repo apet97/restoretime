@@ -174,6 +174,7 @@ describe("IT-14 page bound reached (reconcile)", () => {
         userId: "user-1",
         plannedRequest: PLANNED,
         baseline: [],
+        expectedAttemptId: "no-attempt",
         recreatedBy: "user-1",
         now: new Date("2026-08-08T10:05:00Z"),
       });

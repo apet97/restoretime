@@ -19,6 +19,7 @@ import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import { METRIC_NAMES } from "../../src/metrics.js";
 import * as attempts from "../../src/store/attempts.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
 
 const ADDON_KEY = "restoretime-metrics";
 const WORKSPACE_ID = "ws-1";
@@ -291,8 +292,69 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
     // The inline reconcile already adopted it by the time this response was built (routes.ts
     // `confirmPlan` re-reads the entry after the inline reconcile and includes it in the body).
     const recreateAmbBody = recreateAmb.body as { result: { outcome: string }; entry?: { lifecycleState: string } };
-    expect(recreateAmbBody.result.outcome).toBe("AMBIGUOUS");
+    expect(recreateAmbBody.result.outcome).toBe("RECREATED");
     expect(recreateAmbBody.entry?.lifecycleState).toBe("RECREATED");
+
+    // The bulk route uses the same confirmation core. It must report the final state after an
+    // inline reconcile, not the earlier uncertain create response.
+    await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({ id: "entry-bulk-amb", description: "metrics-bulk-amb" }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    let bulkListCalls = 0;
+    const bulkCandidate = {
+      id: "new-entry-bulk-amb",
+      workspaceId: WORKSPACE_ID,
+      userId: OWNER_ID,
+      description: "metrics-bulk-amb",
+      billable: true,
+      tagIds: [],
+      type: "REGULAR",
+      timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      (async (input, init) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "POST" && path.endsWith("/time-entries")) throw new TypeError("simulated network failure");
+        if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          bulkListCalls += 1;
+          return jsonResponse(bulkListCalls === 1 ? [] : [bulkCandidate]);
+        }
+        if (method === "GET" && path.includes("/time-entries/new-entry-bulk-amb")) {
+          return jsonResponse(bulkCandidate);
+        }
+        return baseClockify(input, init);
+      }) as typeof fetch,
+    );
+    const preflightBulk = await preflight("entry-bulk-amb");
+    const bulkPlan = (preflightBulk.body as { plan: { id: string } }).plan;
+    const adminToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "admin",
+    });
+    const bulkRecreate = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: { planIds: [bulkPlan.id] },
+    });
+    expect(bulkRecreate.body).toEqual({
+      results: [
+        expect.objectContaining({
+          planId: bulkPlan.id,
+          outcome: "RECREATED",
+          newEntryId: "new-entry-bulk-amb",
+        }),
+      ],
+    });
 
     // --- ambiguous_not_created: seed a bounded-window-eligible AMBIGUOUS row directly. The real
     // gate compares against wall-clock `Date.now()` (not an injectable clock), so this test seeds
@@ -328,7 +390,7 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
           customFieldValues: [],
         }),
       );
-    attempts.start(server.db, { id: "att-notcreated", planId: planOk.id, recoverableEntryId: "re-notcreated", startedAt: "2026-08-08T09:01:00.000Z", baseline: [] });
+    insertAttemptFixture(server.db, { id: "att-notcreated", planId: planOk.id, recoverableEntryId: "re-notcreated", startedAt: "2026-08-08T09:01:00.000Z", baseline: [] });
     attempts.updateReconcile(server.db, "att-notcreated", {
       checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
       checks: 3,

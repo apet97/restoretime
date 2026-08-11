@@ -24,6 +24,7 @@ import {
   withClockifyVerifiedWebhookRequest,
   withClockifyVerifiedComponentRequest,
   createClockifyHtmlResponse,
+  normalizeClockifyWebhookPath,
 } from "@apet97/clockify-addon-sdk/clockify";
 import { createNodeHttpAddonServer } from "@apet97/clockify-addon-sdk/adapters/node";
 import { installations, VAR_DIR } from "./store.mjs";
@@ -53,19 +54,6 @@ const ADDON_ICON_SVG =
   '<path d="M12 5a7 7 0 1 1-6.32 4" fill="none" stroke="#3fce8b" stroke-width="2" stroke-linecap="round"/>' +
   '<path d="M5 4v5h5" fill="none" stroke="#3fce8b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
   '<path d="M12 8.5V12l2.5 1.5" fill="none" stroke="#f7f9fc" stroke-width="2" stroke-linecap="round"/></svg>';
-
-// Live finding (2026-08-08, developer environment): the INSTALLED payload can carry the webhook
-// path as "//webhooks/time-entry-deleted" (Clockify joins baseUrl + "/" + path). Normalize both
-// sides before comparing — collapse repeated slashes and reduce absolute URLs to their pathname.
-export function normalizeWebhookPath(path) {
-  let pathname = String(path ?? "");
-  try {
-    pathname = new URL(pathname).pathname;
-  } catch {
-    // already a relative path
-  }
-  return `/${pathname.replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
-}
 
 // --- Encrypted JSON-file installation store (ClockifyInstallationStore contract) -------------
 // Implementation shared with the probe script: store.mjs (exports `installations`, `VAR_DIR`).
@@ -148,7 +136,7 @@ addon.registerWebhook(
       async getExpectedWebhookAuthToken({ workspaceId, addonId }) {
         const context = await installations.load(workspaceId, addonId);
         return context?.webhooks?.find(
-          (w) => normalizeWebhookPath(w.path) === WEBHOOK_PATH,
+          (w) => normalizeClockifyWebhookPath(w.path) === WEBHOOK_PATH,
         )?.authToken;
       },
     },

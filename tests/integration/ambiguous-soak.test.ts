@@ -21,6 +21,7 @@ import type { AppConfig } from "../../src/config.js";
 import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import * as attempts from "../../src/store/attempts.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
 
@@ -110,6 +111,85 @@ async function boot(): Promise<{ server: AppServer; keys: ClockifyTestKeys }> {
   return { server, keys };
 }
 
+async function install(server: AppServer, keys: ClockifyTestKeys): Promise<string> {
+  const installToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+    workspaceId: WORKSPACE_ID,
+    addonId: ADDON_ID,
+  });
+  await server.addon.handle(
+    createTestLifecycleRequest(
+      installToken,
+      buildInstalledPayload({
+        workspaceId: WORKSPACE_ID,
+        addonId: ADDON_ID,
+        apiUrl: "https://developer.clockify.me/api",
+      }),
+      { path: "/lifecycle/installed" },
+    ),
+  );
+  return signTestToken(keys.privateKey, ADDON_KEY, {
+    workspaceId: WORKSPACE_ID,
+    addonId: ADDON_ID,
+    user: OWNER_ID,
+    workspaceRole: "member",
+  });
+}
+
+function seedEligibleAmbiguous(
+  server: AppServer,
+  input: { entryId: string; attemptId: string; planId: string; description: string },
+) {
+  const entry = entries.ingestDeletedEntry(server.db, {
+    id: input.entryId,
+    workspaceId: WORKSPACE_ID,
+    sourceEntryId: `source-${input.entryId}`,
+    ownerId: OWNER_ID,
+    detectedAt: "2026-08-08T09:00:00Z",
+    source: sourceFor(`source-${input.entryId}`, input.description),
+  }).entry;
+  const planned = plannedFor(input.description);
+  plans.createActive(server.db, {
+    id: input.planId,
+    recoverableEntryId: entry.id,
+    createdBy: OWNER_ID,
+    createdAt: "2026-08-08T09:00:30Z",
+    sourceHash: "hash",
+    choices: {},
+    resolution: [],
+    plannedRequest: planned,
+    warnings: [],
+    blockers: [],
+    actionRequired: [],
+    fidelity: "FULL",
+  });
+  entries.claim(server.db, {
+    id: entry.id,
+    workspaceId: WORKSPACE_ID,
+    claimToken: input.attemptId,
+    now: new Date("2026-08-08T09:01:00Z"),
+  });
+  insertAttemptFixture(server.db, {
+    id: input.attemptId,
+    planId: input.planId,
+    recoverableEntryId: entry.id,
+    startedAt: "2026-08-08T09:01:01Z",
+    baseline: [],
+  });
+  entries.setAmbiguous(server.db, {
+    id: entry.id,
+    workspaceId: WORKSPACE_ID,
+    claimToken: input.attemptId,
+  });
+  attempts.updateReconcile(server.db, input.attemptId, {
+    checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    checks: 3,
+    matchCount: 0,
+    candidateIds: [],
+    truncated: false,
+  });
+  return { entry, planned };
+}
+
 /** A create that "times out" client-side after the server already committed it — the exact
  * commit-lost mechanism `mutation.test.ts` IT-04 uses: a slow create response racing a very short
  * client timeout. */
@@ -137,7 +217,7 @@ function reconcileClientReturning(items: ReturnType<typeof candidateEntry>[]) {
 }
 
 describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () => {
-  it("commit-lost adopts; nothing-committed marks not created; a double-candidate stays AMBIGUOUS; a double-adoption attempt across two rows -> exactly one 409", async () => {
+  it("commit-lost adopts; nothing-committed marks not created; a double-candidate stays AMBIGUOUS; one shared entry is adopted only once", async () => {
     const { server, keys } = await boot();
     const db = server.db;
     // Installed so `loadClient` (used by the HTTP-level phase 4) has an installation to load.
@@ -174,10 +254,15 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     const reconcileA = await runReconcile({
       db, client: reconcileClientReturning([candidateEntry("clockify-a", "soak-A-commit-lost")]),
       entryId: entryA.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedA,
-      baseline: [], recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-a", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileA).toEqual({ kind: "adopted", newEntryId: "clockify-a" });
     expect(entries.getById(db, WORKSPACE_ID, entryA.id)?.lifecycleState).toBe("RECREATED");
+    expect(attempts.getById(db, "tok-a")?.diffs).toContainEqual({
+      field: "_verification",
+      planned: null,
+      actual: "verification read unavailable",
+    });
 
     // --- Phase 2: nothing-committed -> bounded reconcile -> user marks not created -> IDLE. ---
     const entryB = entries.ingestDeletedEntry(db, {
@@ -192,12 +277,12 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     plans.createActive(db, { id: "plan-b", recoverableEntryId: entryB.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedB, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
     entries.claim(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b" });
-    attempts.start(db, { id: "tok-b", planId: "plan-b", recoverableEntryId: entryB.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+    insertAttemptFixture(db, { id: "tok-b", planId: "plan-b", recoverableEntryId: entryB.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
 
     const reconcileB = await runReconcile({
       db, client: reconcileClientReturning([]), // nothing in Clockify matches — never committed
       entryId: entryB.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedB,
-      baseline: [], recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-b", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileB).toEqual({ kind: "none" });
     expect(entries.getById(db, WORKSPACE_ID, entryB.id)?.lifecycleState).toBe("AMBIGUOUS");
@@ -217,7 +302,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     plans.createActive(db, { id: "plan-c", recoverableEntryId: entryC.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedC, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
     entries.claim(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c" });
-    attempts.start(db, { id: "tok-c", planId: "plan-c", recoverableEntryId: entryC.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+    insertAttemptFixture(db, { id: "tok-c", planId: "plan-c", recoverableEntryId: entryC.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
 
     const reconcileC = await runReconcile({
       db,
@@ -226,7 +311,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
         candidateEntry("clockify-c2", "soak-C-double-candidate"),
       ]),
       entryId: entryC.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedC,
-      baseline: [], recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-c", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileC).toEqual({ kind: "many", candidateIds: ["clockify-c1", "clockify-c2"] });
     expect(entries.getById(db, WORKSPACE_ID, entryC.id)?.lifecycleState).toBe("AMBIGUOUS");
@@ -244,10 +329,13 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       plans.createActive(db, { id: planId, recoverableEntryId: entry.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: sharedPlanned, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
       entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token, now: new Date("2026-08-08T09:01:00Z") });
       entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token });
-      attempts.start(db, { id: token, planId, recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+      insertAttemptFixture(db, { id: token, planId, recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
     }
 
     const sharedClockifyId = "clockify-shared-de";
+    const missingProbeId = "clockify-missing-probe";
+    const malformedProbeId = "clockify-malformed-probe";
+    const otherUserProbeId = "clockify-other-user-probe";
     vi.stubGlobal(
       "fetch",
       (async (input, init) => {
@@ -256,10 +344,40 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
         if (method === "GET" && path.endsWith(`/time-entries/${sharedClockifyId}`)) {
           return jsonResponse(candidateEntry(sharedClockifyId, "soak-DE-double-adopt"));
         }
+        if (method === "GET" && path.endsWith(`/time-entries/${otherUserProbeId}`)) {
+          return jsonResponse(candidateEntry(otherUserProbeId, "soak-DE-double-adopt", { userId: "other-user" }));
+        }
+        if (method === "GET" && path.endsWith(`/time-entries/${missingProbeId}`)) {
+          return jsonResponse({ message: "not found" }, 404);
+        }
+        if (method === "GET" && path.endsWith(`/time-entries/${malformedProbeId}`)) {
+          return jsonResponse({ message: "invalid id" }, 400);
+        }
         return jsonResponse({ message: "unstubbed" }, 404);
       }) as typeof fetch,
     );
     const viewerToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID, user: OWNER_ID, workspaceRole: "member" });
+
+    const probe = (newEntryId: string) => server.addon.handle({
+      method: "POST",
+      path: "/api/entries/resolve-ambiguous",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${viewerToken}`, "content-type": "application/json" },
+      body: { entryId: entryD.id, newEntryId },
+    });
+    const [missingProbe, malformedProbe, otherUserProbe] = await Promise.all([
+      probe(missingProbeId),
+      probe(malformedProbeId),
+      probe(otherUserProbeId),
+    ]);
+    expect({ status: missingProbe.status, body: missingProbe.body }).toEqual({
+      status: otherUserProbe.status,
+      body: otherUserProbe.body,
+    });
+    expect({ status: malformedProbe.status, body: malformedProbe.body }).toEqual({
+      status: missingProbe.status,
+      body: missingProbe.body,
+    });
 
     const firstAdopt = await server.addon.handle({
       method: "POST",
@@ -278,8 +396,8 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       headers: { authorization: `Bearer ${viewerToken}`, "content-type": "application/json" },
       body: { entryId: entryE.id, newEntryId: sharedClockifyId },
     });
-    expect(secondAdopt.status).toBe(409);
-    expect(secondAdopt.body).toEqual({ error: "that Clockify entry is already linked to another recovered entry" });
+    expect(secondAdopt.status).toBe(400);
+    expect(secondAdopt.body).toEqual({ error: "This entry cannot be used for this recreation." });
 
     // The row that lost the race is untouched — still AMBIGUOUS, no new_entry_id, no attempt
     // silently marked SUCCESS for an id it does not actually own.
@@ -291,5 +409,390 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       db.prepare("SELECT COUNT(*) AS n FROM recoverable_entries WHERE workspace_id = ? AND new_entry_id = ?").get(WORKSPACE_ID, sharedClockifyId) as { n: number }
     ).n;
     expect(linkedCount).toBe(1);
+  });
+
+  it("manually adopts the known billable override and does not allow the consumed plan to retry", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const description = "billable-override-manual-adoption";
+    const source = { ...sourceFor("source-billable-override", description), billable: false };
+    const planned = { ...plannedFor(description), billable: false };
+    const entry = entries.ingestDeletedEntry(server.db, {
+      id: "re-billable-override",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: source.entryId,
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:00:00Z",
+      source,
+    }).entry;
+    plans.createActive(server.db, {
+      id: "plan-billable-override",
+      recoverableEntryId: entry.id,
+      createdBy: OWNER_ID,
+      createdAt: "2026-08-08T09:00:30Z",
+      sourceHash: "hash",
+      choices: {},
+      resolution: [],
+      plannedRequest: planned,
+      warnings: [{
+        ruleId: "P-BILL",
+        code: "BILLABLE_MAY_CHANGE",
+        message: "Clockify may change the billable status of this entry based on workspace settings.",
+      }],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    entries.claim(server.db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-billable-override",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    plans.consumeActive(server.db, "plan-billable-override");
+    insertAttemptFixture(server.db, {
+      id: "attempt-billable-override",
+      planId: "plan-billable-override",
+      recoverableEntryId: entry.id,
+      startedAt: "2026-08-08T09:01:01Z",
+      baseline: [],
+    });
+    entries.setAmbiguous(server.db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-billable-override",
+    });
+
+    const candidateId = "clockify-billable-override";
+    vi.stubGlobal("fetch", (async (input, init) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith(`/time-entries/${candidateId}`)) {
+        return jsonResponse(candidateEntry(candidateId, description, { billable: true }));
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    }) as typeof fetch);
+
+    const adopted = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/resolve-ambiguous",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id, newEntryId: candidateId },
+    });
+    expect(adopted.status).toBe(200);
+    expect(entries.getById(server.db, WORKSPACE_ID, entry.id)).toMatchObject({
+      lifecycleState: "RECREATED",
+      newEntryId: candidateId,
+    });
+    expect(attempts.getById(server.db, "attempt-billable-override")).toMatchObject({
+      outcome: "SUCCESS",
+      diffs: [{ field: "billable", planned: false, actual: true }],
+    });
+
+    let replayReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      replayReads += 1;
+      return jsonResponse({ message: "must not be called" }, 500);
+    }) as typeof fetch);
+    const replay = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id, planId: "plan-billable-override" },
+    });
+    expect(replay.status).toBe(409);
+    expect(replayReads).toBe(0);
+  });
+
+  it("returns an eligible mark-not-created action without refreshing its reconcile window", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-mark-eligible",
+      attemptId: "attempt-mark-eligible",
+      planId: "plan-mark-eligible",
+      description: "mark-not-created-eligible",
+    });
+    let clockifyReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyReads += 1;
+      return jsonResponse([]);
+    }) as typeof fetch);
+
+    const detail = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entry.id }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(detail.status).toBe(200);
+    expect((detail.body as { canMarkNotCreated: boolean }).canMarkNotCreated).toBe(true);
+    expect(clockifyReads).toBe(0);
+
+    const marked = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    expect(marked.status).toBe(200);
+    expect((marked.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("IDLE");
+    expect(clockifyReads).toBe(0);
+  });
+
+  it("blocks mark-not-created while an automatic reconcile read is in flight", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-auto-fence",
+      attemptId: "attempt-auto-fence",
+      planId: "plan-auto-fence",
+      description: "automatic-inflight-fence",
+    });
+
+    let releaseRead!: () => void;
+    const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let signalRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+    vi.stubGlobal("fetch", (async (input) => {
+      const path = pathOf(input);
+      if (path.endsWith("/time-entries") && path.includes("/user/")) {
+        signalRead();
+        await readReleased;
+        return jsonResponse([]);
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    }) as typeof fetch);
+
+    const reconcileRequest = server.addon.handle({
+      method: "POST",
+      path: "/api/entries/reconcile",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    await readStarted;
+    const whilePending = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    releaseRead();
+    const reconciled = await reconcileRequest;
+
+    expect(whilePending.status).toBe(409);
+    expect(reconciled.status).toBe(200);
+    expect((reconciled.body as { result: { kind: string } }).result.kind).toBe("none");
+    expect(entries.getById(server.db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+
+    // A completed no-match check can still become eligible after the documented window.
+    const summary = attempts.getById(server.db, "attempt-auto-fence")?.reconcile;
+    expect(summary?.checks).toBe(4);
+    attempts.updateReconcile(server.db, "attempt-auto-fence", {
+      ...summary!,
+      checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    });
+    const afterWindow = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    expect(afterWindow.status).toBe(200);
+    expect((afterWindow.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("IDLE");
+  });
+
+  it("blocks mark-not-created while a manual candidate read is in flight", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const description = "manual-inflight-fence";
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-manual-fence",
+      attemptId: "attempt-manual-fence",
+      planId: "plan-manual-fence",
+      description,
+    });
+    const candidateId = "candidate-manual-fence";
+
+    let releaseRead!: () => void;
+    const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let signalRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+    let candidateReads = 0;
+    vi.stubGlobal("fetch", (async (input) => {
+      const path = pathOf(input);
+      if (path.endsWith(`/time-entries/${candidateId}`)) {
+        candidateReads += 1;
+        if (candidateReads === 1) {
+          signalRead();
+          await readReleased;
+        }
+        return jsonResponse(candidateEntry(candidateId, description));
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    }) as typeof fetch);
+
+    const resolveRequest = server.addon.handle({
+      method: "POST",
+      path: "/api/entries/resolve-ambiguous",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id, newEntryId: candidateId },
+    });
+    await readStarted;
+    const whilePending = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    releaseRead();
+    const resolved = await resolveRequest;
+
+    expect(whilePending.status).toBe(409);
+    expect(resolved.status).toBe(200);
+    expect(candidateReads).toBe(1);
+    expect(entries.getById(server.db, WORKSPACE_ID, entry.id)).toMatchObject({
+      lifecycleState: "RECREATED",
+      newEntryId: candidateId,
+    });
+  });
+
+  it("manual adoption refuses a result when a replacement attempt starts during the Clockify read", async () => {
+    const { server, keys } = await boot();
+    const db = server.db;
+    const installToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await server.addon.handle(
+      createTestLifecycleRequest(
+        installToken,
+        buildInstalledPayload({
+          workspaceId: WORKSPACE_ID,
+          addonId: ADDON_ID,
+          apiUrl: "https://developer.clockify.me/api",
+        }),
+        { path: "/lifecycle/installed" },
+      ),
+    );
+
+    const description = "stale-manual-adoption";
+    const entry = entries.ingestDeletedEntry(db, {
+      id: "re-stale",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "src-stale",
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: sourceFor("src-stale", description),
+    }).entry;
+    const planned = plannedFor(description);
+    plans.createActive(db, {
+      id: "plan-stale-a",
+      recoverableEntryId: entry.id,
+      createdBy: OWNER_ID,
+      createdAt: "2026-08-08T09:00:30Z",
+      sourceHash: "h",
+      choices: {},
+      resolution: [],
+      plannedRequest: planned,
+      warnings: [],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-stale-a",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    insertAttemptFixture(db, {
+      id: "attempt-stale-a",
+      planId: "plan-stale-a",
+      recoverableEntryId: entry.id,
+      startedAt: "2026-08-08T09:01:01Z",
+      baseline: [],
+    });
+    entries.setAmbiguous(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-stale-a",
+    });
+
+    const candidateId = "clockify-stale-candidate";
+    vi.stubGlobal("fetch", (async (input, init) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith(`/time-entries/${candidateId}`)) {
+        entries.markNotCreated(db, WORKSPACE_ID, entry.id);
+        plans.createActive(db, {
+          id: "plan-stale-b",
+          recoverableEntryId: entry.id,
+          createdBy: OWNER_ID,
+          createdAt: "2026-08-08T09:02:00Z",
+          sourceHash: "h",
+          choices: {},
+          resolution: [],
+          plannedRequest: planned,
+          warnings: [],
+          blockers: [],
+          actionRequired: [],
+          fidelity: "FULL",
+        });
+        entries.claim(db, {
+          id: entry.id,
+          workspaceId: WORKSPACE_ID,
+          claimToken: "attempt-stale-b",
+          now: new Date("2026-08-08T09:02:01Z"),
+        });
+        insertAttemptFixture(db, {
+          id: "attempt-stale-b",
+          planId: "plan-stale-b",
+          recoverableEntryId: entry.id,
+          startedAt: "2026-08-08T09:02:02Z",
+          baseline: [],
+        });
+        entries.setAmbiguous(db, {
+          id: entry.id,
+          workspaceId: WORKSPACE_ID,
+          claimToken: "attempt-stale-b",
+        });
+        return jsonResponse(candidateEntry(candidateId, description));
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    }) as typeof fetch);
+    const viewerToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "member",
+    });
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/resolve-ambiguous",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${viewerToken}`, "content-type": "application/json" },
+      body: { entryId: entry.id, newEntryId: candidateId },
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: "the entry or recreation attempt changed; check the entry again",
+    });
+    expect(entries.getById(db, WORKSPACE_ID, entry.id)).toMatchObject({
+      lifecycleState: "AMBIGUOUS",
+      newEntryId: null,
+    });
+    expect(attempts.getById(db, "attempt-stale-a")?.outcome).toBeNull();
+    expect(attempts.getById(db, "attempt-stale-b")?.outcome).toBeNull();
   });
 });

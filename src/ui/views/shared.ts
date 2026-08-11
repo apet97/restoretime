@@ -5,7 +5,7 @@
 import { ApiError, SessionExpiredError } from "../api.js";
 import { el, mount } from "../dom.js";
 import type { Ctx } from "../state.js";
-import type { PlanBlocker, PlanWarning, RecreationPlan } from "../types.js";
+import type { DetailResponse, PlanBlocker, PlanWarning, RecreationPlan } from "../types.js";
 
 export function renderLoading(root: HTMLElement, label = "Loading…"): void {
   mount(root, el("p", { role: "status" }, label));
@@ -59,15 +59,13 @@ export async function runAction<T>(ctx: Ctx, action: () => Promise<T>, onSuccess
   }
 }
 
-/** A failed API call outside the initial load (a button action). docs/10 §8: every failure view
- * answers what happened, whether anything was created, and what to do next — a bare network/read
- * failure answers the first and third; the second is "nothing, this call never reached a mutation"
- * for every case this helper is used on (reads, and preflight, which never mutates Clockify). */
-export function renderApiError(root: HTMLElement, err: unknown, retry: () => void): void {
+/** A failed API call outside the initial load (a button action). The caller supplies the safe next
+ * action; retry remains the default label for read and preflight failures. */
+export function renderApiError(root: HTMLElement, err: unknown, action: () => void, actionLabel = "Try again"): void {
   const message = err instanceof ApiError ? apiErrorMessage(err) : "RestoreTime could not complete that request.";
-  const retryButton = el("button", { type: "button", class: "rt-primary" }, "Try again");
-  retryButton.addEventListener("click", retry);
-  mount(root, el("section", {}, el("p", {}, message), retryButton));
+  const actionButton = el("button", { type: "button", class: "rt-primary" }, actionLabel);
+  actionButton.addEventListener("click", action);
+  mount(root, el("section", {}, el("p", {}, message), actionButton));
 }
 
 function apiErrorMessage(err: ApiError): string {
@@ -124,4 +122,34 @@ export function renderWarningMessages(warnings: readonly PlanWarning[]): HTMLEle
   const shown = warnings.filter((w) => w.ruleId !== "P-SYS");
   if (shown.length === 0) return null;
   return el("ul", {}, ...shown.map((w) => el("li", {}, w.message)));
+}
+
+/** The server removes lineage that the viewer cannot read. This helper only renders the related
+ * deleted entries that remain and gives each one the same detail navigation used by the list. */
+export function renderLineage(
+  ctx: Ctx,
+  lineage: DetailResponse["lineage"] | undefined,
+): HTMLElement | null {
+  if (!lineage?.parent && !lineage?.child) return null;
+
+  const buttons: HTMLButtonElement[] = [];
+  const { parent, child } = lineage;
+  if (parent) {
+    const previous = el("button", { type: "button" }, "Open previous deleted entry");
+    previous.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: parent.id }));
+    buttons.push(previous);
+  }
+  if (child) {
+    const next = el("button", { type: "button" }, "Open next deleted entry");
+    next.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: child.id }));
+    buttons.push(next);
+  }
+
+  return el(
+    "section",
+    { "aria-label": "Recreation chain" },
+    el("h3", {}, "Recreation chain"),
+    el("p", {}, "This deleted entry is part of a recreation chain."),
+    el("div", {}, ...buttons),
+  );
 }

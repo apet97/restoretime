@@ -1,16 +1,17 @@
-// IT-03 extension (docs/13): the same atomic-claim invariant `tests/integration/claim.test.ts`
-// proves with concurrent promises in one process, proved again under REAL process-level
-// parallelism — N `node:worker_threads` workers, each with its own SQLite connection, racing to
-// claim the same row on one shared database file. Exactly one SUCCESS path.
+// IT-03 extension: N worker connections race the initial IDLE-row compare-and-set. Expired claims
+// need more than that SQL statement, so a separate worker-backed test below calls the complete
+// production recovery decision while another SQLite connection observes the same row.
 import { describe, expect, it } from "vitest";
 import { Worker } from "node:worker_threads";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { openDatabase } from "../../src/store/db.js";
 import * as entries from "../../src/store/entries.js";
+import * as attempts from "../../src/store/attempts.js";
+import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./workers/claim-worker.mjs", import.meta.url));
@@ -44,17 +45,27 @@ interface WorkerResult {
   readonly claimToken: string;
   readonly wonToken?: string | null;
   readonly error?: string;
+  readonly phase?: "before" | "after";
+  readonly lifecycleState?: string;
+  readonly attemptOutcome?: string | null;
 }
 
 function runWorker(dbPath: string, entryId: string, claimToken: string, nowIso: string): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_PATH, {
-      workerData: { dbPath, entryId, workspaceId: WORKSPACE_ID, claimToken, nowIso },
+      workerData: { mode: "claim-idle", dbPath, entryId, workspaceId: WORKSPACE_ID, claimToken, nowIso },
     });
     worker.once("message", (msg: WorkerResult) => {
       resolve(msg);
       void worker.terminate();
     });
+    worker.once("error", reject);
+  });
+}
+
+function nextWorkerMessage(worker: Worker): Promise<WorkerResult> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", resolve);
     worker.once("error", reject);
   });
 }
@@ -107,37 +118,103 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
       rmSync(dir, { recursive: true, force: true });
     }
   });
-});
 
-// The worker must run the SAME predicate the app runs, or this drill re-proves a copy and would
-// stay green after `claim()` lost its lease clause — which an adversarial review demonstrated by
-// deleting the predicate and watching this file pass. The worker cannot import the TypeScript
-// module (a `node:worker_threads` entry skips vitest's transform, and the `.js` specifier does not
-// exist before a build), so the next best guarantee is to fail the moment the two drift.
-describe("the worker's claim SQL is the app's claim SQL", () => {
-  function normalizedSql(source: string, marker: string): string {
-    const start = source.indexOf(marker);
-    expect(start).toBeGreaterThan(-1);
-    const open = source.indexOf("`UPDATE recoverable_entries", start);
-    expect(open).toBeGreaterThan(-1);
-    const close = source.indexOf("`", open + 1);
-    expect(close).toBeGreaterThan(-1);
-    return source
-      .slice(open + 1, close)
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+  it("the complete production decision recovers an expired started attempt with a second connection open", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "restoretime-concurrency-started-"));
+    const dbPath = join(dir, "restoretime.sqlite");
+    try {
+      const db = openDatabase(dbPath);
+      const { entry } = entries.ingestDeletedEntry(db, {
+        id: "re-started",
+        workspaceId: WORKSPACE_ID,
+        sourceEntryId: "entry-started",
+        ownerId: "user-1",
+        detectedAt: "2026-08-08T09:00:00Z",
+        source: { ...SOURCE, entryId: "entry-started" },
+      });
+      plans.createActive(db, {
+        id: "plan-started",
+        recoverableEntryId: entry.id,
+        createdBy: "user-1",
+        createdAt: "2026-08-08T09:00:00Z",
+        sourceHash: "hash",
+        choices: {},
+        resolution: [],
+        plannedRequest: {
+          workspaceId: WORKSPACE_ID,
+          userId: "user-1",
+          start: "2026-08-08T10:00:00Z",
+          end: "2026-08-08T11:00:00Z",
+        },
+        warnings: [],
+        blockers: [],
+        actionRequired: [],
+        fidelity: "FULL",
+      });
+      entries.claim(db, {
+        id: entry.id,
+        workspaceId: WORKSPACE_ID,
+        claimToken: "started-attempt",
+        now: new Date("2026-08-08T09:00:00Z"),
+      });
+      expect(attempts.startForClaim(db, {
+        id: "started-attempt",
+        planId: "plan-started",
+        recoverableEntryId: entry.id,
+        startedAt: "2026-08-08T09:00:01Z",
+        baseline: [],
+      })).toBe(true);
+      db.close();
 
-  it("is byte-identical after whitespace normalization", () => {
-    const appSource = readFileSync(fileURLToPath(new URL("../../src/store/entries.ts", import.meta.url)), "utf8");
-    const workerSource = readFileSync(fileURLToPath(new URL("./workers/claim-worker.mjs", import.meta.url)), "utf8");
+      const observer = new Worker(WORKER_PATH, {
+        workerData: {
+          mode: "observe-started-attempt",
+          dbPath,
+          entryId: entry.id,
+          workspaceId: WORKSPACE_ID,
+          attemptId: "started-attempt",
+        },
+      });
+      try {
+        const before = await nextWorkerMessage(observer);
+        expect(before).toMatchObject({
+          ok: true,
+          phase: "before",
+          lifecycleState: "RECREATING",
+          wonToken: "started-attempt",
+          attemptOutcome: null,
+        });
 
-    const appSql = normalizedSql(appSource, "export function claim(");
-    const workerSql = normalizedSql(workerSource, "function run(");
+        const recoveryDb = openDatabase(dbPath);
+        const retry = entries.claim(recoveryDb, {
+          id: entry.id,
+          workspaceId: WORKSPACE_ID,
+          claimToken: "forbidden-reclaim",
+          now: new Date("2026-08-08T09:01:01Z"),
+        });
+        expect(retry).toBeUndefined();
+        expect(entries.getById(recoveryDb, WORKSPACE_ID, entry.id)).toMatchObject({
+          lifecycleState: "AMBIGUOUS",
+          claimToken: null,
+        });
+        expect(attempts.getById(recoveryDb, "started-attempt")?.outcome).toBe("AMBIGUOUS");
+        recoveryDb.close();
 
-    expect(workerSql).toBe(appSql);
-    // And it is still the predicate docs/07 §6 specifies, not two copies of the same mistake.
-    expect(appSql).toContain("lifecycle_state IN ('IDLE','FAILED')");
-    expect(appSql).toContain("lifecycle_state='RECREATING' AND claim_expires_at < :now");
+        const afterMessage = nextWorkerMessage(observer);
+        observer.postMessage("read-after");
+        const after = await afterMessage;
+        expect(after).toMatchObject({
+          ok: true,
+          phase: "after",
+          lifecycleState: "AMBIGUOUS",
+          wonToken: null,
+          attemptOutcome: "AMBIGUOUS",
+        });
+      } finally {
+        await observer.terminate();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

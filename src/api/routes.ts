@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { ClockifyApiError } from "clockify-sdk-ts-115";
 import type { RequestHandler } from "@apet97/clockify-addon-sdk";
 import {
   createClockifyJsonResponse,
@@ -12,7 +13,7 @@ import {
 } from "@apet97/clockify-addon-sdk/clockify";
 import { requireViewer, type Viewer } from "../platform/verify.js";
 import { checkEntryAccess } from "./access.js";
-import { canAct, isAdmin } from "../domain/policy.js";
+import { canAct, canRead, isAdmin } from "../domain/policy.js";
 import { runPreflight } from "../domain/preflight.js";
 import { classifyFidelity } from "../domain/fidelity.js";
 import { isPlanUsable, outcomesDiffer, sourceHash as computeSourceHash } from "../domain/plan.js";
@@ -21,7 +22,7 @@ import * as entries from "../store/entries.js";
 import * as plans from "../store/plans.js";
 import * as attempts from "../store/attempts.js";
 import { buildClockifyClient } from "../clockify/client.js";
-import { fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, createProjectTaskCache, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
+import { fetchWorkspaceState, fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, createProjectTaskCache, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
 import {
   attemptRecreation,
   runReconcile,
@@ -29,7 +30,8 @@ import {
   fingerprintMatches,
   diffPlannedVsActual,
   BaselineTruncatedError,
-  VERIFICATION_READ_UNAVAILABLE,
+  PreWriteBaselineError,
+  PreWriteClaimChangedError,
 } from "../clockify/recreate.js";
 import { isAddonTokenInvalid } from "../clockify/errors.js";
 import { getInstallationStatus, isInstallationBroken, markInstallationBroken } from "../platform/installations.js";
@@ -47,13 +49,19 @@ const MARK_NOT_CREATED_WINDOW_MS = 10 * 60 * 1000;
 const NO_CLIENT_MESSAGE =
   "RestoreTime is not connected to this workspace's Clockify account. Nothing was created. Reinstall the addon from the Clockify Marketplace, then try again.";
 const TRANSPORT_FAILURE_MESSAGE = "Clockify could not be reached. Nothing was created. Try again in a moment.";
+const BASELINE_FAILURE_MESSAGE =
+  "RestoreTime could not verify the current Clockify entries. Nothing was created. Open the entry again, then try again.";
+const AMBIGUOUS_CHECK_FAILURE_MESSAGE =
+  "RestoreTime could not check Clockify. The earlier recreation result is still unknown. This check did not create an entry. Do not start another recreation or create the entry by hand. Wait a moment, then check again.";
+const AMBIGUOUS_NO_CLIENT_MESSAGE =
+  "RestoreTime cannot check Clockify because its connection was rejected. The earlier recreation result is still unknown. This check did not create an entry. Reinstall the addon, then check again. Do not create the entry by hand.";
 /** Distinct from `TRANSPORT_FAILURE_MESSAGE` on purpose: this is `confirmPlan`'s "attempt-error"
  * outcome (docs/07 §8, ADR-007) — a thrown error escaped the create attempt itself, so unlike a
  * read failure, whether Clockify actually created the entry is unknown. Telling the user "nothing
  * was created, try again" here would be a guess, and a wrong one could read as an invitation to
  * blindly retry a mutation that may already have gone through — exactly what ADR-007 forbids. */
 const ATTEMPT_UNKNOWN_MESSAGE =
-  "RestoreTime sent this recreation to Clockify but did not get a clear answer. It is not yet known whether the entry was created. Do not create it by hand — wait a moment, then open this entry again to check its status.";
+  "The recreation might have reached Clockify, but RestoreTime did not get a clear result. It is not known whether the entry was created. Do not create it by hand. Wait a moment, then open this entry again to check its status.";
 
 interface HandlerRegistrar {
   registerHandler(path: string, method: string, handler: RequestHandler): void;
@@ -78,6 +86,82 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const PREFLIGHT_CHOICE_KEYS = new Set([
+  "projectId",
+  "taskId",
+  "dropTagIds",
+  "addTagIds",
+  "description",
+  "runningMode",
+  "completedEnd",
+  "customFieldInputs",
+  "dropCustomFieldIds",
+]);
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isPreflightStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function isCustomFieldValue(value: unknown): boolean {
+  return (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (Array.isArray(value) && value.every((item) => typeof item === "string"))
+  );
+}
+
+function parsePreflightChoices(value: unknown): PreflightChoices | undefined {
+  if (value === undefined) return {};
+  if (!isPlainObject(value) || Object.keys(value).some((key) => !PREFLIGHT_CHOICE_KEYS.has(key))) {
+    return undefined;
+  }
+
+  for (const key of ["projectId", "taskId"] as const) {
+    const choice = value[key];
+    if (choice !== undefined && choice !== null && !isNonEmptyString(choice)) return undefined;
+  }
+  for (const key of ["dropTagIds", "addTagIds", "dropCustomFieldIds"] as const) {
+    if (value[key] !== undefined && !isPreflightStringArray(value[key])) return undefined;
+  }
+  if (value.description !== undefined && typeof value.description !== "string") return undefined;
+  if (value.runningMode !== undefined && value.runningMode !== "running" && value.runningMode !== "completed") {
+    return undefined;
+  }
+  if (value.completedEnd !== undefined && !isNonEmptyString(value.completedEnd)) return undefined;
+  if (value.runningMode === "running" && value.completedEnd !== undefined) return undefined;
+  if (value.completedEnd !== undefined && value.runningMode !== "completed") return undefined;
+
+  const customFieldInputs = value.customFieldInputs;
+  if (customFieldInputs !== undefined) {
+    if (!Array.isArray(customFieldInputs)) return undefined;
+    const ids = new Set<string>();
+    for (const input of customFieldInputs) {
+      if (
+        !isPlainObject(input) ||
+        Object.keys(input).some((key) => key !== "customFieldId" && key !== "value") ||
+        !isNonEmptyString(input.customFieldId) ||
+        !Object.hasOwn(input, "value") ||
+        !isCustomFieldValue(input.value) ||
+        ids.has(input.customFieldId)
+      ) {
+        return undefined;
+      }
+      ids.add(input.customFieldId);
+    }
+    const droppedIds = new Set(isPreflightStringArray(value.dropCustomFieldIds) ? value.dropCustomFieldIds : []);
+    if ([...ids].some((id) => droppedIds.has(id))) return undefined;
+  }
+
+  // Every property and nested value has been validated above. Do not normalize those values;
+  // persisted plans must revalidate the same choices that the component sent.
+  return value as PreflightChoices;
+}
+
 async function loadClient(deps: ApiRouteDeps, viewer: Viewer) {
   const installation = await deps.installations.load(viewer.workspaceId, viewer.addonId);
   if (!installation) return undefined;
@@ -87,8 +171,18 @@ async function loadClient(deps: ApiRouteDeps, viewer: Viewer) {
 /** docs/03 §6: a 401 body code "4017" means the installation's own token is rejected. Record it as
  * `broken_at`, not as status INACTIVE — the component has to tell the user to reinstall, which it
  * cannot do if a broken installation is indistinguishable from one the user disabled. */
-function markInstallationBrokenOnAddonTokenFailure(deps: ApiRouteDeps, viewer: Viewer) {
-  return () => markInstallationBroken(deps.db, viewer.workspaceId, viewer.addonId, new Date().toISOString());
+function markInstallationBrokenOnAddonTokenFailure(
+  deps: ApiRouteDeps,
+  viewer: Viewer,
+  expectedInstalledAt: number,
+) {
+  return () => markInstallationBroken(
+    deps.db,
+    viewer.workspaceId,
+    viewer.addonId,
+    expectedInstalledAt,
+    new Date().toISOString(),
+  );
 }
 
 /** Row lookup scoped by claims workspace + id (docs/09), then canRead/canAct. */
@@ -117,6 +211,20 @@ function loadOwnEntry(
     return { error: errorJson(404, "not found") };
   }
   return { entry: access.entry };
+}
+
+/** Removes a lineage reference when the viewer cannot read the referenced parent. The full
+ * parent row is checked because an opaque recoverable id is still another member's data. */
+function entryForViewer(
+  deps: ApiRouteDeps,
+  viewer: Viewer,
+  entry: RecoverableEntry,
+): RecoverableEntry {
+  if (entry.parentRecoverableId === null) return entry;
+  const parent = entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId);
+  return parent && canRead(parent, viewer)
+    ? entry
+    : { ...entry, parentRecoverableId: null };
 }
 
 const LIFECYCLE_STATES = ["IDLE", "RECREATING", "RECREATED", "FAILED", "AMBIGUOUS", "DISMISSED"] as const;
@@ -191,7 +299,9 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
       // The list is usually the first surface a returning user opens, so a token rejection has to
       // be recorded here too — otherwise `broken` below stays false until some other route
       // happens to observe the 4017 first.
-      if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      if (isAddonTokenInvalid(err)) {
+        markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+      }
       clockifyUnavailable = true;
     }
   } else {
@@ -215,7 +325,7 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
           summary = null;
         }
       }
-      return { ...row, preflightSummary: summary };
+      return { ...entryForViewer(deps, viewer, row), preflightSummary: summary };
     }),
   );
 
@@ -241,11 +351,28 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   const loaded = loadOwnEntry(deps, viewer, query.get("id"), false);
   if ("error" in loaded) return loaded.error;
   let entry = loaded.entry;
+  const disabled = getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId) === "INACTIVE";
 
+  // A crashed request has no process left to retry the claim. Recover an expired lease when the
+  // user opens the detail view. This changes local state only; it never sends a Clockify write.
+  if (entry.lifecycleState === "RECREATING") {
+    entry = entries.recoverExpiredClaim(deps.db, {
+      id: entry.id,
+      workspaceId: viewer.workspaceId,
+      now: new Date(),
+    }) ?? entry;
+  }
+
+  let latestAttempt = attempts.latestForEntry(deps.db, entry.id);
   // Lazy reconcile (ADR-010): a detail view on an AMBIGUOUS row triggers one reconcile pass when
-  // the last check is older than 30 s.
-  if (entry.lifecycleState === "AMBIGUOUS") {
-    const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
+  // the last check is older than 30 s. Once the existing evidence already permits
+  // mark-not-created, preserve that action window; an automatic read would otherwise refresh the
+  // timestamp on every detail view and make the action unreachable.
+  if (
+    !disabled &&
+    entry.lifecycleState === "AMBIGUOUS" &&
+    !markNotCreatedAllowed(latestAttempt)
+  ) {
     const lastCheckedAt = latestAttempt?.reconcile?.checkedAt;
     const stale = lastCheckedAt === undefined || Date.now() - new Date(lastCheckedAt).getTime() > RECONCILE_THROTTLE_MS;
     if (stale && latestAttempt) {
@@ -264,19 +391,29 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
 
   const plan = plans.getActiveForEntry(deps.db, entry.id) ?? plans.listForEntry(deps.db, entry.id)[0] ?? null;
   const attemptRows = attempts.listForEntry(deps.db, entry.id);
-  const parent = entry.parentRecoverableId ? entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId) : null;
-  const child = entry.newEntryId ? entries.findByNewEntryId(deps.db, viewer.workspaceId, entry.newEntryId) : undefined;
+  const parentCandidate = entry.parentRecoverableId
+    ? entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId)
+    : undefined;
+  const childCandidate = entry.newEntryId
+    ? entries.findByNewEntryId(deps.db, viewer.workspaceId, entry.newEntryId)
+    : undefined;
+  const parent = parentCandidate && canRead(parentCandidate, viewer)
+    ? entryForViewer(deps, viewer, parentCandidate)
+    : null;
+  const child = childCandidate && canRead(childCandidate, viewer)
+    ? entryForViewer(deps, viewer, childCandidate)
+    : null;
 
   // Both flags are server facts the UI renders rather than derives (docs/00: "the UI holds no
   // business rules"). `canMarkNotCreated` in particular must never be recomputed on the browser
   // clock: a fast clock would offer "it was not created" for an entry that exists.
-  const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
+  latestAttempt = attempts.latestForEntry(deps.db, entry.id);
   return json(200, {
-    entry,
+    entry: entryForViewer(deps, viewer, entry),
     plan,
     attempts: attemptRows,
-    lineage: { parent: parent ?? null, child: child ?? null },
-    disabled: getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId) === "INACTIVE",
+    lineage: { parent, child },
+    disabled,
     canMarkNotCreated: entry.lifecycleState === "AMBIGUOUS" && markNotCreatedAllowed(latestAttempt),
   });
 }
@@ -298,21 +435,24 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   const loaded = loadOwnEntry(deps, viewer, body.entryId, true);
   if ("error" in loaded) return loaded.error;
   const entry = loaded.entry;
-  const choices = (isPlainObject(body.choices) ? body.choices : {}) as PreflightChoices;
+  if (entry.lifecycleState !== "IDLE" && entry.lifecycleState !== "FAILED") {
+    return errorJson(409, "This entry cannot be prepared from its current state. Open it to see its current status.");
+  }
+  const choices = parsePreflightChoices(body.choices);
+  if (!choices) return errorJson(400, "invalid choices");
 
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
 
   let result;
   try {
-    const shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
-    const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, entry.source, choices);
+    const state = await fetchWorkspaceState(clientResult.client, viewer.workspaceId, entry.source, choices);
     result = runPreflight({ source: entry.source, viewer, choices, workspace: state, now: new Date() });
   } catch (err) {
     if (isAddonTokenInvalid(err)) {
       // The remedy for a rejected token is a reinstall, not a retry: the transport message's
       // "try again in a moment" would send the user in circles (docs/03 §6, docs/11, docs/14).
-      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
       return errorJson(503, NO_CLIENT_MESSAGE);
     }
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
@@ -321,20 +461,28 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   }
   emitPreflightMetrics(deps.logger, result);
 
-  const plan = plans.createActive(deps.db, {
-    id: randomUUID(),
-    recoverableEntryId: entry.id,
-    createdBy: viewer.userId,
-    createdAt: new Date().toISOString(),
-    sourceHash: computeSourceHash(entry.source),
-    choices,
-    resolution: result.resolution,
-    plannedRequest: result.plannedRequest,
-    warnings: result.warnings,
-    blockers: result.blockers,
-    actionRequired: result.actionRequired,
-    fidelity: result.fidelity,
-  });
+  let plan;
+  try {
+    plan = plans.createActive(deps.db, {
+      id: randomUUID(),
+      recoverableEntryId: entry.id,
+      createdBy: viewer.userId,
+      createdAt: new Date().toISOString(),
+      sourceHash: computeSourceHash(entry.source),
+      choices,
+      resolution: result.resolution,
+      plannedRequest: result.plannedRequest,
+      warnings: result.warnings,
+      blockers: result.blockers,
+      actionRequired: result.actionRequired,
+      fidelity: result.fidelity,
+    });
+  } catch (err) {
+    if (err instanceof plans.PlanEntryNotActionableError) {
+      return errorJson(409, "This entry cannot be prepared from its current state. Open it to see its current status.");
+    }
+    throw err;
+  }
 
   return json(200, { plan });
 }
@@ -352,8 +500,11 @@ type ConfirmOutcome =
   | { readonly kind: "revalidate-error" }
   | { readonly kind: "stale"; readonly plan: RecreationPlan }
   | { readonly kind: "already-claimed"; readonly entry: RecoverableEntry }
+  | { readonly kind: "not-actionable"; readonly entry: RecoverableEntry }
   | { readonly kind: "plan-consumed" }
   | { readonly kind: "baseline-truncated"; readonly message: string }
+  | { readonly kind: "baseline-error" }
+  | { readonly kind: "prewrite-changed"; readonly entry: RecoverableEntry }
   | { readonly kind: "attempt-error" }
   | {
       readonly kind: "done";
@@ -367,6 +518,11 @@ async function confirmPlan(
   entry: RecoverableEntry,
   plan: RecreationPlan,
 ): Promise<ConfirmOutcome> {
+  if (plan.status === "CONSUMED") return { kind: "plan-consumed" };
+  if (entry.lifecycleState !== "IDLE" && entry.lifecycleState !== "FAILED") {
+    return { kind: "not-actionable", entry };
+  }
+
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return { kind: "no-client" };
 
@@ -374,15 +530,14 @@ async function confirmPlan(
   const currentHash = computeSourceHash(entry.source);
   let fresh;
   try {
-    const shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
-    const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, entry.source, plan.choices);
+    const state = await fetchWorkspaceState(clientResult.client, viewer.workspaceId, entry.source, plan.choices);
     fresh = runPreflight({ source: entry.source, viewer, choices: plan.choices, workspace: state, now: new Date() });
   } catch (err) {
     if (isAddonTokenInvalid(err)) {
       // Same rule as `handlePreflight`: a rejected token maps to the reinstall guidance
       // (`no-client` renders NO_CLIENT_MESSAGE), never "try again in a moment". Nothing was sent
       // to Clockify — the revalidation read failed before any claim or create.
-      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
       return { kind: "no-client" };
     }
     if (err instanceof PreflightTruncatedError) return { kind: "revalidate-truncated", message: err.message };
@@ -395,21 +550,31 @@ async function confirmPlan(
     outcomesDiffer(plan, { plannedRequest: fresh.plannedRequest, resolution: fresh.resolution, warnings: fresh.warnings, blockers: fresh.blockers, actionRequired: fresh.actionRequired });
 
   if (stale) {
-    plans.markStale(deps.db, plan.id);
-    const freshPlan = plans.createActive(deps.db, {
-      id: randomUUID(),
-      recoverableEntryId: entry.id,
-      createdBy: viewer.userId,
-      createdAt: new Date().toISOString(),
-      sourceHash: currentHash,
-      choices: plan.choices,
-      resolution: fresh.resolution,
-      plannedRequest: fresh.plannedRequest,
-      warnings: fresh.warnings,
-      blockers: fresh.blockers,
-      actionRequired: fresh.actionRequired,
-      fidelity: fresh.fidelity,
-    });
+    let freshPlan;
+    try {
+      freshPlan = plans.createActive(deps.db, {
+        id: randomUUID(),
+        recoverableEntryId: entry.id,
+        createdBy: viewer.userId,
+        createdAt: new Date().toISOString(),
+        sourceHash: currentHash,
+        choices: plan.choices,
+        resolution: fresh.resolution,
+        plannedRequest: fresh.plannedRequest,
+        warnings: fresh.warnings,
+        blockers: fresh.blockers,
+        actionRequired: fresh.actionRequired,
+        fidelity: fresh.fidelity,
+      });
+    } catch (err) {
+      if (err instanceof plans.PlanEntryNotActionableError) {
+        return {
+          kind: "not-actionable",
+          entry: entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry,
+        };
+      }
+      throw err;
+    }
     return { kind: "stale", plan: freshPlan };
   }
 
@@ -452,7 +617,11 @@ async function confirmPlan(
       claimToken,
       recreatedBy: viewer.userId,
       now: new Date(),
-      onAddonTokenInvalid: markInstallationBrokenOnAddonTokenFailure(deps, viewer),
+      onAddonTokenInvalid: markInstallationBrokenOnAddonTokenFailure(
+        deps,
+        viewer,
+        clientResult.installation.installedAt,
+      ),
       onUnexpectedError: (err) => deps.onError?.(err, { route: "recreate.attempt" }),
     });
   } catch (err) {
@@ -463,9 +632,29 @@ async function confirmPlan(
       release();
       return { kind: "baseline-truncated", message: err.message };
     }
-    // Anything else escaping `attemptRecreation` happens at or after the create, so the outcome is
-    // NOT known to be "nothing happened". Never release the claim here: the lease expires and the
-    // row becomes reclaimable on its own, which is the honest state (ADR-007).
+    if (err instanceof PreWriteBaselineError) {
+      // The attempt row is not written until the baseline is complete. A baseline failure proves
+      // that this request sent no mutation, so releasing this claim is safe. The fenced release
+      // is also harmless if another process already recovered the lease.
+      release();
+      if (isAddonTokenInvalid(err.cause)) {
+        markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+        return { kind: "no-client" };
+      }
+      deps.onError?.(err.cause, { route: "recreate.baseline" });
+      return { kind: "baseline-error" };
+    }
+    if (err instanceof PreWriteClaimChangedError) {
+      // Another process recovered or replaced this claim while the baseline read was in flight.
+      // Do not release: the old token no longer owns the row, and the current state is the result
+      // the caller needs to see. The pre-write fence proves this request sent no create.
+      const current = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
+      return { kind: "prewrite-changed", entry: current };
+    }
+    // Any other error happens after the durable attempt starts. That stored state can also remain
+    // after a create was sent, so the outcome is not known to be "nothing happened". Never
+    // release the claim here. After the lease expires, detail recovery uses the attempt record to
+    // select the truthful state (ADR-007).
     deps.onError?.(err, { route: "recreate.attempt" });
     return { kind: "attempt-error" };
   }
@@ -490,6 +679,18 @@ async function confirmPlan(
       }
     }
     const after = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? current;
+    if (after.lifecycleState === "RECREATED" && after.newEntryId !== null) {
+      const finalAttempt = attempts.latestForEntry(deps.db, entry.id);
+      return {
+        kind: "done",
+        result: {
+          outcome: "RECREATED",
+          newEntryId: after.newEntryId,
+          diffs: [...(finalAttempt?.diffs ?? [])],
+        },
+        entry: after,
+      };
+    }
     return { kind: "done", result, entry: after };
   }
 
@@ -520,14 +721,26 @@ function confirmOutcomeToResponse(outcome: ConfirmOutcome): ReturnType<RequestHa
         error: "Another attempt is already recreating this entry. Nothing new was created by this click. Wait a moment, then reopen this entry to see its current status.",
         entry: outcome.entry,
       });
+    case "not-actionable":
+      return json(409, {
+        error: "This entry cannot use this plan in its current state. Nothing was created by this click. Open the entry to see its current status.",
+        entry: outcome.entry,
+      });
     case "plan-consumed":
       return json(409, {
         error: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan.",
       });
     case "baseline-truncated":
       return errorJson(503, outcome.message);
+    case "baseline-error":
+      return errorJson(502, BASELINE_FAILURE_MESSAGE);
+    case "prewrite-changed":
+      return json(409, {
+        error: "RestoreTime did not send this recreation because the entry changed first. This request did not create an entry. Open the entry again to see its current state.",
+        entry: outcome.entry,
+      });
     case "attempt-error":
-      return errorJson(502, ATTEMPT_UNKNOWN_MESSAGE);
+      return json(502, { error: ATTEMPT_UNKNOWN_MESSAGE, unknownResult: true });
     case "done":
       return outcome.entry !== undefined
         ? json(200, { result: outcome.result, entry: outcome.entry })
@@ -541,7 +754,13 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
   if (typeof planId !== "string" || planId.length === 0) return errorJson(400, "planId is required");
 
   const plan = plans.getById(deps.db, planId);
-  const loaded = loadOwnEntry(deps, viewer, body.entryId, true, plan?.createdBy === viewer.userId);
+  const loaded = loadOwnEntry(
+    deps,
+    viewer,
+    body.entryId,
+    true,
+    plan?.createdBy === viewer.userId && plan.recoverableEntryId === body.entryId,
+  );
   if ("error" in loaded) return loaded.error;
   const entry = loaded.entry;
 
@@ -558,7 +777,12 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
 const BULK_MAX = 50;
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.length > 0);
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((v) => typeof v === "string" && v.length > 0) &&
+    new Set(value).size === value.length
+  );
 }
 
 async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
@@ -568,7 +792,7 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
   }
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const ids = body.ids;
-  if (!isStringArray(ids)) return errorJson(400, "ids must be a non-empty array of entry ids");
+  if (!isStringArray(ids)) return errorJson(400, "ids must be a unique, non-empty array of entry ids");
   if (ids.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} entries per bulk request`);
 
   const clientResult = await loadClient(deps, viewer);
@@ -581,7 +805,7 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
     shared = await fetchSharedWorkspaceData(clientResult.client, viewer.workspaceId);
   } catch (err) {
     if (isAddonTokenInvalid(err)) {
-      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
       return errorJson(503, NO_CLIENT_MESSAGE);
     }
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
@@ -597,6 +821,10 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
     const row = entries.getById(deps.db, viewer.workspaceId, id);
     if (!row) {
       results.push({ entryId: id, status: "not-found" });
+      continue;
+    }
+    if (row.lifecycleState !== "IDLE" && row.lifecycleState !== "FAILED") {
+      results.push({ entryId: id, status: "not-actionable", source: row.source });
       continue;
     }
     try {
@@ -622,6 +850,13 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
       // "Ready — " with nothing to review, which is the one thing that view exists to let an admin do.
       results.push({ entryId: id, status, plan, source: row.source });
     } catch (err) {
+      if (err instanceof plans.PlanEntryNotActionableError) {
+        const current = entries.getById(deps.db, viewer.workspaceId, id);
+        results.push(current
+          ? { entryId: id, status: "not-actionable", source: current.source }
+          : { entryId: id, status: "not-found" });
+        continue;
+      }
       if (err instanceof PreflightTruncatedError) {
         results.push({ entryId: id, status: "error", message: err.message });
         continue;
@@ -636,8 +871,9 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
 /** Maps one `confirmPlan` outcome onto the bulk result row shape (docs/10 §7: "Results list per
  * entry: Recreated / Failed (reason) / Unknown result. There is no cross-entry transaction; each
  * row shows its own outcome."). The `RECREATED`/`FAILED`/`AMBIGUOUS` shapes are exactly the single
- * confirm's `result` — same rendering, no duplicated presentation logic — everything upstream of a
- * Clockify outcome (stale plan, lost claim race, transport failure) collapses to `ERROR`. */
+ * confirm's `result` — same rendering, no duplicated presentation logic. Failures proved to occur
+ * before a write stay `ERROR`; an error after the attempt starts is `AMBIGUOUS`, because calling it
+ * failed would claim more certainty than the stored state has. */
 function bulkResultItem(entryId: string, planId: string, outcome: ConfirmOutcome): Record<string, unknown> {
   switch (outcome.kind) {
     case "no-client":
@@ -647,12 +883,23 @@ function bulkResultItem(entryId: string, planId: string, outcome: ConfirmOutcome
       return { entryId, planId, outcome: "ERROR", message: outcome.message };
     case "revalidate-error":
       return { entryId, planId, outcome: "ERROR", message: TRANSPORT_FAILURE_MESSAGE };
+    case "baseline-error":
+      return { entryId, planId, outcome: "ERROR", message: BASELINE_FAILURE_MESSAGE };
+    case "prewrite-changed":
+      return {
+        entryId,
+        planId,
+        outcome: "ERROR",
+        message: "RestoreTime did not send this recreation because the entry changed first. Open the entry again to see its current state.",
+      };
     case "attempt-error":
-      return { entryId, planId, outcome: "ERROR", message: ATTEMPT_UNKNOWN_MESSAGE };
+      return { entryId, planId, outcome: "AMBIGUOUS", message: ATTEMPT_UNKNOWN_MESSAGE };
     case "stale":
       return { entryId, planId, outcome: "ERROR", message: "This plan is no longer current. Nothing was created. Open this entry to get a fresh plan and try again." };
     case "already-claimed":
       return { entryId, planId, outcome: "ERROR", message: "This entry is already being recreated by another attempt. Nothing new was created by this click." };
+    case "not-actionable":
+      return { entryId, planId, outcome: "ERROR", message: "This entry cannot use this plan in its current state. Nothing was created by this click." };
     case "plan-consumed":
       return { entryId, planId, outcome: "ERROR", message: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan." };
     case "done":
@@ -667,19 +914,17 @@ async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unkn
   }
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const planIds = body.planIds;
-  if (!isStringArray(planIds)) return errorJson(400, "planIds must be a non-empty array of plan ids");
+  if (!isStringArray(planIds)) return errorJson(400, "planIds must be a unique, non-empty array of plan ids");
   if (planIds.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} plans per bulk request`);
 
   const results: unknown[] = [];
   for (const planId of planIds) {
     const plan = plans.getById(deps.db, planId);
-    if (!plan) {
-      results.push({ planId, entryId: null, outcome: "ERROR", message: "plan not found" });
-      continue;
-    }
-    const entry = entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId);
-    if (!entry) {
-      results.push({ planId, entryId: plan.recoverableEntryId, outcome: "ERROR", message: "entry not found" });
+    const entry = plan
+      ? entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId)
+      : undefined;
+    if (!plan || !entry) {
+      results.push({ planId, entryId: null, outcome: "ERROR", message: "not found" });
       continue;
     }
     if (plan.blockers.length > 0 || plan.actionRequired.length > 0) {
@@ -694,9 +939,13 @@ async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unkn
 
 // --- Reconcile (shared by the explicit route and the lazy detail-view trigger) ------------
 
+function allowsBillableOverride(plan: RecreationPlan): boolean {
+  return plan.warnings.some((warning) => warning.code === "BILLABLE_MAY_CHANGE");
+}
+
 async function runOneReconcile(
   deps: ApiRouteDeps,
-  client: Awaited<ReturnType<typeof loadClient>> extends { client: infer C } | undefined ? C : never,
+  client: ReturnType<typeof buildClockifyClient>,
   entry: RecoverableEntry,
   attempt: ReturnType<typeof attempts.latestForEntry>,
   plan: RecreationPlan,
@@ -705,6 +954,16 @@ async function runOneReconcile(
   actingUserId: string,
 ) {
   if (!attempt) return;
+  if (!attempts.beginReconcile(deps.db, {
+    recoverableEntryId: entry.id,
+    workspaceId: entry.workspaceId,
+    expectedAttemptId: attempt.id,
+    checkedAt: new Date().toISOString(),
+  })) {
+    // The entry or current attempt changed before the read began. Do not issue a Clockify read
+    // whose result could belong to an older ambiguity decision.
+    return { kind: "adopt-conflict" } as const;
+  }
   const result = await runReconcile({
     db: deps.db,
     client,
@@ -713,8 +972,11 @@ async function runOneReconcile(
     userId: entry.ownerId,
     plannedRequest: plan.plannedRequest,
     baseline: attempt.baseline ?? [],
+    allowBillableOverride: allowsBillableOverride(plan),
+    expectedAttemptId: attempt.id,
     recreatedBy: actingUserId,
     now: new Date(),
+    onVerificationError: (err) => deps.onError?.(err, { route: "reconcile.verify" }),
   });
 
   const priorChecks = attempt.reconcile?.checks ?? 0;
@@ -731,45 +993,10 @@ async function runOneReconcile(
   };
   attempts.updateReconcile(deps.db, attempt.id, summary);
 
-  // docs/08 invariant 2: RECREATED implies one SUCCESS attempt pointing at the new entry. An
-  // adoption is a transition out of RECREATING's successor state, so the attempt row has to say
-  // so — otherwise the audit (and PASS-03's success view) reads a contradiction.
   if (result.kind === "adopted") {
     emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
-    await finishAdoptedAttempt(deps, client, entry, attempt.id, plan, result.newEntryId);
   }
   return result;
-}
-
-/** Closes the attempt row for an adopted entry and records the verification diff (docs/07 §8-§9).
- * The adoption is definitive, exactly as a 201 is: a failed verification read never undoes it — it
- * records "verification read unavailable" (fact 11), the same rule IT-13 pins for the create path. */
-async function finishAdoptedAttempt(
-  deps: ApiRouteDeps,
-  client: Awaited<ReturnType<typeof loadClient>> extends { client: infer C } | undefined ? C : never,
-  entry: RecoverableEntry,
-  attemptId: string,
-  plan: RecreationPlan,
-  newEntryId: string,
-) {
-  let diffs;
-  try {
-    const actual = await client.timeEntries.get({ workspaceId: entry.workspaceId, timeEntryId: newEntryId });
-    diffs = diffPlannedVsActual(plan.plannedRequest, actual);
-  } catch (err) {
-    deps.onError?.(err, { route: "reconcile.verify" });
-    diffs = [{ field: "_verification", planned: null, actual: VERIFICATION_READ_UNAVAILABLE }];
-  }
-  attempts.finish(deps.db, {
-    id: attemptId,
-    finishedAt: new Date().toISOString(),
-    outcome: "SUCCESS",
-    newEntryId,
-    errorStatus: null,
-    errorCode: null,
-    errorMessage: null,
-    diffs,
-  });
 }
 
 async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
@@ -788,19 +1015,22 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   if (!latestAttempt || !plan) return errorJson(404, "no attempt to reconcile");
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
+  if (!clientResult) return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
 
   // Every other Clockify-touching route catches its transport failures and answers N8's three
   // questions; without this catch, "Check now" during an outage escaped to the SDK's bare 500.
-  // The message is safe here: a reconcile is a read — a failed check changes nothing (adoption
-  // happens only after a successful read), so "Nothing was created" is a fact, not a guess.
+  // A reconcile is a read, so this check sends no mutation. The earlier create can still have
+  // succeeded, so the error must keep that result unknown.
   let result;
   try {
     result = await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
   } catch (err) {
-    if (isAddonTokenInvalid(err)) markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+    if (isAddonTokenInvalid(err)) {
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+      return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
+    }
     deps.onError?.(err, { route: "reconcile" });
-    return errorJson(502, TRANSPORT_FAILURE_MESSAGE);
+    return errorJson(502, AMBIGUOUS_CHECK_FAILURE_MESSAGE);
   }
   const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
   return json(200, { result, entry: current ?? entry });
@@ -815,19 +1045,38 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
   const entry = loaded.entry;
   if (entry.lifecycleState !== "AMBIGUOUS") return errorJson(409, "entry is not AMBIGUOUS");
 
-  // Same predicate the detail view's `canMarkNotCreated` flag reports, so the button the user
-  // sees and the rule the server enforces can never disagree.
-  if (!markNotCreatedAllowed(attempts.latestForEntry(deps.db, entry.id))) {
+  // The eligibility check and transition share the same write lock as `beginReconcile`. If a
+  // reconcile read started first, its fresh timestamp closes this gate. If this transition wins
+  // first, the reconcile refuses to send its read because the row is no longer AMBIGUOUS.
+  const mark = deps.db.transaction(() => {
+    if (!markNotCreatedAllowed(attempts.latestForEntry(deps.db, entry.id))) {
+      return { kind: "not-allowed" } as const;
+    }
+    const updated = entries.markNotCreated(deps.db, viewer.workspaceId, entry.id);
+    return updated
+      ? { kind: "updated", entry: updated } as const
+      : { kind: "changed" } as const;
+  });
+  const result = mark.immediate();
+  if (result.kind === "not-allowed") {
     return errorJson(409, "not enough reconcile checks yet — keep checking, or wait for the window to elapse");
   }
-
-  const updated = entries.markNotCreated(deps.db, viewer.workspaceId, entry.id);
-  if (!updated) return errorJson(409, "entry is no longer AMBIGUOUS");
+  if (result.kind === "changed") return errorJson(409, "entry is no longer AMBIGUOUS");
   emitMetric(deps.logger, "ambiguous_not_created", { entryId: entry.id });
-  return json(200, { entry: updated });
+  return json(200, { entry: result.entry });
 }
 
 // --- POST /api/entries/resolve-ambiguous ----------------------------------------------------
+
+function invalidAmbiguousCandidate(
+  viewer: Viewer,
+  adminStatus: number,
+  adminMessage: string,
+): ReturnType<RequestHandler> {
+  return isAdmin(viewer)
+    ? errorJson(adminStatus, adminMessage)
+    : errorJson(400, "This entry cannot be used for this recreation.");
+}
 
 async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: unknown) {
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
@@ -840,49 +1089,70 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
 
   const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
   const plan = latestAttempt ? plans.getById(deps.db, latestAttempt.planId) : undefined;
-  if (!plan) return errorJson(404, "no plan to resolve against");
+  if (!latestAttempt || !plan) return errorJson(404, "no plan to resolve against");
 
   const clientResult = await loadClient(deps, viewer);
-  if (!clientResult) return errorJson(503, NO_CLIENT_MESSAGE);
+  if (!clientResult) return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
+
+  if (!attempts.beginReconcile(deps.db, {
+    recoverableEntryId: entry.id,
+    workspaceId: viewer.workspaceId,
+    expectedAttemptId: latestAttempt.id,
+    checkedAt: new Date().toISOString(),
+  })) {
+    return errorJson(409, "the entry or recreation attempt changed; check the entry again");
+  }
 
   let candidate;
   try {
     candidate = await clientResult.client.timeEntries.get({ workspaceId: viewer.workspaceId, timeEntryId: newEntryId });
-  } catch {
-    return errorJson(404, "Clockify has no entry with that id");
+  } catch (err) {
+    if (isAddonTokenInvalid(err)) {
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+      return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
+    }
+    if (
+      err instanceof ClockifyApiError &&
+      err.statusCode !== undefined &&
+      err.statusCode >= 400 &&
+      err.statusCode < 500
+    ) {
+      return invalidAmbiguousCandidate(viewer, err.statusCode, "Clockify rejected that entry id");
+    }
+    deps.onError?.(err, { route: "resolve-ambiguous" });
+    return errorJson(502, AMBIGUOUS_CHECK_FAILURE_MESSAGE);
   }
   const fp = fingerprintFromPlanned(plan.plannedRequest);
-  if (!fingerprintMatches(fp, candidate)) {
-    return errorJson(400, "that entry does not match this recreation's fingerprint");
+  if (!fingerprintMatches(fp, candidate, allowsBillableOverride(plan))) {
+    return invalidAmbiguousCandidate(viewer, 400, "that entry does not match this recreation's fingerprint");
   }
   // The fingerprint compares values, not identity, so a look-alike entry that already existed
   // matches it. Two extra checks keep an adoption meaning "this is the entry the create made":
   // it must not be in the attempt's baseline (docs/07 §8 — "new" means "not in the baseline"),
   // and it must belong to the entry's owner, since every recreation targets that owner (ADR-004).
   if ((latestAttempt?.baseline ?? []).includes(newEntryId)) {
-    return errorJson(400, "that entry already existed before this recreation was attempted");
+    return invalidAmbiguousCandidate(viewer, 400, "that entry already existed before this recreation was attempted");
   }
   if (candidate.userId !== entry.source.ownerId) {
-    return errorJson(400, "that entry belongs to a different user");
+    return invalidAmbiguousCandidate(viewer, 400, "that entry belongs to a different user");
   }
 
   try {
     const adopted = entries.adopt(deps.db, {
       id: entry.id,
       workspaceId: viewer.workspaceId,
+      expectedAttemptId: latestAttempt.id,
       newEntryId,
       recreatedAt: new Date().toISOString(),
       recreatedBy: viewer.userId,
+      diffs: diffPlannedVsActual(plan.plannedRequest, candidate),
     });
-    if (!adopted) return errorJson(409, "entry is no longer AMBIGUOUS");
+    if (!adopted) return errorJson(409, "the entry or recreation attempt changed; check the entry again");
     emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
-    if (latestAttempt) {
-      await finishAdoptedAttempt(deps, clientResult.client, entry, latestAttempt.id, plan, newEntryId);
-    }
     return json(200, { entry: adopted });
   } catch (err) {
     if (typeof err === "object" && err !== null && "code" in err && String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")) {
-      return errorJson(409, "that Clockify entry is already linked to another recovered entry");
+      return invalidAmbiguousCandidate(viewer, 409, "that Clockify entry is already linked to another recovered entry");
     }
     throw err;
   }
@@ -923,7 +1193,7 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
   try {
     // These feed the replacement pickers, so a truncated list is worse than an error: the user
     // cannot find the right project and substitutes a wrong one. docs/03 note 5 lists all three
-    // as iterPages reads; `collectPaged` raises rather than returning a partial page.
+    // as bounded SDK reads; `collectPaged` raises rather than returning a partial result.
     if (kind === "projects") {
       const items = await collectPaged(client.projects.list.bind(client.projects), { workspaceId: viewer.workspaceId });
       return json(200, { items: items.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });
@@ -947,11 +1217,15 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
       const projectId = query.get("projectId");
       if (!projectId) return errorJson(400, "projectId is required for kind=tasks");
       const items = await collectPaged(client.tasks.list.bind(client.tasks), { workspaceId: viewer.workspaceId, projectId });
-      return json(200, { items: items.map((t) => ({ id: t.id, name: t.name, status: t.status })) });
+      return json(200, {
+        items: items.filter((task) => task.status === "ACTIVE").map((task) => ({ id: task.id, name: task.name, status: task.status })),
+      });
     }
     if (kind === "tags") {
       const items = await collectPaged(client.tags.list.bind(client.tags), { workspaceId: viewer.workspaceId });
-      return json(200, { items: items.map((t) => ({ id: t.id, name: t.name, archived: t.archived })) });
+      return json(200, {
+        items: items.filter((tag) => !tag.archived).map((tag) => ({ id: tag.id, name: tag.name, archived: tag.archived })),
+      });
     }
     if (kind === "customFields") {
       // Feeds the P-CF-OPT / P-CF-REQ resolution widgets (docs/10 §4): the field's current type
@@ -977,7 +1251,7 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
   } catch (err) {
     if (err instanceof PreflightTruncatedError) return errorJson(503, err.message);
     if (isAddonTokenInvalid(err)) {
-      markInstallationBrokenOnAddonTokenFailure(deps, viewer)();
+      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
       return errorJson(503, NO_CLIENT_MESSAGE);
     }
     deps.onError?.(err, { route: "options" });

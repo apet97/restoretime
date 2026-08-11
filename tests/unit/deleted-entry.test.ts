@@ -56,6 +56,28 @@ describe("UT-N01 guardDeletedEntryPayload", () => {
     expect(guardDeletedEntryPayload(body).ok).toBe(false);
   });
 
+  it.each([
+    ["start", "not-a-date"],
+    ["end", ""],
+    ["end", "not-a-date"],
+  ] as const)("rejects an invalid timeInterval.%s timestamp", (field, value) => {
+    const body = validBody();
+    (body.timeInterval as Record<string, unknown>)[field] = value;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects a stopped entry without an end time", () => {
+    const body = validBody();
+    (body.timeInterval as Record<string, unknown>).end = null;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects an empty projectId", () => {
+    const body = validBody();
+    body.projectId = "";
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
   it("rejects wrong types (id as number)", () => {
     const body = validBody();
     body.id = 123;

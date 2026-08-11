@@ -6,13 +6,19 @@ import { el, mount } from "../dom.js";
 import type { Ctx } from "../state.js";
 import type { AttemptRecreationResult, DetailResponse, ReconcileResponse, ReconcileResult, RecreationPlan } from "../types.js";
 import { fidelityLabel } from "../format.js";
-import { renderApiError, renderDifferences, runAction, withLoading } from "./shared.js";
+import { renderApiError, renderDifferences, renderLineage, runAction, withLoading } from "./shared.js";
 
-export function renderResult(ctx: Ctx, entryId: string, plan: RecreationPlan, result: AttemptRecreationResult): void {
+export function renderResult(
+  ctx: Ctx,
+  entryId: string,
+  plan: RecreationPlan,
+  result: AttemptRecreationResult,
+  lineage?: DetailResponse["lineage"],
+): void {
   if (result.outcome === "RECREATED") {
-    renderSuccess(ctx, plan, result);
+    renderSuccess(ctx, plan, result, lineage);
   } else if (result.outcome === "FAILED") {
-    renderFailed(ctx, entryId, result);
+    renderFailed(ctx, entryId, result, lineage);
   } else {
     renderAmbiguous(ctx, entryId);
   }
@@ -20,14 +26,23 @@ export function renderResult(ctx: Ctx, entryId: string, plan: RecreationPlan, re
 
 // --- Success (docs/10 §6) -------------------------------------------------------------------
 
-function renderSuccess(ctx: Ctx, plan: RecreationPlan, result: Extract<AttemptRecreationResult, { outcome: "RECREATED" }>): void {
+function renderSuccess(
+  ctx: Ctx,
+  plan: RecreationPlan,
+  result: Extract<AttemptRecreationResult, { outcome: "RECREATED" }>,
+  lineage: DetailResponse["lineage"] | undefined,
+): void {
+  const visibleDiffs = result.diffs.filter((diff) => diff.field !== "_verification");
   const nodes: (Node | string)[] = [
     el("h2", {}, "Time entry recreated."),
     el("p", {}, `Fidelity: ${fidelityLabel(plan.fidelity)}.`),
     renderDifferences(plan),
   ];
 
-  if (result.diffs.length > 0) {
+  const lineageSection = renderLineage(ctx, lineage);
+  if (lineageSection) nodes.push(lineageSection);
+
+  if (visibleDiffs.length > 0) {
     nodes.push(
       el(
         "section",
@@ -36,9 +51,9 @@ function renderSuccess(ctx: Ctx, plan: RecreationPlan, result: Extract<AttemptRe
         el(
           "ul",
           {},
-          ...result.diffs
-            .filter((d) => d.field !== "_verification")
-            .map((d) => el("li", {}, `${d.field}: planned ${JSON.stringify(d.planned)}, actual ${JSON.stringify(d.actual)}`)),
+          ...visibleDiffs.map((diff) =>
+            el("li", {}, `${diff.field}: planned ${JSON.stringify(diff.planned)}, actual ${JSON.stringify(diff.actual)}`),
+          ),
         ),
       ),
     );
@@ -55,7 +70,12 @@ function renderSuccess(ctx: Ctx, plan: RecreationPlan, result: Extract<AttemptRe
 
 // --- Failed (docs/10 §6) --------------------------------------------------------------------
 
-function renderFailed(ctx: Ctx, entryId: string, result: Extract<AttemptRecreationResult, { outcome: "FAILED" }>): void {
+function renderFailed(
+  ctx: Ctx,
+  entryId: string,
+  result: Extract<AttemptRecreationResult, { outcome: "FAILED" }>,
+  lineage: DetailResponse["lineage"] | undefined,
+): void {
   const tryAgain = el("button", { type: "button" }, "Try again");
   tryAgain.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true }));
   mount(
@@ -63,6 +83,7 @@ function renderFailed(ctx: Ctx, entryId: string, result: Extract<AttemptRecreati
     el("h2", {}, "Clockify did not create the entry."),
     el("p", {}, `Reason: ${result.message}`),
     el("p", {}, "Nothing was created. You can change your selections and try again."),
+    renderLineage(ctx, lineage),
     tryAgain,
   );
 }
@@ -79,7 +100,13 @@ function renderAmbiguous(ctx: Ctx, entryId: string): void {
   void withLoading(
     ctx,
     () => ctx.api.get("/api/entries/detail", { id: entryId }) as Promise<DetailResponse>,
-    (data) => renderAmbiguousBody(ctx, entryId, data),
+    (data) => {
+      if (data.entry.lifecycleState !== "AMBIGUOUS") {
+        ctx.navigate({ kind: "detail", entryId });
+        return;
+      }
+      renderAmbiguousBody(ctx, entryId, data);
+    },
     "Checking the latest status…",
   );
 }
@@ -88,12 +115,30 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
   const latestAttempt = data.attempts.find((a) => a.outcome === "AMBIGUOUS" || (a.outcome === null && a.finishedAt === null)) ?? data.attempts[0];
   const reconcile = latestAttempt?.reconcile ?? null;
   const checks = reconcile?.checks ?? 0;
+
+  if (data.disabled) {
+    const refresh = el("button", { type: "button" }, "Check status");
+    refresh.addEventListener("click", () => renderAmbiguous(ctx, entryId));
+    const back = el("button", { type: "button" }, "Back to deleted entries");
+    back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
+    mount(
+      ctx.root,
+      el("h2", {}, "We do not know whether Clockify created this entry."),
+      el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."),
+      renderLineage(ctx, data.lineage),
+      refresh,
+      back,
+    );
+    return;
+  }
+
   // docs/00: the UI holds no business rules. The bounded window is the server's decision
   // (docs/07 §8) — deriving it from the browser clock would let a fast clock offer "it was not
   // created" while the server still refuses, and a slow one hide the choice after it is allowed.
   const bounded = data.canMarkNotCreated;
 
   const nodes: (Node | string)[] = [];
+  const lineageSection = renderLineage(ctx, data.lineage);
 
   if (bounded) {
     nodes.push(
@@ -101,6 +146,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
       el("p", {}, "The entry does not appear there."),
       el("p", {}, 'If you can see the entry in Clockify, select "It exists". Otherwise select "It was not created".'),
     );
+    if (lineageSection) nodes.push(lineageSection);
     const existsButton = el("button", { type: "button" }, "It exists — let me pick it");
     const notCreatedButton = el("button", { type: "button" }, "It was not created");
     const idInput = el("input", { type: "text", placeholder: "Clockify time entry id" });
@@ -133,9 +179,10 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
   } else {
     nodes.push(
       el("h2", {}, "We do not know whether Clockify created this entry."),
-      el("p", {}, "The request was sent, but Clockify's answer did not arrive."),
+      el("p", {}, "The recreation might have reached Clockify, but RestoreTime did not get a clear result."),
       el("p", { role: "alert" }, "Do not create the entry by hand yet."),
     );
+    if (lineageSection) nodes.push(lineageSection);
     const checkNow = el("button", { type: "button" }, "Check now");
     checkNow.addEventListener("click", () => {
       void runAction(
@@ -179,7 +226,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
 }
 
 function handleReconcileOutcome(ctx: Ctx, entryId: string, result: ReconcileResult | null): void {
-  if (result && (result.kind === "adopted" || result.kind === "one")) {
+  if (result?.kind === "adopted") {
     ctx.navigate({ kind: "detail", entryId });
     return;
   }

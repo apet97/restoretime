@@ -9,9 +9,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderConfirm } from "../../src/ui/views/confirm.js";
+import { renderBulkResults } from "../../src/ui/views/bulk.js";
+import { renderDetail } from "../../src/ui/views/detail.js";
 import { renderResolutionWidgets, type MutableChoices } from "../../src/ui/views/resolution-widgets.js";
+import { renderResult } from "../../src/ui/views/result.js";
+import { ApiError } from "../../src/ui/api.js";
 import type { Ctx } from "../../src/ui/state.js";
-import type { ActionRequiredItem, DeletedTimeEntry, RecreationPlan } from "../../src/ui/types.js";
+import type { ActionRequiredItem, BulkRecreateRow, DeletedTimeEntry, DetailResponse, RecreationPlan } from "../../src/ui/types.js";
 
 function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
   return {
@@ -108,6 +112,111 @@ describe("confirm view (docs/10 §5)", () => {
     expect(shown).toContain("RestoreTime is disabled for this workspace.");
     const buttons = Array.from(ctx.root.querySelectorAll("button")).map((b) => b.textContent);
     expect(buttons).not.toContain("Recreate entry");
+  });
+
+  it("opens the entry status after an unknown write result and never offers to retry the consumed plan", async () => {
+    const ctx = stubCtx();
+    const message =
+      "The recreation might have reached Clockify, but RestoreTime did not get a clear result. It is not known whether the entry was created. Do not create it by hand. Wait a moment, then open this entry again to check its status.";
+    (ctx.api.post as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError(502, { error: message, unknownResult: true }),
+    );
+    renderConfirm(ctx, "re-1", plan(), source());
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate entry");
+    recreate?.click();
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain(message));
+
+    const buttons = Array.from(ctx.root.querySelectorAll("button"));
+    expect(buttons.map((button) => button.textContent)).not.toContain("Try again");
+    const open = buttons.find((button) => button.textContent === "Open entry");
+    expect(open).toBeDefined();
+    open?.click();
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" });
+  });
+});
+
+describe("bulk result view (docs/10 §7)", () => {
+  it("renders a post-attempt error as Unknown result with its truthful message", () => {
+    const ctx = stubCtx();
+    const message =
+      "The recreation might have reached Clockify, but RestoreTime did not get a clear result. It is not known whether the entry was created.";
+    const rows: BulkRecreateRow[] = [
+      { entryId: "re-1", planId: "plan-1", outcome: "AMBIGUOUS", message },
+    ];
+
+    renderBulkResults(ctx, rows);
+
+    expect(ctx.root.textContent).toContain("Unknown result");
+    expect(ctx.root.textContent).toContain(message);
+    expect(ctx.root.textContent).not.toContain("Failed");
+  });
+});
+
+describe("success result view (docs/10 §6)", () => {
+  it("does not show an empty changes section for internal verification evidence", () => {
+    const ctx = stubCtx();
+
+    renderResult(ctx, "re-1", plan(), {
+      outcome: "RECREATED",
+      newEntryId: "entry-new",
+      diffs: [{ field: "_verification", planned: null, actual: "list-unavailable" }],
+    });
+
+    expect(ctx.root.textContent).toContain("Time entry recreated.");
+    expect(ctx.root.textContent).not.toContain("Clockify applied these changes");
+  });
+});
+
+describe("deleted-entry lineage (F14)", () => {
+  function detail(lifecycleState: "IDLE" | "RECREATED" | "AMBIGUOUS"): DetailResponse {
+    const current = {
+      id: "re-current",
+      lifecycleState,
+      newEntryId: lifecycleState === "RECREATED" ? "entry-new" : null,
+      source: source(),
+    };
+    const parent = { ...current, id: "re-parent", lifecycleState: "RECREATED", newEntryId: "entry-a" };
+    const child = { ...current, id: "re-child", source: source({ entryId: "entry-new" }) };
+    const attempt =
+      lifecycleState === "RECREATED"
+        ? { outcome: "SUCCESS", diffs: [] }
+        : lifecycleState === "AMBIGUOUS"
+          ? { outcome: "AMBIGUOUS", finishedAt: null, reconcile: null, baseline: [] }
+          : null;
+    return {
+      entry: current,
+      plan: plan(),
+      attempts: attempt ? [attempt] : [],
+      lineage: { parent, child },
+      disabled: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse;
+  }
+
+  function lineageButtons(ctx: Ctx): HTMLButtonElement[] {
+    return Array.from(ctx.root.querySelectorAll('section[aria-label="Recreation chain"] button'));
+  }
+
+  it.each(["IDLE", "RECREATED", "AMBIGUOUS"] as const)("shows links in the %s detail state", async (lifecycleState) => {
+    const ctx = stubCtx();
+    const response = detail(lifecycleState);
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(response);
+    (ctx.api.post as ReturnType<typeof vi.fn>).mockResolvedValue({ plan: response.plan });
+
+    renderDetail(ctx, "re-current");
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Recreation chain"));
+    const buttons = lineageButtons(ctx);
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "Open previous deleted entry",
+      "Open next deleted entry",
+    ]);
+
+    buttons[0]?.click();
+    buttons[1]?.click();
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-parent" });
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-child" });
   });
 });
 

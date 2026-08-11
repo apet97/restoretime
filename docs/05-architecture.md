@@ -99,14 +99,19 @@ src/
 1. The webhook handler performs one atomic transaction: the `INSERT OR IGNORE` into
    `recoverable_entries` plus, only when a row was inserted, the lineage-link
    `UPDATE parent_recoverable_id`. Dedup and effect commit or roll back together, so a crash can
-   never ack a delivery that was not persisted (advisor-reviewed).
+   never ack a delivery that was not persisted. A link is written only when the parent and child
+   have the same owner (advisor-reviewed).
 2. Every `/api/*` route derives `workspaceId` and the viewer from the verified JWT only. Path and
    body parameters never carry workspace or user identity.
 3. Only the recreate path creates Clockify entries. Reconciliation only links existing Clockify
    IDs to rows. The webhook path never creates Clockify entries. There is exactly one mutation
    path (advisor-reviewed).
 4. A `RECREATING` claim holds a UUID token and a 60-second lease. Result writes fence on the
-   token. Expired claims are reclaimable by the next claim attempt — lazily, no sweeper process.
+   token. The detail view or the next claim recovers an expired lease. If no attempt started, the
+   detail view returns the row to `IDLE`; a new claim instead replaces the expired token and keeps
+   the row `RECREATING`. If an attempt started, recovery uses its stored outcome or changes the row
+   to `AMBIGUOUS` and does not issue a new claim. The app does not retry an uncertain create
+   request. No sweeper process is used.
 5. All rendering escapes Clockify-controlled strings. `createClockifyHtmlResponse` sets CSP and
    `frame-ancestors`.
 6. Logs carry IDs, states, and error codes. Never webhook bodies, entry descriptions, or tokens

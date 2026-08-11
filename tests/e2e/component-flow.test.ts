@@ -199,9 +199,9 @@ function createTestWindow(authToken: string): {
   };
 }
 
-/** Fetches the real component shell, strips the `<script>` tag (the test calls `boot()` directly
- * instead of letting a real script load), and mounts the real markup — proving the actual
- * component-route output is what `boot()` runs against, not a hand-rolled stand-in.
+/** Fetches the real component shell, strips external assets (the test calls `boot()` directly and
+ * does not exercise CSS), and mounts the real markup — proving the actual component-route output
+ * is what `boot()` runs against, not a hand-rolled stand-in.
  *
  * The `innerHTML` assignment below is test-harness scaffolding only: the string comes from this
  * same test's own in-process server (`componentShellHtml()`, built from the fixed test config and
@@ -214,7 +214,9 @@ async function mountShell(server: AppServer, token: string): Promise<void> {
   expect(response.status).toBe(200);
   const html = String(response.body);
   const inner = /<html>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
-  document.documentElement.innerHTML = inner.replace(/<script[^>]*><\/script>/, "");
+  document.documentElement.innerHTML = inner
+    .replace(/<script[^>]*><\/script>/, "")
+    .replace(/<link[^>]*rel="stylesheet"[^>]*>/, "");
 }
 
 function text(): string {
@@ -354,6 +356,56 @@ describe("component E2E: list -> detail -> resolution -> confirm -> success", ()
     expect(postedMessages).toContainEqual({ action: "navigate", payload: { type: "tracker" } });
     findButton("Back to deleted entries").click();
     await waitFor(() => text().includes("Deleted time entries"));
+  });
+});
+
+describe("component E2E: member dismissal", () => {
+  it("lets a member show and undismiss their own dismissed entry", async () => {
+    const server = await bootServer();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), {
+        path: "/webhooks/time-entry-deleted",
+      }),
+    );
+
+    const clockify = baseClockifyStub();
+    const fetchImpl = makeFetchImpl(server, clockify);
+    vi.stubGlobal("fetch", fetchImpl);
+    const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+      user: OWNER_ID,
+      workspaceRole: "member",
+    });
+    await mountShell(server, token);
+    const { window } = createTestWindow(token);
+    boot({ window, fetchImpl });
+    await waitFor(() => text().includes("API investigation"));
+
+    findButton("Recreate").click();
+    await waitFor(() => text().includes("Deleted time entry"));
+    findButton("Dismiss").click();
+    await waitFor(() => text().includes("No deleted time entries"));
+
+    const showDismissed = Array.from(document.querySelectorAll('input[type="checkbox"]')).find((input) =>
+      input.closest("label")?.textContent?.includes("Show dismissed"),
+    ) as HTMLInputElement | undefined;
+    expect(showDismissed).toBeDefined();
+    showDismissed!.checked = true;
+    showDismissed!.dispatchEvent(new Event("change"));
+    await waitFor(() => text().includes("Status: Dismissed"));
+
+    const title = document.querySelector("button.rt-title") as HTMLButtonElement | null;
+    expect(title).not.toBeNull();
+    title!.click();
+    await waitFor(() => text().includes("This entry is hidden from the default list"));
+    findButton("Undismiss").click();
+    await waitFor(() => text().includes("Deleted time entry") && text().includes("Continue to confirm"));
+
+    findButton("Back to deleted entries").click();
+    await waitFor(() => text().includes("API investigation") && text().includes("Show dismissed"));
   });
 });
 
@@ -886,6 +938,50 @@ describe("admin list filters by name", () => {
     expect(projectListCalls).toBe(projectListAfterFirstRender);
     expect(Array.from(document.querySelectorAll("#rt-project-names option"))).toHaveLength(1);
     expect(userListCalls).toBeGreaterThan(0);
+  });
+
+  it("sends date-filter bounds for the viewer's local day", async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "Europe/Belgrade";
+    try {
+      const server = await bootServer();
+      const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+      await install(server, webhookToken);
+      await server.addon.handle(
+        createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+      );
+      const requests: string[] = [];
+      const routed = makeFetchImpl(server, baseClockifyStub());
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        if (typeof input === "string" && input.startsWith("/api/entries")) requests.push(input);
+        return routed(input, init);
+      }) as typeof fetch;
+      vi.stubGlobal("fetch", fetchImpl);
+
+      const token = await signTestToken(keys.privateKey, ADDON_KEY, {
+        workspaceId: WORKSPACE_ID,
+        addonId: ADDON_ID,
+        user: "admin-1",
+        workspaceRole: "admin",
+      });
+      await mountShell(server, token);
+      expect(document.querySelector('link[rel="stylesheet"]')).toBeNull();
+      const { window } = createTestWindow(token);
+      boot({ window, fetchImpl });
+      await waitFor(() => text().includes("Deleted time entries"));
+
+      findFilterInput("From").value = "2026-08-08";
+      findFilterInput("To").value = "2026-08-08";
+      findButton("Apply filters").click();
+      await waitFor(() => requests.some((request) => request.includes("from=")));
+
+      const filtered = new URL(requests.findLast((request) => request.includes("from="))!, "http://localhost/");
+      expect(filtered.searchParams.get("from")).toBe(new Date("2026-08-08T00:00:00.000").toISOString());
+      expect(filtered.searchParams.get("to")).toBe(new Date("2026-08-08T23:59:59.999").toISOString());
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
   });
 
   // "Show dismissed" and the status dropdown both select a `lifecycle_state`, so they answer the

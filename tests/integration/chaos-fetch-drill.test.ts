@@ -167,9 +167,8 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
     expect(createCalls).toBe(1);
     expect(result.outcome).toBe("AMBIGUOUS");
     expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
-    // ClockifyApiTimeoutError is one of the two documented "not a bug" AMBIGUOUS classes
-    // (docs/03 §3 class 1) — `onUnexpectedError` (the "this is a bug" reporter, class 5) must
-    // never fire for it.
+    // The SDK classifies ClockifyApiTimeoutError as `possibly-committed`. The unexpected-error
+    // reporter is only for `unknown`, so it must not fire here.
     expect(unexpectedError).toBeUndefined();
 
     // Reconcile: a fresh read (not through the chaos-wrapped client) finds the entry Clockify
@@ -190,6 +189,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -254,6 +254,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });

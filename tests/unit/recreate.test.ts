@@ -55,6 +55,14 @@ describe("UT-P13 fingerprint matching and reconcile decision", () => {
     expect(fingerprintMatches(fp, candidate({ tagIds: ["tag-1"] }))).toBe(false);
   });
 
+  it("accepts only the billable mismatch when P-BILL allows the known override", () => {
+    const fp = fingerprintFromPlanned(PLANNED);
+    const changedBillable = candidate({ billable: false });
+    expect(fingerprintMatches(fp, changedBillable)).toBe(false);
+    expect(fingerprintMatches(fp, changedBillable, true)).toBe(true);
+    expect(fingerprintMatches(fp, candidate({ billable: false, description: "different" }), true)).toBe(false);
+  });
+
   it("baseline-delta excludes entries already present before the create", () => {
     const fp = fingerprintFromPlanned(PLANNED);
     const baseline = ["cand-1"];

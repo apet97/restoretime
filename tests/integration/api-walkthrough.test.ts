@@ -20,6 +20,9 @@ import {
 } from "@apet97/clockify-addon-sdk/testing";
 import { createServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
+import * as entries from "../../src/store/entries.js";
+import * as attempts from "../../src/store/attempts.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
 
 const ADDON_KEY = "restoretime-test";
 const WORKSPACE_ID = "ws-1";
@@ -59,6 +62,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 function pathOf(input: string | URL | Request): string {
   const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   return new URL(raw).pathname;
+}
+
+function pageOf(input: string | URL | Request): number {
+  const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  return Number(new URL(raw).searchParams.get("page") ?? "1");
 }
 
 function methodOf(input: string | URL | Request, init?: RequestInit): string {
@@ -226,6 +234,22 @@ describe("scripted walkthrough: webhook -> list -> preflight -> confirm -> RECRE
     const detailBody = detailResponse.body as { entry: { lifecycleState: string; newEntryId: string } };
     expect(detailBody.entry.lifecycleState).toBe("RECREATED");
     expect(detailBody.entry.newEntryId).toBe("new-entry-1");
+
+    const planCount = (server.db.prepare("SELECT COUNT(*) AS n FROM recreation_plans").get() as { n: number }).n;
+    let replayReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      replayReads += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+    const replay = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+    expect(replay.status).toBe(409);
+    expect(replayReads).toBe(0);
+    expect((server.db.prepare("SELECT COUNT(*) AS n FROM recreation_plans").get() as { n: number }).n).toBe(planCount);
   });
 });
 
@@ -235,7 +259,12 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
     await install(server, webhookToken);
     await server.addon.handle(
-      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({ billable: false }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
     );
 
     const committedEntry = {
@@ -255,6 +284,12 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       (async (input: string | URL | Request, init?: RequestInit) => {
         const path = pathOf(input);
         const method = methodOf(input, init);
+        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) {
+          return jsonResponse({
+            id: WORKSPACE_ID,
+            workspaceSettings: { defaultBillableProjects: true },
+          });
+        }
         if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]); // baseline: empty
         if (method === "POST" && path.endsWith("/time-entries")) {
           // Simulates a lost response: the create genuinely fails at the transport layer, with
@@ -265,7 +300,7 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       }) as typeof fetch,
     );
 
-    const token = await componentToken();
+    const token = await componentToken("member");
     const listResponse = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
     const entryId = (listResponse.body as { entries: Array<{ id: string }> }).entries[0]!.id;
 
@@ -275,7 +310,11 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: { entryId },
     });
-    const planId = (preflightResponse.body as { plan: { id: string } }).plan.id;
+    const preflightPlan = (preflightResponse.body as {
+      plan: { id: string; warnings: Array<{ code: string }> };
+    }).plan;
+    expect(preflightPlan.warnings).toContainEqual(expect.objectContaining({ code: "BILLABLE_MAY_CHANGE" }));
+    const planId = preflightPlan.id;
 
     const recreateResponse = await server.addon.handle({
       method: "POST",
@@ -299,7 +338,14 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       (async (input: string | URL | Request, init?: RequestInit) => {
         const path = pathOf(input);
         const method = methodOf(input, init);
+        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) {
+          return jsonResponse({
+            id: WORKSPACE_ID,
+            workspaceSettings: { defaultBillableProjects: true },
+          });
+        }
         if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([committedEntry]);
+        if (method === "GET" && path.endsWith("/time-entries/new-entry-2")) return jsonResponse(committedEntry);
         return baseStub()(input, init);
       }) as typeof fetch,
     );
@@ -317,9 +363,18 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       headers: { authorization: `Bearer ${token}` },
     });
     expect(detailRecreated.status).toBe(200);
-    const finalEntry = (detailRecreated.body as { entry: { lifecycleState: string; newEntryId: string } }).entry;
+    const detailBody = detailRecreated.body as {
+      entry: { lifecycleState: string; newEntryId: string };
+      attempts: Array<{ diffs: Array<{ field: string; planned: unknown; actual: unknown }> }>;
+    };
+    const finalEntry = detailBody.entry;
     expect(finalEntry.lifecycleState).toBe("RECREATED");
     expect(finalEntry.newEntryId).toBe("new-entry-2");
+    expect(detailBody.attempts[0]?.diffs).toContainEqual({
+      field: "billable",
+      planned: false,
+      actual: true,
+    });
 
     // The explicit "Check now" route is throttled once a reconcile just ran (30 s window).
     const reconcileResponse = await server.addon.handle({
@@ -333,6 +388,117 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
 });
 
 describe("policy negatives through the API surface", () => {
+  it("rejects malformed preflight choices before any Clockify read", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    const entryId = (
+      server.db.prepare("SELECT id FROM recoverable_entries WHERE workspace_id = ?").get(WORKSPACE_ID) as { id: string }
+    ).id;
+    const token = await componentToken();
+    let clockifyReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyReads += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, choices: { dropTagIds: "tag-1" } },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: "invalid choices" });
+    expect(clockifyReads).toBe(0);
+    expect(
+      (server.db.prepare("SELECT COUNT(*) AS count FROM recreation_plans").get() as { count: number }).count,
+    ).toBe(0);
+  });
+
+  it("does not create a bulk plan for an entry that is no longer actionable", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    const entryId = (
+      server.db.prepare("SELECT id FROM recoverable_entries WHERE workspace_id = ?").get(WORKSPACE_ID) as { id: string }
+    ).id;
+    server.db
+      .prepare("UPDATE recoverable_entries SET lifecycle_state = 'RECREATED', new_entry_id = 'new-entry' WHERE id = ?")
+      .run(entryId);
+    let singlePreflightReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      singlePreflightReads += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+    const token = await componentToken();
+    const singlePreflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    expect(singlePreflight.status).toBe(409);
+    expect(singlePreflightReads).toBe(0);
+
+    vi.stubGlobal("fetch", baseStub());
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { ids: [entryId] },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      results: [
+        expect.objectContaining({
+          entryId,
+          status: "not-actionable",
+          source: expect.objectContaining({ entryId: "entry-a" }),
+        }),
+      ],
+    });
+    expect(
+      (server.db.prepare("SELECT COUNT(*) AS count FROM recreation_plans").get() as { count: number }).count,
+    ).toBe(0);
+  });
+
+  it("rejects duplicate entry and plan ids before any Clockify read", async () => {
+    const server = await boot();
+    const token = await componentToken();
+    let clockifyReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyReads += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { ids: ["entry-1", "entry-1"] },
+    });
+    const recreate = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { planIds: ["plan-1", "plan-1"] },
+    });
+
+    expect(preflight.status).toBe(400);
+    expect(recreate.status).toBe(400);
+    expect(clockifyReads).toBe(0);
+  });
+
   it("a regular viewer never sees another user's entry in the list", async () => {
     const server = await boot();
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
@@ -399,9 +565,10 @@ describe("POST /api/entries/recreate — guards", () => {
         const path = pathOf(input);
         const method = methodOf(input, init);
         if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          const page = pageOf(input);
           return jsonResponse(
             Array.from({ length: 200 }, (_, i) => ({
-              id: `filler-${i}`,
+              id: `filler-${page}-${i}`,
               description: "hello",
               billable: true,
               timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
@@ -434,6 +601,213 @@ describe("POST /api/entries/recreate — guards", () => {
       .prepare("SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id = ?")
       .get(entryId) as { n: number };
     expect(attemptCount.n).toBe(0);
+  });
+
+  it("a rejected addon token during the baseline read releases the claim and marks the installation broken", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+    let createCalls = 0;
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        return jsonResponse({ message: "Addon token invalid", code: 4017 }, 401);
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) createCalls += 1;
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+
+    expect(response.status).toBe(503);
+    expect((response.body as { error: string }).error.toLowerCase()).toContain("reinstall");
+    expect(createCalls).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+      lifecycleState: "IDLE",
+      claimToken: null,
+    });
+    expect(server.db.prepare(
+      "SELECT broken_at FROM installations WHERE workspace_id=? AND addon_id=?",
+    ).get(WORKSPACE_ID, ADDON_ID)).toMatchObject({ broken_at: expect.any(String) });
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id=?",
+    ).get(entryId)).toEqual({ n: 0 });
+    expect(server.db.prepare(
+      "SELECT status FROM recreation_plans WHERE id=?",
+    ).get(planId)).toEqual({ status: "CONSUMED" });
+  });
+
+  it("a transport failure during the baseline read releases the claim and states that nothing was created", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+    let createCalls = 0;
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        throw new TypeError("baseline connection failed");
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) createCalls += 1;
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+
+    expect(response.status).toBe(502);
+    expect((response.body as { error: string }).error).toBe(
+      "RestoreTime could not verify the current Clockify entries. Nothing was created. Open the entry again, then try again.",
+    );
+    expect(createCalls).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+      lifecycleState: "IDLE",
+      claimToken: null,
+    });
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id=?",
+    ).get(entryId)).toEqual({ n: 0 });
+  });
+
+  it("a repeated page during the baseline read releases the claim without sending a create", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+    const repeatedPage = Array.from({ length: 200 }, (_, index) => ({
+      id: `repeated-${index}`,
+      description: "hello",
+      billable: true,
+      timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
+      userId: OWNER_ID,
+      workspaceId: WORKSPACE_ID,
+    }));
+    let createCalls = 0;
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        return jsonResponse(repeatedPage);
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) createCalls += 1;
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+
+    expect(response.status).toBe(502);
+    expect((response.body as { error: string }).error).toContain("Nothing was created");
+    expect(createCalls).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+      lifecycleState: "IDLE",
+      claimToken: null,
+    });
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id=?",
+    ).get(entryId)).toEqual({ n: 0 });
+  });
+
+  it("a lost pre-write claim reports the changed state without releasing its new owner", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+
+    let releaseBaseline!: () => void;
+    const baselineReleased = new Promise<void>((resolve) => { releaseBaseline = resolve; });
+    let signalBaseline!: () => void;
+    const baselineStarted = new Promise<void>((resolve) => { signalBaseline = resolve; });
+    let createCalls = 0;
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        signalBaseline();
+        await baselineReleased;
+        return jsonResponse([]);
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) createCalls += 1;
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const confirm = server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+    await baselineStarted;
+    server.db.prepare(
+      "UPDATE recoverable_entries SET claim_expires_at=? WHERE id=?",
+    ).run(new Date(Date.now() - 1_000).toISOString(), entryId);
+    expect(entries.recoverExpiredClaim(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      now: new Date(),
+    })?.lifecycleState).toBe("IDLE");
+    expect(entries.claim(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "new-owner",
+      now: new Date(),
+    })?.claimToken).toBe("new-owner");
+    releaseBaseline();
+    const response = await confirm;
+
+    expect(response.status).toBe(409);
+    expect((response.body as { error: string }).error).toContain("did not send");
+    expect(createCalls).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+      lifecycleState: "RECREATING",
+      claimToken: "new-owner",
+    });
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_attempts WHERE recoverable_entry_id=?",
+    ).get(entryId)).toEqual({ n: 0 });
+  });
+
+  it("an active plan does not revalidate or create a fresh plan while the entry is already recreating", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const { entryId, planId } = await seedAndPlan(server, token);
+    server.db.prepare(
+      "UPDATE recoverable_entries SET lifecycle_state='RECREATING', claim_token='current-owner', claim_expires_at=? WHERE id=?",
+    ).run(new Date(Date.now() + 60_000).toISOString(), entryId);
+    const planCount = (server.db.prepare("SELECT COUNT(*) AS n FROM recreation_plans").get() as { n: number }).n;
+    let clockifyReads = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyReads += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+
+    expect(response.status).toBe(409);
+    expect(clockifyReads).toBe(0);
+    expect((server.db.prepare("SELECT COUNT(*) AS n FROM recreation_plans").get() as { n: number }).n).toBe(planCount);
   });
 
   // IT-03 at the route level (the store-level race lives in claim.test.ts): two confirms of the
@@ -489,6 +863,285 @@ describe("POST /api/entries/recreate — guards", () => {
   });
 });
 
+describe.each(["single", "bulk"] as const)("%s preflight persistence is fenced by the current entry state", (mode) => {
+  it("does not create an ACTIVE plan after a concurrent confirm reaches RECREATED", async () => {
+    let holdNextProjectRead = false;
+    let signalProjectRead!: () => void;
+    const projectReadStarted = new Promise<void>((resolve) => { signalProjectRead = resolve; });
+    let releaseProjectRead!: () => void;
+    const projectReadReleased = new Promise<void>((resolve) => { releaseProjectRead = resolve; });
+    const createdEntry = {
+      id: "new-entry-race",
+      workspaceId: WORKSPACE_ID,
+      userId: OWNER_ID,
+      description: "hello",
+      billable: true,
+      projectId: "proj-1",
+      isLocked: false,
+      tagIds: [],
+      type: "REGULAR",
+      timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" },
+    };
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/projects/proj-1")) {
+        if (holdNextProjectRead) {
+          holdNextProjectRead = false;
+          signalProjectRead();
+          await projectReadReleased;
+        }
+        return jsonResponse({ id: "proj-1", name: "Project One", archived: false });
+      }
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
+      if (method === "POST" && path.endsWith("/time-entries")) return jsonResponse(createdEntry, 201);
+      if (method === "GET" && path.endsWith("/time-entries/new-entry-race")) return jsonResponse(createdEntry);
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({
+          projectId: "proj-1",
+          project: { id: "proj-1", name: "Project One", clientName: null },
+        }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    const list = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (list.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const firstPreflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const firstPlanId = (firstPreflight.body as { plan: { id: string } }).plan.id;
+
+    holdNextProjectRead = true;
+    const racingPreflight = server.addon.handle({
+      method: "POST",
+      path: mode === "single" ? "/api/entries/preflight" : "/api/entries/bulk-preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: mode === "single" ? { entryId } : { ids: [entryId] },
+    });
+    await projectReadStarted;
+
+    const confirm = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId: firstPlanId },
+    });
+    expect(confirm.status).toBe(200);
+    expect((confirm.body as { result: { outcome: string } }).result.outcome).toBe("RECREATED");
+
+    releaseProjectRead();
+    const raced = await racingPreflight;
+    if (mode === "single") {
+      expect(raced.status).toBe(409);
+    } else {
+      expect(raced.status).toBe(200);
+      expect((raced.body as { results: Array<{ status: string }> }).results).toMatchObject([
+        { status: "not-actionable" },
+      ]);
+    }
+
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_plans WHERE recoverable_entry_id=? AND status='ACTIVE'",
+    ).get(entryId)).toEqual({ n: 0 });
+    const detail = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entryId }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(detail.body).toMatchObject({
+      entry: { lifecycleState: "RECREATED" },
+      plan: { id: firstPlanId, status: "CONSUMED" },
+    });
+  });
+});
+
+describe("stale confirm persistence is fenced by the current entry state", () => {
+  it("does not create a replacement plan after another confirm reaches RECREATED", async () => {
+    let holdNextProjectRead = false;
+    let signalProjectRead!: () => void;
+    const projectReadStarted = new Promise<void>((resolve) => { signalProjectRead = resolve; });
+    let releaseProjectRead!: () => void;
+    const projectReadReleased = new Promise<void>((resolve) => { releaseProjectRead = resolve; });
+    let createCalls = 0;
+    const createdEntry = {
+      id: "new-entry-stale-race",
+      workspaceId: WORKSPACE_ID,
+      userId: OWNER_ID,
+      description: "hello",
+      billable: true,
+      projectId: "proj-1",
+      isLocked: false,
+      tagIds: [],
+      type: "REGULAR",
+      timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" },
+    };
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/projects/proj-1")) {
+        if (holdNextProjectRead) {
+          holdNextProjectRead = false;
+          signalProjectRead();
+          await projectReadReleased;
+          return jsonResponse({ id: "proj-1", name: "Project One", archived: true });
+        }
+        return jsonResponse({ id: "proj-1", name: "Project One", archived: false });
+      }
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+        return jsonResponse([]);
+      }
+      if (method === "POST" && path.endsWith("/time-entries")) {
+        createCalls += 1;
+        return jsonResponse(createdEntry, 201);
+      }
+      if (method === "GET" && path.endsWith("/time-entries/new-entry-stale-race")) {
+        return jsonResponse(createdEntry);
+      }
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(
+        webhookToken,
+        "TIME_ENTRY_DELETED",
+        deletedEntryBody({
+          projectId: "proj-1",
+          project: { id: "proj-1", name: "Project One", clientName: null },
+        }),
+        { path: "/webhooks/time-entry-deleted" },
+      ),
+    );
+    const entryId = entries.list(server.db, WORKSPACE_ID, {}).rows[0]!.id;
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const planId = (preflight.body as { plan: { id: string } }).plan.id;
+
+    holdNextProjectRead = true;
+    const staleConfirm = server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+    await projectReadStarted;
+
+    const winningConfirm = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, planId },
+    });
+    expect(winningConfirm.status).toBe(200);
+    expect((winningConfirm.body as { result: { outcome: string } }).result.outcome).toBe("RECREATED");
+
+    releaseProjectRead();
+    const raced = await staleConfirm;
+    expect(raced.status).toBe(409);
+    expect((raced.body as { stale?: boolean }).stale).toBeUndefined();
+    expect((raced.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("RECREATED");
+    expect(createCalls).toBe(1);
+    expect(server.db.prepare(
+      "SELECT COUNT(*) AS n FROM recreation_plans WHERE recoverable_entry_id=? AND status='ACTIVE'",
+    ).get(entryId)).toEqual({ n: 0 });
+    expect(server.db.prepare(
+      "SELECT status FROM recreation_plans WHERE id=?",
+    ).get(planId)).toEqual({ status: "CONSUMED" });
+  });
+});
+
+describe("installation generation fencing", () => {
+  it("does not let an old client's delayed 401 mark a fresh reinstall broken", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+    const list = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (list.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const oldInstallation = await server.installations.load(WORKSPACE_ID, ADDON_ID);
+    if (!oldInstallation) throw new Error("test installation missing");
+
+    let signalOldRead!: () => void;
+    const oldReadStarted = new Promise<void>((resolve) => { signalOldRead = resolve; });
+    let releaseOldRead!: () => void;
+    const oldReadReleased = new Promise<void>((resolve) => { releaseOldRead = resolve; });
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) {
+        signalOldRead();
+        await oldReadReleased;
+        return jsonResponse({ message: "Addon token invalid", code: 4017 }, 401);
+      }
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const oldPreflight = server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    await oldReadStarted;
+
+    const reinstallToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    const now = vi.spyOn(Date, "now").mockReturnValue(oldInstallation.installedAt + 1_000);
+    const reinstall = await server.addon.handle(
+      createTestLifecycleRequest(
+        reinstallToken,
+        buildInstalledPayload({
+          workspaceId: WORKSPACE_ID,
+          addonId: ADDON_ID,
+          apiUrl: "https://developer.clockify.me/api",
+          authToken: "fresh-installation-token",
+          webhooks: [{ path: "/webhooks/time-entry-deleted", webhookType: "ADDON", authToken: webhookToken }],
+        }),
+        { path: "/lifecycle/installed" },
+      ),
+    );
+    now.mockRestore();
+    expect(reinstall.status).toBe(204);
+
+    releaseOldRead();
+    expect((await oldPreflight).status).toBe(503);
+    expect(await server.installations.load(WORKSPACE_ID, ADDON_ID)).toMatchObject({
+      authToken: "fresh-installation-token",
+      installedAt: oldInstallation.installedAt + 1_000,
+    });
+    expect(server.db.prepare(
+      "SELECT broken_at FROM installations WHERE workspace_id=? AND addon_id=?",
+    ).get(WORKSPACE_ID, ADDON_ID)).toEqual({ broken_at: null });
+  });
+});
+
 // A truncated reconcile saw a partial list, so it is not evidence about anything. Counting it
 // toward the mark-not-created gate would let three bound-hitting checks license the user to
 // declare "not created" about an entry that exists — and then recreate it a second time.
@@ -528,9 +1181,10 @@ describe("POST /api/entries/reconcile — a truncated check is not a check", () 
         const path = pathOf(input);
         const method = methodOf(input, init);
         if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
+          const page = pageOf(input);
           return jsonResponse(
             Array.from({ length: 200 }, (_, i) => ({
-              id: `filler-${i}`,
+              id: `filler-${page}-${i}`,
               description: "hello",
               billable: true,
               timeInterval: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T01:00:00Z" },
@@ -571,7 +1225,7 @@ describe("POST /api/entries/reconcile — a truncated check is not a check", () 
 // was the one route without its own catch: a failed "Check now" escaped to the SDK's bare 500,
 // whose fallback rendering answers none of them.
 describe("POST /api/entries/reconcile — a failed check answers N8, not a bare 500", () => {
-  it("returns 502 with the transport message when the reconcile read fails", async () => {
+  it("keeps the earlier recreation result unknown when the reconcile read fails", async () => {
     vi.stubGlobal("fetch", baseStub());
     const server = await boot();
     const token = await componentToken();
@@ -623,16 +1277,32 @@ describe("POST /api/entries/reconcile — a failed check answers N8, not a bare 
     });
     expect(response.status).toBe(502);
     const message = (response.body as { error: string }).error;
-    // A reconcile is a read: a failed check changes nothing, so "Nothing was created" is a fact.
-    expect(message).toContain("Nothing was created");
-    expect(message).toContain("Try again");
+    expect(message).toContain("earlier recreation result is still unknown");
+    expect(message).toContain("This check did not create an entry");
+    expect(message).toContain("Do not start another recreation");
+    expect(message).toContain("check again");
+    expect(message).not.toContain("Nothing was created");
 
-    // The failed check recorded nothing and concluded nothing: no reconcile summary, and the row
-    // stays AMBIGUOUS — the truthful state.
+    // The failed read concludes nothing, but its start time remains as a conservative in-flight
+    // fence. This prevents "not created" from racing the read. Existing check evidence is not
+    // incremented, and the row stays AMBIGUOUS.
     const row = server.db.prepare("SELECT reconcile_json FROM recreation_attempts WHERE id='att-1'").get() as {
-      reconcile_json: string | null;
+      reconcile_json: string;
     };
-    expect(row.reconcile_json).toBeNull();
+    const reconcile = JSON.parse(row.reconcile_json) as {
+      checkedAt: string;
+      checks: number;
+      matchCount: number;
+      candidateIds: string[];
+      truncated: boolean;
+    };
+    expect(reconcile).toMatchObject({
+      checks: 0,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+    expect(Date.now() - new Date(reconcile.checkedAt).getTime()).toBeLessThan(30_000);
     const entryRow = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as {
       lifecycle_state: string;
     };
@@ -701,5 +1371,79 @@ describe("a disabled installation refuses actions but stays readable", () => {
     // Nothing was recreated.
     const row = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as { lifecycle_state: string };
     expect(row.lifecycle_state).toBe("IDLE");
+  });
+
+  it("returns AMBIGUOUS detail without running lazy reconciliation", async () => {
+    vi.stubGlobal("fetch", baseStub());
+    const server = await boot();
+    const token = await componentToken();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody(), { path: "/webhooks/time-entry-deleted" }),
+    );
+
+    const list = await server.addon.handle({ method: "GET", path: "/api/entries", headers: { authorization: `Bearer ${token}` } });
+    const entryId = (list.body as { entries: Array<{ id: string }> }).entries[0]!.id;
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    const planId = (preflight.body as { plan: { id: string } }).plan.id;
+    const attemptId = "disabled-ambiguous-attempt";
+    expect(entries.claim(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      claimToken: attemptId,
+      now: new Date(),
+    })).toBeDefined();
+    insertAttemptFixture(server.db, {
+      id: attemptId,
+      planId,
+      recoverableEntryId: entryId,
+      startedAt: new Date().toISOString(),
+      baseline: [],
+    });
+    expect(entries.setAmbiguous(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      claimToken: attemptId,
+    })).toBeDefined();
+    attempts.updateReconcile(server.db, attemptId, {
+      checkedAt: new Date(Date.now() - RECONCILE_THROTTLE_MS - 1_000).toISOString(),
+      checks: 1,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+
+    const statusToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    expect((await server.addon.handle(
+      createTestLifecycleRequest(
+        statusToken,
+        { workspaceId: WORKSPACE_ID, addonId: ADDON_ID, status: "INACTIVE" },
+        { path: "/lifecycle/status-changed" },
+      ),
+    )).status).toBe(204);
+
+    let clockifyFetches = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyFetches += 1;
+      return jsonResponse([]);
+    }) as typeof fetch);
+
+    const detail = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entryId }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({ disabled: true, entry: { lifecycleState: "AMBIGUOUS" } });
+    expect(clockifyFetches).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });

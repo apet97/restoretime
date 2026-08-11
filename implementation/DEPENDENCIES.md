@@ -10,8 +10,8 @@ far — `happy-dom`, at PASS-03.
 
 | Package | Version | Why |
 |---|---|---|
-| `@apet97/clockify-addon-sdk` | ^1.2.0 | Addon platform: manifest, verification, lifecycle, installation-store contract, encryption codec, node adapter, iframe bridge, secure responses. Source: `~/Downloads/working/addons-me/addon-ts-sdk` (read-only). |
-| `clockify-sdk-ts-115` | ^2.0.0 | Clockify REST: `createForUser`, reads for preflight, error model, retry policy. Source: `~/Downloads/working/addons-me/clockify-ts-sdk` (read-only). |
+| `@apet97/clockify-addon-sdk` | ^1.3.0 | Addon platform: manifest, verification, lifecycle, installation-store contract, encryption codec, webhook-path normalization, node adapter, iframe bridge, secure responses. Published from `64e668afd7bf330be4908c58d8671bdd27951608`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk`. |
+| `clockify-sdk-ts-115` | ^5.1.0 | Clockify REST: `createForUser`, reads for preflight, error model, retry policy. The 5.1.0 tag source is `94fe318f473daa9eda7b3cfc038a51429c3dee14`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk`. |
 | `better-sqlite3` | ^11 | Durable store. Synchronous prepared statements; no ORM. |
 
 Transitive: `jose` (via the addon SDK). Never imported directly by app code.
@@ -24,7 +24,7 @@ Transitive: `jose` (via the addon SDK). Never imported directly by app code.
 | `vitest` | Unit/contract/integration runner (matches sibling projects). |
 | `esbuild` | UI bundle (vanilla TS → one IIFE). |
 | `@types/node`, `@types/better-sqlite3` | Types. |
-| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest, scoped to `tests/e2e/` only (a per-file `// @vitest-environment happy-dom` docblock; every other suite stays on the node environment). The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, a real console — stay where the blueprint already assigns them: LV-01 against a live deployment, plus PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
+| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest, scoped to `tests/e2e/` only (a per-file `// @vitest-environment happy-dom` docblock; every other suite stays on the node environment). The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, and a real console — stay in LV-01 against a live deployment and PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
 
 ## Explicitly rejected
 
@@ -39,12 +39,12 @@ dotenv (process env only) · npm-run-all/concurrently (plain npm scripts).
 
 ## Registry note — decided
 
-Both SDK packages come from the **npm registry**. This is settled, not an open question:
-`npm view` resolves `@apet97/clockify-addon-sdk@1.2.0` and `clockify-sdk-ts-115@2.0.0`, and
-`tools/install-capture/` installed both from the registry and ran live against Clockify's
-developer environment on 2026-08-08 (evidence/install-capture-2026-08-08.md). Vendored tarballs
-are rejected: they add a manual refresh step for no proven benefit.
-
-PASS-01 records, in its report: the resolved versions, the `integrity` hashes of both packages
-from `package-lock.json`, and `git status --porcelain` output for both read-only SDK repos
-(must be empty). It never edits the SDK repos.
+Both SDK packages come from the **npm registry**. The current lockfile resolves
+`@apet97/clockify-addon-sdk@1.3.0` and `clockify-sdk-ts-115@5.1.0` and records their integrity
+hashes. The add-on SDK package maps to release source
+`64e668afd7bf330be4908c58d8671bdd27951608`; its source docs HEAD is
+`a753715623291952f5070f19bec946df78e78537`. The Clockify SDK package maps to tag source
+`94fe318f473daa9eda7b3cfc038a51429c3dee14`; the published tag and remote `main` matched this
+commit at the release audit. These source references do not replace the lockfile
+integrity values. Vendored tarballs remain rejected because they add a manual refresh step with no
+proven benefit.

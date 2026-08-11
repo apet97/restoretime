@@ -20,7 +20,7 @@ before rows are written.
 | `as_user` | TEXT | from INSTALLED payload |
 | `api_url` | TEXT | per-installation API base |
 | `auth_token` | TEXT | encrypted by the SDK codec |
-| `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by **normalized** webhook path (the SDK model has no event field; live INSTALLED payloads can carry `//webhooks/...` — normalize by collapsing repeated slashes before storing/looking up, evidence/install-capture-2026-08-08.md) |
+| `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by the SDK's `normalizeClockifyWebhookPath()` result (the SDK model has no event field; live INSTALLED payloads can carry `//webhooks/...`, evidence/install-capture-2026-08-08.md) |
 | `status` | TEXT | `ACTIVE`/`INACTIVE` (STATUS_CHANGED) |
 | `installed_at` | INTEGER | epoch **milliseconds** (the SDK `ClockifyInstallationContext.installedAt` type is `number`); the app sets it to `Date.now()` at INSTALLED receipt (`{...payload, installedAt: Date.now()}` — the payload itself has no generation) |
 | `broken_at` | TEXT | set when Clockify rejects the installation's token (401 code `4017`, docs/03 §6); distinct from `status` — different remedy (reinstall, not re-enable). Cleared by a reinstall (the upsert sets it back to NULL). Migration 0002 |
@@ -48,7 +48,7 @@ the store level (PASS-01), never via lifecycle payloads.
 | `claim_expires_at` | TEXT | 60 s lease |
 | `new_entry_id` | TEXT | recreated entry id |
 | `recreated_at` / `recreated_by` | TEXT | |
-| `parent_recoverable_id` | TEXT REFERENCES `recoverable_entries(id)` | lineage |
+| `parent_recoverable_id` | TEXT REFERENCES `recoverable_entries(id)` | same-owner lineage |
 
 Constraints:
 
@@ -101,8 +101,9 @@ Constraints:
 
 ## Retention and deletion
 
-- Rows live until recreation, dismissal, or uninstall. There is no time-based expiry in v1; volume
-  is bounded by how often users delete entries.
+- Normalized deleted-entry rows remain after recreation or dismissal. Those actions update the
+  lifecycle state; they do not delete `source_json`. There is no time-based expiry in v1. The rows
+  remain until uninstall, so volume grows with deleted entries while the add-on stays installed.
 - Uninstall (`DELETED` lifecycle): hard-delete the installation row and all rows in the three
   domain tables for the workspace, in one transaction. (F17)
   The purge is delivery-dependent: it only runs when Clockify's `DELETED` call reaches this

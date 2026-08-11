@@ -8,7 +8,7 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "@apet97/clockify-addon-sdk": "^1.2.0",
-    "clockify-sdk-ts-115": "^2.0.0"
+    "@apet97/clockify-addon-sdk": "^1.3.0",
+    "clockify-sdk-ts-115": "^5.1.0"
   }
 }

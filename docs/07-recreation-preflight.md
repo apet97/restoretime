@@ -20,7 +20,8 @@ After authorization, fetch in parallel via the installation's client (docs/04):
 1. `workspaces.get` → `workspaceSettings` (forceProjects/forceTasks/forceTags/forceDescription,
    onlyAdminsCanChangeBillableStatus where present, lock fields) (R12).
 2. `users.list` with the exact request `{ workspaceId, status: "ALL", "include-roles": false,
-   "page-size": 200 }` (paginated via `iterPages`, `maxPages: 10`) → owner record. On this route
+   "page-size": 200 }` (collected with `paginatedList(...).collect()`, `maxPages: 10`) → owner
+   record. On this route
    `user.status` is the workspace membership status; the owner is unavailable when the user is
    absent from the list or `status !== "ACTIVE"` (docs/03 note 1).
 3. `projects.get(source.projectId)` if set — gone is **404 or 400 with body code `501`**
@@ -114,11 +115,23 @@ WHERE id=:id AND workspace_id=:ws
 RETURNING *;
 ```
 
-Zero rows returned → another attempt owns it or the state forbids it → respond with the current
-state ("already recreating" / "already recreated"). The uniqueness pair
-`UNIQUE(workspace_id, source_entry_id)` plus this atomic claim makes double recreation impossible,
-including concurrent user+admin clicks (F11). Replica-safe: the database serializes the CAS
-(advisor-confirmed). `claim_token` (UUID per attempt) fences all later writes of the attempt.
+The claim runs in an immediate transaction. Before it reclaims an expired `RECREATING` row, it
+checks the attempt that has the expired claim token:
+
+- No attempt exists: no create request started. A new token can claim the row.
+- The attempt has no outcome, or its outcome is `AMBIGUOUS`: the create request can have reached
+  Clockify. Change the row to `AMBIGUOUS`. Do not start a new attempt.
+- The attempt has the definitive `FAILED` outcome: change the row to `FAILED`. A later claim can
+  start a new attempt.
+- The attempt has the definitive `SUCCESS` outcome and a new entry ID: change the row to
+  `RECREATED`. Use the stored new entry ID and finish time.
+
+The same transaction makes the check and the state change atomic. Zero rows returned means that
+another attempt owns the row or that its state forbids a claim. Respond with the current state
+("already recreating" / "already recreated"). The uniqueness pair
+`UNIQUE(workspace_id, source_entry_id)` and this atomic claim prevent double recreation, including
+concurrent user and admin actions (F11). `claim_token` (one UUID for each attempt) fences all later
+writes. The attempt start also checks this token before the create request starts.
 
 ## 7. Revalidation (TOCTOU guard)
 
@@ -140,34 +153,43 @@ claim (§6) → baseline snapshot → createForUser → branch:
 
 **Baseline snapshot**: immediately before the create, list the owner's entries with the
 **description filter** (`listForUser` with `description` = source description; fallback when the
-description is empty: the unfiltered list). Both reads paginate via `iterPages`
-(`pageSize: 200, maxPages: 10`; the bound is hit when a yielded page has
-`page === maxPages && hasNextPage` — docs/03 note 5, the reason `iterAll` cannot be used. A
-baseline that hits the bound is treated as a failed preflight — "workspace too large to verify;
-try again" — never a partial baseline). Record the
+description is empty: the unfiltered list). Both reads use `paginatedList(...).collect()` with
+`pageSize: 200` and `maxPages: 10`. If the SDK returns `truncated: true`, the baseline is unsafe.
+Treat it as a failed preflight: "workspace too large to verify; try again". Never use a partial
+baseline. Record the
 matching entry IDs as the attempt's baseline. Never use the `start`/`end`-windowed query: it is
 eventually consistent and unreliable for fresh entries (R10 — a new entry stayed invisible >45 s
 in the windowed variant, while description-filtered and unfiltered lists reflect creates
 immediately). Cost: one read. Purpose: the list has no created-at field (R10), so "new" can only
 mean "not in the baseline".
 
+If the baseline read fails, no attempt has started and no create request was sent. Release the
+fenced claim and require a fresh preflight; the consumed plan does not become active again. If the
+claim changes before the attempt starts, stop before the create request and do not release the new
+owner's claim. Return the current entry state instead.
+
 **Fingerprint** for matching: `start` and `end` (epoch-second compare), `description`
 (byte-exact), `billable`, `projectId`, `taskId`, `tagIds` (sorted compare). Only fields the list
-model returns are used; the release live suite pins the list shape (docs/13).
+model returns are used; the release live suite pins the list shape (docs/13). The match stays
+strict unless the persisted plan has `BILLABLE_MAY_CHANGE`. For that plan, only `billable` can
+differ because Clockify can apply the proved workspace override; the verification diff records
+the actual value.
 
 Branches:
 
 | Outcome | Transition | Behavior |
 |---|---|---|
 | 201 with body | RECREATING → (verify) | The 201 alone is definitive: the entry exists with that ID. `timeEntries.get(newId)`; diff planned vs actual (§9); store attempt SUCCESS, new id, diffs; state RECREATED. If the verification read fails after SDK read-retries, the state is still RECREATED: the diff falls back to the 201 body (it is the created entry) and records "verification read unavailable" — the diff is a report, never a gate |
-| 4xx | RECREATING → FAILED | Map reason via `statusCode` + `clockifyErrorCode(err)` (docs/03 §6 — the app normalizer, never the SDK `getErrorCode`; a 4xx with no body code maps on status alone); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
-| 5xx, timeout, connection reset | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Reconcile immediately once (below), then lazily |
+| SDK `definitely-failed` 4xx | RECREATING → FAILED | Map reason via `statusCode` + `clockifyErrorCode(err)` (docs/03 §6 — the app normalizer, never the SDK `getErrorCode`; a 4xx with no body code maps on status alone); attempt FAILED with detail; state FAILED. Nothing was created — validation is atomic (R3) |
+| SDK `possibly-committed` or `unknown` | RECREATING → AMBIGUOUS | Attempt AMBIGUOUS with baseline. Report `unknown` as an unexpected error. Reconcile immediately once (below), then lazily |
 
 **Reconcile (AMBIGUOUS)** — runs inline once, on each detail view while AMBIGUOUS (max once per
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
-and has had ≥3 checks shows the "not found" choice. List reads use the same description-filtered
-read as the baseline, `iterPages`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
-stays AMBIGUOUS and reports the bound.
+and has had ≥3 checks shows the "not found" choice. When that choice is already allowed, a detail
+view does not run another lazy check because that check would refresh the timestamp and hide the
+choice. Explicit "Check now" still starts a new check. List reads use the same description-filtered
+read as the baseline, collected by `paginatedList(...).collect()` (`pageSize: 200, maxPages: 10`).
+An SDK result with `truncated: true` stays AMBIGUOUS and reports the bound.
 
 ```text
 delta = listForUser(owner, description=source.description) − baseline, fingerprint-filtered

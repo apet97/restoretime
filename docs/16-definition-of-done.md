@@ -141,5 +141,8 @@ below either describes a current static fact or identifies itself as historical 
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.
-- [ ] Current 1.3.0/5.1.0 release candidate tagged. **Open**: no tag or release evidence binds the
-      current dependency pair to a tested and deployed artifact.
+- [x] Current 1.3.0/5.1.0 release candidate tagged as `v1.0.0-rc.10`. The tag resolves to PR 22's
+      merge commit `1917dfed5960750499eaecc5740bf718bf267b44`. PR CI and post-merge main CI passed.
+      GitHub published the release as a prerelease. Its notes state the developer-only proof,
+      cleanup result, and open production and Marketplace limits. See `evidence/live-release-run.md`
+      "Live run 16".

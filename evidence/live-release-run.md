@@ -1066,3 +1066,14 @@ and quick tunnel remain available for continued developer work.
 
 This is developer-environment proof only. Production `https://app.clockify.me` proof and the
 Marketplace release inputs remain open. No Marketplace submission was made.
+
+## RC.10 release result
+
+PR 22 passed CI and merged as `1917dfed5960750499eaecc5740bf718bf267b44`. The post-merge main CI
+run also passed all steps, including the GitHub secret scan. The lightweight tag
+`v1.0.0-rc.10` resolves to that exact merge commit. GitHub published it as a prerelease:
+`https://github.com/apet97/restoretime/releases/tag/v1.0.0-rc.10`.
+
+The release notes contain the SDK source commit and integrity, exact local and live test totals,
+webhook metrics, cleanup result, and the open production and Marketplace limits. The release did
+not submit the add-on to Marketplace.

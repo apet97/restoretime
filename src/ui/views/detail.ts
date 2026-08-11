@@ -6,7 +6,7 @@
 import { el, mount } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
 import type { Ctx } from "../state.js";
-import { renderApiError, renderBlockers, renderDifferences, withLoading } from "./shared.js";
+import { renderApiError, renderBlockers, renderDifferences, renderLineage, withLoading } from "./shared.js";
 import { renderResult } from "./result.js";
 import { renderResolutionWidgets, toPreflightChoices, type MutableChoices } from "./resolution-widgets.js";
 import type { DeletedTimeEntry, DetailResponse, PreflightResponse, RecreationPlan } from "../types.js";
@@ -26,21 +26,33 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
   if (!forceResolve) {
     if (entry.lifecycleState === "RECREATED" && data.plan && entry.newEntryId) {
       const attempt = data.attempts.find((a) => a.outcome === "SUCCESS") ?? data.attempts[0];
-      renderResult(ctx, entryId, data.plan, {
-        outcome: "RECREATED",
-        newEntryId: entry.newEntryId,
-        diffs: attempt?.diffs ?? [],
-      });
+      renderResult(
+        ctx,
+        entryId,
+        data.plan,
+        {
+          outcome: "RECREATED",
+          newEntryId: entry.newEntryId,
+          diffs: attempt?.diffs ?? [],
+        },
+        data.lineage,
+      );
       return;
     }
     if (entry.lifecycleState === "FAILED" && data.plan) {
       const attempt = data.attempts.find((a) => a.outcome === "FAILED") ?? data.attempts[0];
-      renderResult(ctx, entryId, data.plan, {
-        outcome: "FAILED",
-        status: attempt?.errorStatus ?? null,
-        code: attempt?.errorCode ?? null,
-        message: attempt?.errorMessage ?? "Clockify rejected the request.",
-      });
+      renderResult(
+        ctx,
+        entryId,
+        data.plan,
+        {
+          outcome: "FAILED",
+          status: attempt?.errorStatus ?? null,
+          code: attempt?.errorCode ?? null,
+          message: attempt?.errorMessage ?? "Clockify rejected the request.",
+        },
+        data.lineage,
+      );
       return;
     }
     if (entry.lifecycleState === "AMBIGUOUS" && data.plan) {
@@ -49,45 +61,82 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
       return;
     }
     if (entry.lifecycleState === "RECREATING") {
-      renderRecreating(ctx, entryId);
+      renderRecreating(ctx, entryId, data.lineage);
       return;
     }
     if (entry.lifecycleState === "DISMISSED") {
-      renderDismissed(ctx, entryId);
+      renderDismissed(ctx, entryId, data.disabled, data.lineage);
       return;
     }
   }
 
   const initialChoices: MutableChoices = data.plan ? { ...(data.plan.choices as MutableChoices) } : {};
-  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, data.disabled);
+  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, data.disabled, data.lineage);
 }
 
-function renderRecreating(ctx: Ctx, entryId: string): void {
+function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["lineage"]): void {
   const refresh = el("button", { type: "button" }, "Check status");
   refresh.addEventListener("click", () => renderDetail(ctx, entryId));
   const back = el("button", { type: "button" }, "Back to deleted entries");
   back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-  mount(ctx.root, el("h2", {}, "Recreating…"), el("p", {}, "RestoreTime is sending this entry to Clockify."), refresh, back);
+  mount(
+    ctx.root,
+    el("h2", {}, "Recreating…"),
+    el("p", {}, "RestoreTime is sending this entry to Clockify."),
+    renderLineage(ctx, lineage),
+    refresh,
+    back,
+  );
 }
 
-function renderDismissed(ctx: Ctx, entryId: string): void {
+function renderDismissed(ctx: Ctx, entryId: string, disabled: boolean, lineage: DetailResponse["lineage"]): void {
+  const back = el("button", { type: "button" }, "Back to deleted entries");
+  back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
+
+  if (disabled) {
+    const refresh = el("button", { type: "button" }, "Check status");
+    refresh.addEventListener("click", () => renderDetail(ctx, entryId));
+    mount(
+      ctx.root,
+      el("h2", {}, "Dismissed"),
+      el("p", {}, "This entry is hidden from the default list."),
+      el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."),
+      renderLineage(ctx, lineage),
+      refresh,
+      back,
+    );
+    return;
+  }
+
   const undismiss = el("button", { type: "button" }, "Undismiss");
   undismiss.addEventListener("click", () => {
     ctx.api
       .post("/api/entries/undismiss", { entryId })
       .then(() => renderDetail(ctx, entryId))
-      .catch((err) => renderApiError(ctx.root, err, () => renderDismissed(ctx, entryId)));
+      .catch((err) => renderApiError(ctx.root, err, () => renderDetail(ctx, entryId)));
   });
-  const back = el("button", { type: "button" }, "Back to deleted entries");
-  back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-  mount(ctx.root, el("h2", {}, "Dismissed"), el("p", {}, "This entry is hidden from the default list."), undismiss, back);
+  mount(
+    ctx.root,
+    el("h2", {}, "Dismissed"),
+    el("p", {}, "This entry is hidden from the default list."),
+    renderLineage(ctx, lineage),
+    undismiss,
+    back,
+  );
 }
 
-function runPreflightAndRender(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices, disabled: boolean): void {
+function runPreflightAndRender(
+  ctx: Ctx,
+  entryId: string,
+  source: DeletedTimeEntry,
+  choices: MutableChoices,
+  disabled: boolean,
+  lineage: DetailResponse["lineage"],
+): void {
   void withLoading(
     ctx,
     () => ctx.api.post("/api/entries/preflight", { entryId, choices: toPreflightChoices(choices) }) as Promise<PreflightResponse>,
-    (res) => renderResolveBody(ctx, entryId, source, choices, res.plan, disabled),
+    (res) => renderResolveBody(ctx, entryId, source, choices, res.plan, disabled, lineage),
     "Checking what can be recreated…",
   );
 }
@@ -148,9 +197,20 @@ function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan, locale
   );
 }
 
-function renderResolveBody(ctx: Ctx, entryId: string, source: DeletedTimeEntry, choices: MutableChoices, plan: RecreationPlan, disabled: boolean): void {
-  const reflow = () => runPreflightAndRender(ctx, entryId, source, choices, disabled);
+function renderResolveBody(
+  ctx: Ctx,
+  entryId: string,
+  source: DeletedTimeEntry,
+  choices: MutableChoices,
+  plan: RecreationPlan,
+  disabled: boolean,
+  lineage: DetailResponse["lineage"],
+): void {
+  const reflow = () => runPreflightAndRender(ctx, entryId, source, choices, disabled, lineage);
   const nodes: (Node | string)[] = [el("h2", {}, "Deleted time entry")];
+
+  const lineageSection = renderLineage(ctx, lineage);
+  if (lineageSection) nodes.push(lineageSection);
 
   const blockerSection = renderBlockers(plan.blockers);
   if (blockerSection) nodes.push(blockerSection);

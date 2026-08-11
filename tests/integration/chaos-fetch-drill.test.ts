@@ -190,6 +190,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -254,6 +255,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });

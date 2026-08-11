@@ -13,6 +13,7 @@ import type {
   ClockifyInstallationStore,
   ClockifyLifecycleWebhookToken,
 } from "@apet97/clockify-addon-sdk/clockify";
+import { normalizeClockifyWebhookPath } from "@apet97/clockify-addon-sdk/clockify";
 
 type InstallationStatus = "ACTIVE" | "INACTIVE";
 
@@ -26,32 +27,6 @@ interface InstallationRow {
   webhooks_json: string | null;
   status: InstallationStatus;
   installed_at: number;
-}
-
-/**
- * Live INSTALLED payloads can carry a webhook path like "//webhooks/time-entry-deleted" (Clockify
- * joins baseUrl + "/" + path — evidence/install-capture-2026-08-08.md, W17). This reduces an
- * absolute http(s) URL to its pathname, collapses repeated slashes, and drops a trailing slash,
- * so that storage and lookup agree on one key.
- *
- * The function is idempotent, and both sides normalize: writes normalize before storing, and the
- * lookup in `server.ts` normalizes again before comparing. That is deliberate, not redundant — a
- * row written by an older build stays findable.
- *
- * The absolute-URL branch is gated on an explicit `http(s)://` prefix. `new URL("webhooks:x")`
- * parses "webhooks" as a scheme and would otherwise reduce that path to "/x".
- */
-export function normalizeWebhookPath(path: string): string {
-  let pathname = path;
-  if (/^https?:\/\//i.test(path)) {
-    try {
-      pathname = new URL(path).pathname;
-    } catch {
-      // Not a parseable URL after all — keep the raw string.
-    }
-  }
-  const collapsed = `/${pathname.replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
-  return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed;
 }
 
 function rowToContext(row: InstallationRow): ClockifyInstallationContext {
@@ -128,7 +103,7 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
           ? null
           : JSON.stringify(
               context.webhooks.map((webhook) => ({
-                path: normalizeWebhookPath(webhook.path),
+                path: normalizeClockifyWebhookPath(webhook.path),
                 webhookType: webhook.webhookType,
                 authToken: webhook.authToken,
               })),
@@ -169,13 +144,15 @@ export function markInstallationBroken(
   db: Database.Database,
   workspaceId: string,
   addonId: string,
+  expectedInstalledAt: number,
   at: string,
 ): boolean {
   const result = db
     .prepare(
-      "UPDATE installations SET broken_at = ? WHERE workspace_id = ? AND addon_id = ? AND broken_at IS NULL",
+      `UPDATE installations SET broken_at = ?
+       WHERE workspace_id = ? AND addon_id = ? AND installed_at = ? AND broken_at IS NULL`,
     )
-    .run(at, workspaceId, addonId);
+    .run(at, workspaceId, addonId, expectedInstalledAt);
   return result.changes > 0;
 }
 

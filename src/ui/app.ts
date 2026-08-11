@@ -3,7 +3,12 @@
 // verified claims the shell embedded as data attributes (never the token — docs/10 §8), reads the
 // token itself from `?auth_token`, wires the SDK bridge, and renders the first view.
 
-import { applyClockifyLanguage, applyClockifyTheme, type ClockifyBrowserWindow } from "@apet97/clockify-addon-sdk/ui";
+import {
+  applyClockifyLanguage,
+  applyClockifyTheme,
+  isClockifyAdminRole,
+  type ClockifyBrowserWindow,
+} from "@apet97/clockify-addon-sdk/ui";
 import { createApiClient } from "./api.js";
 import { setupBridge } from "./bridge.js";
 import { el, mount } from "./dom.js";
@@ -14,16 +19,6 @@ import { renderConfirm } from "./views/confirm.js";
 import { renderResult } from "./views/result.js";
 import { renderBulkReview, renderBulkResults } from "./views/bulk.js";
 import { renderSessionExpired } from "./views/shared.js";
-
-/** Same predicate as the SDK's `isClockifyAdminRole` (owner/admin, case-insensitive) — reimplemented
- * locally rather than importing `@apet97/clockify-addon-sdk/clockify` into the browser bundle,
- * which pulls in JWT/node-oriented modules this cosmetic check does not need. This never gates a
- * server decision (bulk endpoints re-check `isAdmin` from verified claims — docs/09); it only
- * decides whether to render the admin-only list controls. */
-function isAdminRole(role: string): boolean {
-  const normalized = role.trim().toLowerCase();
-  return normalized === "owner" || normalized === "admin";
-}
 
 function readAuthToken(location: { readonly search: string }): string | undefined {
   const token = new URLSearchParams(location.search).get("auth_token");
@@ -79,11 +74,7 @@ export function boot(options: BootOptions): void {
     return;
   }
 
-  // `DOMStringMap`'s index signature is `string | undefined`, which `exactOptionalPropertyTypes`
-  // treats as incompatible with the SDK's `Record<string, string>` — casting only changes the
-  // static type; `dataset` stays the same live object, so the SDK's write still lands on the
-  // real element.
-  const docRoot = window.document.documentElement as unknown as { dataset: Record<string, string>; lang: string };
+  const docRoot = window.document.documentElement;
   applyClockifyTheme(body.dataset.theme, docRoot);
   applyClockifyLanguage(body.dataset.language, docRoot);
 
@@ -96,7 +87,7 @@ export function boot(options: BootOptions): void {
     api,
     bridge,
     locale,
-    isAdminRole: isAdminRole(body.dataset.role ?? ""),
+    isAdminRole: isClockifyAdminRole(body.dataset.role ?? ""),
     navigate: (state) => dispatch(ctx, state),
   };
 

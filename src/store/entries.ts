@@ -1,9 +1,10 @@
-// recoverable_entries query module (docs/08). Prepared statements only, no ORM. The claim SQL is
-// docs/07 §6 verbatim, including the lease clause — a crashed RECREATING attempt must stay
-// reclaimable after its 60 s lease expires (IT-12).
+// recoverable_entries query module (docs/08). Prepared statements only, no ORM. A lease can be
+// reclaimed only before an attempt row exists. A started attempt can have sent a create, so its
+// expired lease recovers to AMBIGUOUS instead (ADR-007, IT-12).
 
 import type Database from "better-sqlite3";
-import type { DeletedTimeEntry, LifecycleState, RecoverableEntry } from "../domain/entry.js";
+import type { DeletedTimeEntry, LifecycleState, RecoverableEntry, VerificationDiff } from "../domain/entry.js";
+import * as attempts from "./attempts.js";
 
 interface EntryRow {
   id: string;
@@ -91,7 +92,7 @@ export function ingestDeletedEntry(
     const inserted = result.changes > 0;
     if (inserted) {
       const parent = findByNewEntryId(db, i.workspaceId, i.sourceEntryId);
-      if (parent) {
+      if (parent?.ownerId === i.ownerId) {
         db.prepare("UPDATE recoverable_entries SET parent_recoverable_id = ? WHERE id = ?").run(
           parent.id,
           i.id,
@@ -239,22 +240,161 @@ export interface ClaimInput {
   readonly now: Date;
 }
 
-/** The atomic claim (docs/07 §6, verbatim SQL). Zero rows returned means another attempt owns
- * the row or its state forbids claiming — callers respond with the current state. */
+interface ExpiredClaimTarget {
+  readonly id: string;
+  readonly workspaceId: string;
+}
+
+/** Recovers only an expired claim that has a durable attempt. The caller owns an immediate
+ * transaction. Returns true when it changed the entry, which tells `claim` that it must not issue
+ * a new claim in the same request. */
+function recoverExpiredAttempt(
+  db: Database.Database,
+  input: ExpiredClaimTarget,
+  now: string,
+): boolean {
+  const expired = db
+    .prepare<[string, string, string], Pick<EntryRow, "claim_token">>(
+      `SELECT claim_token FROM recoverable_entries
+       WHERE id=? AND workspace_id=? AND lifecycle_state='RECREATING' AND claim_expires_at < ?`,
+    )
+    .get(input.id, input.workspaceId, now);
+  if (!expired?.claim_token) return false;
+
+  const attempt = attempts.getById(db, expired.claim_token);
+  if (attempt?.recoverableEntryId !== input.id) return false;
+
+  if (attempt.outcome === null) {
+    const finished = attempts.finishUnfinished(db, {
+      id: attempt.id,
+      finishedAt: now,
+      outcome: "AMBIGUOUS",
+      newEntryId: null,
+      errorStatus: null,
+      errorCode: null,
+      errorMessage: null,
+      diffs: null,
+    });
+    if (!finished) throw new Error("expired recreation attempt changed during recovery");
+  }
+
+  // Before outcome writes became atomic, a process could record SUCCESS and crash before it
+  // updated the entry. That stored outcome is definitive. Project it to RECREATED instead of
+  // discarding certainty and asking the user to reconcile it again.
+  if (attempt.outcome === "SUCCESS" && attempt.newEntryId && attempt.finishedAt) {
+    const actor = db.prepare<[string], { created_by: string }>(
+      "SELECT created_by FROM recreation_plans WHERE id=?",
+    ).get(attempt.planId);
+    if (!actor) throw new Error("successful recreation attempt has no plan actor");
+    const projected = db.prepare(
+      `UPDATE recoverable_entries
+       SET lifecycle_state='RECREATED', new_entry_id=@newEntryId,
+           recreated_at=@recreatedAt, recreated_by=@recreatedBy,
+           claim_token=NULL, claim_expires_at=NULL
+       WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+         AND claim_token=@expiredToken AND claim_expires_at < @now`,
+    ).run({
+      id: input.id,
+      workspaceId: input.workspaceId,
+      expiredToken: expired.claim_token,
+      newEntryId: attempt.newEntryId,
+      recreatedAt: attempt.finishedAt,
+      recreatedBy: actor.created_by,
+      now,
+    });
+    if (projected.changes !== 1) {
+      throw new Error("expired successful recreation changed during recovery");
+    }
+    return true;
+  }
+
+  // A completed 4xx outcome proves that Clockify rejected the create. An unfinished or ambiguous
+  // attempt can have created an entry. A malformed legacy SUCCESS follows the reconcile path.
+  const recoveredState = attempt.outcome === "FAILED" ? "FAILED" : "AMBIGUOUS";
+  const recovered = db.prepare(
+    `UPDATE recoverable_entries
+     SET lifecycle_state=@recoveredState, claim_token=NULL, claim_expires_at=NULL
+     WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+       AND claim_token=@expiredToken AND claim_expires_at < @now`,
+  ).run({
+    id: input.id,
+    workspaceId: input.workspaceId,
+    expiredToken: expired.claim_token,
+    recoveredState,
+    now,
+  });
+  if (recovered.changes !== 1) throw new Error("expired recreation claim changed during recovery");
+  return true;
+}
+
+/** The atomic claim (docs/07 §6). Zero rows returned means another attempt owns the row or its
+ * state forbids claiming — callers respond with the current state.
+ *
+ * An expired row needs one extra distinction. With no attempt row, the create cannot have started
+ * and a new token can claim it. With an attempt row, the create may have been sent. That case is
+ * recovered to AMBIGUOUS instead of authorizing a retry (ADR-007). */
 export function claim(db: Database.Database, input: ClaimInput): RecoverableEntry | undefined {
   const now = input.now.toISOString();
   const nowPlus60s = new Date(input.now.getTime() + CLAIM_LEASE_MS).toISOString();
-  const row = db
-    .prepare<Record<string, unknown>, EntryRow>(
+  // Prepare the compare-and-set once. The transaction below first resolves any expired claim
+  // that has a durable attempt, then uses this statement for a fresh or safe no-attempt claim.
+  const claimStatement = db.prepare<Record<string, unknown>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATING', claim_token=:token, claim_expires_at=:now_plus_60s
        WHERE id=:id AND workspace_id=:ws
          AND (lifecycle_state IN ('IDLE','FAILED')
               OR (lifecycle_state='RECREATING' AND claim_expires_at < :now))
        RETURNING *`,
-    )
-    .get({ id: input.id, ws: input.workspaceId, token: input.claimToken, now, now_plus_60s: nowPlus60s });
-  return row ? rowToEntry(row) : undefined;
+    );
+
+  const recoverThenClaim = db.transaction((): RecoverableEntry | undefined => {
+    if (recoverExpiredAttempt(db, input, now)) return undefined;
+
+    const row = claimStatement.get({
+      id: input.id,
+      ws: input.workspaceId,
+      token: input.claimToken,
+      now,
+      now_plus_60s: nowPlus60s,
+    });
+    return row ? rowToEntry(row) : undefined;
+  });
+
+  // The decision and its write must share one lock. Otherwise another connection could insert an
+  // attempt between the recovery check and an unsafe lease reclaim.
+  return recoverThenClaim.immediate();
+}
+
+/** Makes an expired claim reachable from a read path without issuing a create or a retry.
+ *
+ * A claim with no attempt row cannot have sent a create under the pre-write fence, so it returns
+ * to IDLE. The schema does not retain whether that claim started from IDLE or FAILED; IDLE is the
+ * safe recoverable state because it requires a new preflight and explicit confirmation. */
+export function recoverExpiredClaim(
+  db: Database.Database,
+  input: ExpiredClaimTarget & { readonly now: Date },
+): RecoverableEntry | undefined {
+  const now = input.now.toISOString();
+  const recover = db.transaction((): RecoverableEntry | undefined => {
+    const recoveredAttempt = recoverExpiredAttempt(db, input, now);
+    if (!recoveredAttempt) {
+      db.prepare(
+        `UPDATE recoverable_entries
+         SET lifecycle_state='IDLE', claim_token=NULL, claim_expires_at=NULL
+         WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+           AND claim_expires_at < @now
+           AND NOT EXISTS (
+             SELECT 1 FROM recreation_attempts
+             WHERE id=recoverable_entries.claim_token AND recoverable_entry_id=recoverable_entries.id
+           )`,
+      ).run({ id: input.id, workspaceId: input.workspaceId, now });
+    }
+    const row = db.prepare<[string, string], EntryRow>(
+      "SELECT * FROM recoverable_entries WHERE id=? AND workspace_id=?",
+    ).get(input.id, input.workspaceId);
+    return row ? rowToEntry(row) : undefined;
+  });
+  return recover.immediate();
 }
 
 interface FencedInput {
@@ -342,18 +482,49 @@ export function setAmbiguous(
  * code SQLITE_CONSTRAINT_UNIQUE, which the caller maps to 409 (double-adoption guard). */
 export function adopt(
   db: Database.Database,
-  input: { id: string; workspaceId: string; newEntryId: string; recreatedAt: string; recreatedBy: string },
+  input: {
+    id: string;
+    workspaceId: string;
+    expectedAttemptId: string;
+    newEntryId: string;
+    recreatedAt: string;
+    recreatedBy: string;
+    diffs: readonly VerificationDiff[];
+  },
 ): RecoverableEntry | undefined {
-  const row = db
-    .prepare<Record<string, unknown>, EntryRow>(
+  const run = db.transaction((): RecoverableEntry | undefined => {
+    const row = db.prepare<Record<string, unknown>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATED', new_entry_id=@newEntryId, recreated_at=@recreatedAt,
            recreated_by=@recreatedBy
        WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='AMBIGUOUS'
+         AND @expectedAttemptId = (
+           SELECT id FROM recreation_attempts
+           WHERE recoverable_entry_id=@id
+           ORDER BY started_at DESC, rowid DESC LIMIT 1
+         )
        RETURNING *`,
-    )
-    .get(input);
-  return row ? rowToEntry(row) : undefined;
+    ).get(input);
+    if (!row) return undefined;
+
+    const attempt = attempts.getById(db, input.expectedAttemptId);
+    if (attempt?.recoverableEntryId !== input.id) {
+      throw new Error("cannot adopt a recreated entry without the expected attempt");
+    }
+    const finished = attempts.finish(db, {
+      id: attempt.id,
+      finishedAt: input.recreatedAt,
+      outcome: "SUCCESS",
+      newEntryId: input.newEntryId,
+      errorStatus: null,
+      errorCode: null,
+      errorMessage: null,
+      diffs: input.diffs,
+    });
+    if (!finished) throw new Error("recreation attempt disappeared during adoption");
+    return rowToEntry(row);
+  });
+  return run.immediate();
 }
 
 /** AMBIGUOUS -> IDLE, user confirms "not created" (§8). */

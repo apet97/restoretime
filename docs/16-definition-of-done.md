@@ -1,10 +1,11 @@
 # 16 — Definition of done
 
-The product is done when every statement is true and verified.
+The product is done when every current-candidate statement is true and verified.
 
-Status recorded PASS-05 (evidence/live-release-run.md, `implementation/reports/PASS-05.md`). A box
-is checked only when it is genuinely true; every unchecked box carries the one-line reason it isn't
-yet, so an honest gap is visible here rather than buried in a report.
+PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
+upgrades `@apet97/clockify-addon-sdk` to 1.3.0 and `clockify-sdk-ts-115` to 5.0.1. Older local and
+live results remain useful history, but they are not proof for this dependency pair. A checked box
+below either describes a current static fact or identifies itself as historical evidence.
 
 ## Contracts
 
@@ -48,7 +49,11 @@ yet, so an honest gap is visible here rather than buried in a report.
 
 ## Quality bars
 
-- [x] `npm run typecheck`, `lint`, `test`, `build` green on `main` — verified on `main` after the
+- [x] Current 1.3.0/5.0.1 candidate passes `npm run typecheck`, `lint`, `test`, `build`, and E2E.
+      Verified 2026-08-10 with Node 22.23.1: typecheck, lint, and build passed; 37 files and 380
+      non-E2E tests passed; 8 files and 42 E2E tests passed; `git diff --check` passed. Root and
+      install-capture dependency audits reported zero vulnerabilities. A scan of every tracked or
+      unignored file reported no secret. Historical runs were green on `main` after the
       PASS-05 merge: 33 test files, 299 tests, plus 18 E2E; `git diff --check` clean; `gitleaks
       detect` reports no leaks. (Re-verified 2026-08-09 after the `clockify-sdk-ts-115` 4.0.0
       upgrade and the name filters: 37 test files, 324 tests, plus 20 E2E, same three clean.
@@ -61,19 +66,23 @@ yet, so an honest gap is visible here rather than buried in a report.
       (`grep -rn "TODO\|FIXME" src/` → no matches, re-verified PASS-05; no new dependency was
       added).
 - [x] Every user-facing string follows docs/10 terminology (recreate, never restore)
-      (`implementation/marketplace/terminology-check.md` — zero forbidden-term matches across
-      `src/ui/`, `src/api/routes.ts`, `src/api/views.ts`, `src/manifest.ts`).
+      (`implementation/marketplace/terminology-check.md` — the 2026-08-10 scan found zero
+      forbidden-term matches across the app surfaces and paste-ready Marketplace text).
 - [x] No raw webhook payload, token, or description appears in any log line (verified by the
       PASS-04 log-audit test that captures logs across the full suite run;
-      `tests/integration/log-audit.test.ts` re-run green on this pass's commit).
-- [x] ADRs still match the code; deviations were re-decided, not drifted into (PASS-05 made one
-      code change — `src/clockify/chaos-fetch.ts` wired into `src/clockify/client.ts` — a new
-      test-only hook gated identically to the existing `RT_TEST_CRASH_MID_ATTEMPT` pattern; it adds
-      no new production behavior and required no ADR revision).
+      `tests/integration/log-audit.test.ts` passed for the current candidate).
+- [x] ADRs still match the code. The current recovery and race tests defend ADR-007's no-blind-
+      retry rule. The state hardening needed no migration. ADR-010 now records attempt-aware lazy
+      lease recovery while keeping the accepted no-worker decision.
 
 ## Release gates
 
-- [x] Live suite LV-01…LV-10 passes against a real installed addon on the sacrificial workspace
+- [x] Current 1.3.0/5.0.1 candidate passes live suite LV-01…LV-10 against a real installed add-on on
+      the sacrificial developer workspace. Verified 2026-08-10: dev smoke passed 3/3; the full live
+      suite passed 11/11 with no skip or block; the running service recorded 11 matching webhook
+      receipt and persistence metrics with no error line; and the real Clockify iframe rendered the
+      list and detail views with no Chrome warning or error. See `evidence/live-release-run.md`
+      "Live run 15". **Production remains unverified.** Historical evidence follows: LV-01…LV-10 passed
       (LV-10 proves the ambiguity protocol live; it is not optional) — **run on the developer
       environment**, `10 passed | 1 skipped`, reproduced twice
       (evidence/live-release-run.md "Live run 2").
@@ -103,21 +112,21 @@ yet, so an honest gap is visible here rather than buried in a report.
       same run closed LV-02's self-declared gap by the log inspection it asks for: 11
       `webhook_received`, 11 `recoverable_created`, 11 persisted rows, 0 error lines.
       **Still unverified**: production (`app.clockify.me`) has never been exercised.
-- [ ] Marketplace manifest review package complete (docs/15). **Reason unchecked**: the reviewable
-      package is staged (`implementation/marketplace/`: manifest review, scope justification,
-      privacy text, terminology check, rollback proof) — everything docs/15's own prerequisites
-      list names. A real Marketplace submission additionally needs operator-supplied icon artwork,
-      screenshots, and a long-form listing description, plus a production host/DNS/TLS
-      (`implementation/marketplace/README.md` "What only the operator can supply") — none of which
-      exist yet.
-- [x] Rollback drill executed and recorded (evidence/live-release-run.md §2.3,
+- [x] Marketplace text package complete: manifest review, paste-ready listing copy, scope reasons,
+      privacy text, and terminology record are present in `implementation/marketplace/`. The short
+      description is 119/140 characters; the long description is 1,482/1,500 characters.
+- [ ] Marketplace release inputs complete. **Open**: a reviewable 300 × 300 icon is present, but
+      other image assets, screenshots, production and public URLs, monitored contacts, portal
+      taxonomy, terms, legal approval, and the submission action are not supplied. Text-package
+      completeness is not production proof.
+- [x] Historical rollback drill executed and recorded (evidence/live-release-run.md §2.3,
       `implementation/reports/PASS-05.md` "Rollback drill") — a real Docker build/run sequence
       including a deliberately incompatible drill-only migration, executed and reversed for real,
       not a dry run. Scope caveat: the pass file's "verify `/healthz` + one component load" was
       satisfied by `/healthz`, the served assets, and the `/component` verified-claims boundary
       (401 without a token). The **authenticated** component render was out of scope for this drill;
       it has since been done separately on the developer environment (evidence "Live run 7").
-- [x] GitHub release tagged with notes — currently `v1.0.0-rc.9`, a **release candidate**, not
+- [x] Historical GitHub release tagged with notes — `v1.0.0-rc.9`, a **release candidate**, not
       `v1.0.0`. rc.6 fixed the component CSP defect and rc.7 the false P-LOCK-REG warning; both
       were found by driving the addon and the workspace through a real browser (evidence "Live
       run 7" and "Live run 8"), which is why the candidate series moved twice after the passes
@@ -126,3 +135,5 @@ yet, so an honest gap is visible here rather than buried in a report.
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.
+- [ ] Current 1.3.0/5.0.1 release candidate tagged. **Open**: no tag or release evidence binds the
+      current dependency pair to a tested and deployed artifact.

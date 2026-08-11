@@ -84,8 +84,8 @@ function renderRunningWidget(
   return container;
 }
 
-async function fetchOptions(ctx: Ctx, kind: string, extra: Record<string, string> = {}): Promise<OptionItem[]> {
-  const res = (await ctx.api.get("/api/options", { kind, ...extra })) as { items: OptionItem[] };
+async function fetchOptions<T extends OptionItem = OptionItem>(ctx: Ctx, kind: string, extra: Record<string, string> = {}): Promise<T[]> {
+  const res = (await ctx.api.get("/api/options", { kind, ...extra })) as { items: T[] };
   return res.items;
 }
 
@@ -153,6 +153,15 @@ function renderTagsWidget(ctx: Ctx, choices: MutableChoices, reflow: () => void,
   for (const item of removable) {
     if (!item.refId) continue;
     const refId = item.refId;
+    if (!(item.options ?? []).includes("remove")) {
+      const remove = el("button", { type: "button" }, "Remove this replacement tag");
+      remove.addEventListener("click", () => {
+        choices.addTagIds = (choices.addTagIds ?? []).filter((id) => id !== refId);
+        reflow();
+      });
+      container.append(el("div", {}, el("p", {}, item.message), remove));
+      continue;
+    }
     const checkbox = el("input", { type: "checkbox" });
     checkbox.checked = (choices.dropTagIds ?? []).includes(refId);
     checkbox.addEventListener("change", () => {
@@ -203,69 +212,129 @@ function renderDescriptionWidget(choices: MutableChoices, reflow: () => void, it
  * (fetched via `kind=customFields`, matched by the item's `refId`) to know whether to render a
  * dropdown, a number input, or a text input. */
 function renderCustomFieldItem(
-  ctx: Ctx,
   choices: MutableChoices,
   reflow: () => void,
   item: ActionRequiredItem,
   source: DeletedTimeEntry,
+  fieldsPromise: Promise<readonly CustomFieldOption[]>,
 ): HTMLElement | null {
   const refId = item.refId;
   if (!refId) return null;
   const container = el("div", {}, el("p", {}, item.message));
 
+  const setInput = (value: unknown): void => {
+    choices.dropCustomFieldIds = (choices.dropCustomFieldIds ?? []).filter((id) => id !== refId);
+    choices.customFieldInputs = [
+      ...(choices.customFieldInputs ?? []).filter((candidate) => candidate.customFieldId !== refId),
+      { customFieldId: refId, value },
+    ];
+    reflow();
+  };
+
+  const dropValue = (): void => {
+    choices.customFieldInputs = (choices.customFieldInputs ?? []).filter((candidate) => candidate.customFieldId !== refId);
+    choices.dropCustomFieldIds = [...new Set([...(choices.dropCustomFieldIds ?? []), refId])];
+    reflow();
+  };
+
+  const unavailable = (): HTMLParagraphElement =>
+    el("p", { role: "alert" }, "Current field settings are not available. Reload the page and try again.");
+
   if (item.ruleId === "P-CF-OPT") {
-    // The three actions are distinguished by a `data-kind` attribute, never by a magic value in
-    // the same space as the field's own options: a workspace option literally named "__drop__"
-    // would otherwise silently drop the value instead of setting it.
-    const placeholder = el("option", { value: "", "data-kind": "none" }, "Choose…");
-    const keepOption = el("option", { value: "", "data-kind": "keep" }, "Keep the original value");
-    const dropOption = el("option", { value: "", "data-kind": "drop" }, "Drop this value");
-    const select = el("select", {}, placeholder, keepOption, dropOption);
-    select.addEventListener("change", () => {
-      const chosen = select.options[select.selectedIndex];
-      const kind = chosen?.getAttribute("data-kind") ?? "value";
-      if (kind === "none") return;
-      choices.dropCustomFieldIds = (choices.dropCustomFieldIds ?? []).filter((id) => id !== refId);
-      choices.customFieldInputs = (choices.customFieldInputs ?? []).filter((c) => c.customFieldId !== refId);
-      if (kind === "drop") {
-        choices.dropCustomFieldIds = [...(choices.dropCustomFieldIds ?? []), refId];
-      } else if (kind === "keep") {
-        const sourceValue = source.customFieldValues.find((v) => v.customFieldId === refId)?.value ?? null;
-        choices.customFieldInputs = [...(choices.customFieldInputs ?? []), { customFieldId: refId, value: sourceValue }];
-      } else {
-        choices.customFieldInputs = [...(choices.customFieldInputs ?? []), { customFieldId: refId, value: chosen?.value ?? "" }];
-      }
-      reflow();
+    const replacement = el("div", {}, el("p", {}, "Loading current field settings…"));
+    const keep = el("button", { type: "button" }, "Keep the original value");
+    keep.addEventListener("click", () => {
+      const value = source.customFieldValues.find((candidate) => candidate.customFieldId === refId)?.value ?? null;
+      setInput(value);
     });
-    fetchOptions(ctx, "customFields")
+    const drop = el("button", { type: "button" }, "Drop this value");
+    drop.addEventListener("click", dropValue);
+    fieldsPromise
       .then((fields) => {
-        const field = (fields as unknown as CustomFieldOption[]).find((f) => f.id === refId);
-        // Appended in order, before the two fixed actions — inserting each one at a fixed index
-        // reversed them.
-        for (const value of field?.allowedValues ?? []) {
-          select.insertBefore(el("option", { value, "data-kind": "value" }, value), keepOption);
+        const field = fields.find((candidate) => candidate.id === refId);
+        if (!field) {
+          replacement.replaceChildren(unavailable());
+          return;
         }
+
+        const multiple = field.type === "DROPDOWN_MULTIPLE";
+        const select = el(
+          "select",
+          multiple ? { multiple: "multiple" } : {},
+          multiple ? null : el("option", { value: "" }, "Choose a value…"),
+          ...(field.allowedValues ?? []).map((value) => el("option", { value }, value)),
+        );
+        const useSelected = el("button", { type: "button" }, multiple ? "Use selected values" : "Use selected value");
+        useSelected.addEventListener("click", () => {
+          if (multiple) {
+            const values = Array.from(select.selectedOptions).map((option) => option.value);
+            if (values.length > 0) setInput(values);
+          } else if (select.value !== "") {
+            setInput(select.value);
+          }
+        });
+        replacement.replaceChildren(select, useSelected);
       })
-      .catch(() => undefined);
-    container.append(select);
+      .catch(() => replacement.replaceChildren(unavailable()));
+    container.append(replacement, keep, drop);
     return container;
   }
 
-  // P-CF-REQ: text or number input, depending on the field's type.
-  const input = el("input", { type: "text" });
-  fetchOptions(ctx, "customFields")
+  const controls = el("div", {}, el("p", {}, "Loading current field settings…"));
+  fieldsPromise
     .then((fields) => {
-      const field = (fields as unknown as CustomFieldOption[]).find((f) => f.id === refId);
-      if (field?.type === "NUMBER") input.setAttribute("type", "number");
+      const field = fields.find((candidate) => candidate.id === refId);
+      if (!field) {
+        controls.replaceChildren(unavailable());
+        return;
+      }
+
+      if (field.type === "CHECKBOX") {
+        const select = el(
+          "select",
+          {},
+          el("option", { value: "" }, "Choose a value…"),
+          el("option", { value: "true" }, "Checked"),
+          el("option", { value: "false" }, "Not checked"),
+        );
+        const save = el("button", { type: "button" }, "Save value");
+        save.addEventListener("click", () => {
+          if (select.value !== "") setInput(select.value === "true");
+        });
+        controls.replaceChildren(select, save);
+        return;
+      }
+
+      if (field.type === "DROPDOWN_SINGLE" || field.type === "DROPDOWN_MULTIPLE") {
+        const multiple = field.type === "DROPDOWN_MULTIPLE";
+        const select = el(
+          "select",
+          multiple ? { multiple: "multiple" } : {},
+          multiple ? null : el("option", { value: "" }, "Choose a value…"),
+          ...(field.allowedValues ?? []).map((value) => el("option", { value }, value)),
+        );
+        const save = el("button", { type: "button" }, multiple ? "Save values" : "Save value");
+        save.addEventListener("click", () => {
+          if (multiple) {
+            const values = Array.from(select.selectedOptions).map((option) => option.value);
+            if (values.length > 0) setInput(values);
+          } else if (select.value !== "") {
+            setInput(select.value);
+          }
+        });
+        controls.replaceChildren(select, save);
+        return;
+      }
+
+      const input = el("input", { type: field.type === "NUMBER" ? "number" : "text" });
+      const save = el("button", { type: "button" }, "Save value");
+      save.addEventListener("click", () => {
+        if (input.value !== "") setInput(input.value);
+      });
+      controls.replaceChildren(input, save);
     })
-    .catch(() => undefined);
-  const save = el("button", { type: "button" }, "Save value");
-  save.addEventListener("click", () => {
-    if (input.value === "") return;
-    choices.customFieldInputs = [...(choices.customFieldInputs ?? []).filter((c) => c.customFieldId !== refId), { customFieldId: refId, value: input.value }];
-    reflow();
-  });
-  container.append(input, save);
+    .catch(() => controls.replaceChildren(unavailable()));
+  container.append(controls);
   return container;
 }
 
@@ -279,8 +348,11 @@ function renderCustomFieldsWidget(
   const cfItems = [...itemsFor(items, "P-CF-OPT"), ...itemsFor(items, "P-CF-REQ")];
   if (cfItems.length === 0) return null;
   const container = el("fieldset", {}, el("legend", {}, "Custom fields"));
+  // All items need the same current workspace settings. Share the request for this render so a
+  // form with several custom fields does not repeat the same Clockify read.
+  const fieldsPromise = fetchOptions<CustomFieldOption>(ctx, "customFields");
   for (const item of cfItems) {
-    const node = renderCustomFieldItem(ctx, choices, reflow, item, source);
+    const node = renderCustomFieldItem(choices, reflow, item, source, fieldsPromise);
     if (node) container.append(node);
   }
   return container;

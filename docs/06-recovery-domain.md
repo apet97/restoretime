@@ -50,7 +50,8 @@ lifecycleState        IDLE | RECREATING | RECREATED | FAILED | AMBIGUOUS | DISMI
 claimToken/claimExpiresAt       mutation claim fencing
 newEntryId            set on RECREATED; UNIQUE per workspace when present (adoption guard)
 recreatedAt/recreatedBy
-parentRecoverableId   lineage: set when this row's source entry was itself created by us
+parentRecoverableId   lineage: set when this row's source entry was itself created by us for the
+                      same owner
 ```
 
 ### RecreationPlan (immutable artifact)
@@ -84,14 +85,16 @@ IDLE ──claim──► RECREATING ──201+verify──► RECREATED (termin
   ▲                │  ├─4xx──► FAILED ──claim(new plan)──► RECREATING
   │                │  └─5xx/timeout──► AMBIGUOUS ──adopt 1 match──► RECREATED
   │                │                      │  └─user "not created"──► IDLE
-  │                └──(lease expired)──► reclaimable by next claim
+  │                ├─expired, no attempt + detail read──► IDLE
+  │                ├─expired, no attempt + new claim──► RECREATING (new token)
+  │                └─expired, attempt started──► AMBIGUOUS or its stored final state
   └── DISMISSED ◄──dismiss── IDLE/FAILED        DISMISSED ──undismiss──► IDLE
 ```
 
 | State | Entry condition | User sees | Allowed exits |
 |---|---|---|---|
 | IDLE | Row inserted (webhook), or user marked an ambiguous attempt "not created", or undismiss | Entry in list; Recreate action | claim → RECREATING; dismiss → DISMISSED |
-| RECREATING | Atomic claim won | "Recreating…" (stale after lease expiry, retry offered) | verify → RECREATED; 4xx → FAILED; unknown → AMBIGUOUS |
+| RECREATING | Atomic claim won | "Recreating…" | verify → RECREATED; 4xx → FAILED; unknown or expired started attempt → AMBIGUOUS; a detail read returns an expired no-attempt claim to IDLE; a new claim replaces that expired token and stays RECREATING |
 | FAILED | Create rejected (4xx, mapped reason) | Failure view: what happened, nothing was created, what to do next | new plan + claim → RECREATING; dismiss → DISMISSED |
 | AMBIGUOUS | Create outcome unknown | "We do not know whether Clockify created this entry" + Check now | adopt → RECREATED; user confirms not created → IDLE |
 | RECREATED | New entry verified | Success view: new entry, fidelity, differences | none (terminal) |

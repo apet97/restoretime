@@ -79,13 +79,21 @@ export function renderConfirm(ctx: Ctx, entryId: string, plan: RecreationPlan, s
   mount(ctx.root, ...nodes);
 }
 
-/** A stale plan or a lost claim race (both 409, docs/07 §7) goes back to the resolve flow, which
- * re-runs preflight and hands the user a plan that is definitely current — a stale response already
- * carries the fresh plan, but re-fetching costs one extra round trip and guarantees the detail view
- * and the plan agree. Any other failure (a transport error) just re-shows this same confirm view so
- * the user can press the button again without losing their place. */
+/** An unknown write result opens the entry status and never offers a retry. A stale plan or a lost
+ * claim race (both 409, docs/07 §7) goes back to the resolve flow, which re-runs preflight and hands
+ * the user a current plan. Other operational failures re-show this confirm view. */
 function handleConfirmError(ctx: Ctx, entryId: string, plan: RecreationPlan, source: DeletedTimeEntry, err: unknown, confirmButton: HTMLButtonElement): void {
   confirmButton.toggleAttribute("disabled", false);
+  if (
+    err instanceof ApiError &&
+    typeof err.body === "object" &&
+    err.body !== null &&
+    "unknownResult" in err.body &&
+    (err.body as { unknownResult: unknown }).unknownResult === true
+  ) {
+    renderApiError(ctx.root, err, () => ctx.navigate({ kind: "detail", entryId }), "Open entry");
+    return;
+  }
   if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
     renderApiError(ctx.root, err, () => ctx.navigate({ kind: "detail", entryId, forceResolve: true }));
     return;

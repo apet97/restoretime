@@ -37,7 +37,7 @@ function isDropdown(field: CustomFieldDef): boolean {
  * arrives as an array; a single-select as a scalar. */
 function allOptionsAllowed(value: unknown, allowed: readonly string[]): boolean {
   const values = Array.isArray(value) ? value : [value];
-  return values.every((v) => allowed.includes(String(v)));
+  return values.every((v) => typeof v === "string" && allowed.includes(v));
 }
 
 function isNumericValue(value: unknown): boolean {
@@ -102,7 +102,30 @@ export interface PreflightResult {
 }
 
 function hasUsableValue(value: unknown): boolean {
-  return value !== null && value !== undefined && value !== "";
+  return value !== null && value !== undefined && value !== "" && (!Array.isArray(value) || value.length > 0);
+}
+
+function hasDropdownValueShape(field: CustomFieldDef, value: unknown): boolean {
+  if (field.type === "DROPDOWN_SINGLE") return typeof value === "string";
+  if (field.type === "DROPDOWN_MULTIPLE") return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return true;
+}
+
+function hasUsableDefaultValue(field: CustomFieldDef): boolean {
+  const value = field.defaultValue;
+  if (!hasUsableValue(value)) return false;
+  if (field.type === "NUMBER") return isNumericValue(value);
+  if (field.type === "CHECKBOX") return typeof value === "boolean";
+  if (isDropdown(field)) {
+    return hasDropdownValueShape(field, value) && (field.allowedValues === null || allOptionsAllowed(value, field.allowedValues));
+  }
+  return typeof value === "string";
+}
+
+function isEndAfterStart(start: string, end: string): boolean {
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
+  return Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime;
 }
 
 export interface EffectiveIds {
@@ -181,7 +204,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       mode = "running";
     } else {
       mode = "completed";
-      if (choices.completedEnd === undefined || choices.completedEnd <= source.start) {
+      if (choices.completedEnd === undefined || !isEndAfterStart(source.start, choices.completedEnd)) {
         modeResolved = false;
         actionRequired.push({ ruleId: "P-RUN-END", message: "Enter an end time after the start time." });
       } else {
@@ -282,8 +305,10 @@ export function runPreflight(input: PreflightInput): PreflightResult {
   const dropTagIds = new Set(choices.dropTagIds ?? []);
   const addTagIds = choices.addTagIds ?? [];
   const keptTagIds: string[] = [];
+  const validAddTagIds: string[] = [];
   let unresolvedTagIssues = 0;
   let appliedTagDrops = 0;
+  const unresolvedTagIds = new Set<string>();
 
   for (const tag of source.tags) {
     if (dropTagIds.has(tag.id)) {
@@ -294,6 +319,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     const current = workspace.currentTags.get(tag.id);
     if (current === undefined) {
       unresolvedTagIssues += 1;
+      unresolvedTagIds.add(tag.id);
       actionRequired.push({
         ruleId: "P-TAG-GONE",
         message: `The tag "${tag.name}" no longer exists. Confirm removal, or add a current tag.`,
@@ -302,6 +328,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       });
     } else if (current.archived) {
       unresolvedTagIssues += 1;
+      unresolvedTagIds.add(tag.id);
       actionRequired.push({
         ruleId: "P-TAG-ARCH",
         message: `The tag "${tag.name}" is archived. Archived tags block recreation. Confirm removal, or add a current tag.`,
@@ -314,17 +341,36 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     }
   }
 
-  const effectiveTagIds = [...new Set([...keptTagIds, ...addTagIds])];
-  if (addTagIds.length > 0) hasAdjustment = true;
+  for (const id of new Set(addTagIds)) {
+    const current = workspace.currentTags.get(id);
+    if (current === undefined || current.archived) {
+      if (!unresolvedTagIds.has(id)) {
+        unresolvedTagIssues += 1;
+        unresolvedTagIds.add(id);
+        actionRequired.push({
+          ruleId: current === undefined ? "P-TAG-GONE" : "P-TAG-ARCH",
+          message:
+            current === undefined
+              ? "The selected replacement tag no longer exists. Select a current tag."
+              : "The selected replacement tag is archived. Select a current tag.",
+          refId: id,
+        });
+      }
+      continue;
+    }
+    validAddTagIds.push(id);
+  }
+
+  const effectiveTagIds = [...new Set([...keptTagIds, ...validAddTagIds])];
+  if (validAddTagIds.length > 0) hasAdjustment = true;
   if (appliedTagDrops > 0) hasAdjustment = true;
-  for (const id of addTagIds) resolution.push({ kind: "tag", refId: id, outcome: "substituted" });
+  for (const id of validAddTagIds) resolution.push({ kind: "tag", refId: id, outcome: "substituted" });
 
   if (
-    source.tags.length > 0 &&
     unresolvedTagIssues === 0 &&
     effectiveTagIds.length === 0 &&
     workspace.forceTags &&
-    addTagIds.length === 0
+    validAddTagIds.length === 0
   ) {
     actionRequired.push({ ruleId: "P-TAG-REQ", message: "This workspace requires at least one tag. Select a current tag." });
   }
@@ -356,6 +402,10 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     }
 
     if (dropped) {
+      if (field.required && !hasUsableDefaultValue(field)) {
+        actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.name}" is required. Enter a value.`, refId: field.id });
+        continue;
+      }
       resolution.push({ kind: "customField", refId: field.id, outcome: "dropped" });
       warnings.push({ ruleId: "P-CF-OPT", code: "CF_VALUE_DROPPED", message: `The value for "${field.name}" was dropped.` });
       hasPartialLoss = true;
@@ -364,7 +414,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     let effectiveValue: unknown = null;
     let fromUserInput = false;
-    if (userInput !== undefined) {
+    if (userInput !== undefined && hasUsableValue(userInput.value)) {
       effectiveValue = userInput.value;
       fromUserInput = true;
     } else if (hasUsableValue(sourceValue)) {
@@ -372,7 +422,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     }
 
     if (!hasUsableValue(effectiveValue) && field.required) {
-      if (hasUsableValue(field.defaultValue)) {
+      if (hasUsableDefaultValue(field)) {
         effectiveValue = field.defaultValue;
       } else {
         actionRequired.push({ ruleId: "P-CF-REQ", message: `"${field.name}" is required. Enter a value.`, refId: field.id });
@@ -382,6 +432,30 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     if (!hasUsableValue(effectiveValue)) {
       resolution.push({ kind: "customField", refId: field.id, outcome: "kept" });
+      continue;
+    }
+
+    if ((field.type === "TXT" || field.type === "LINK") && typeof effectiveValue !== "string") {
+      actionRequired.push({
+        ruleId: "P-CF-REQ",
+        message:
+          field.type === "TXT"
+            ? `"${field.name}" needs text. Enter a value.`
+            : `"${field.name}" needs a link. Enter a value.`,
+        refId: field.id,
+      });
+      continue;
+    }
+
+    if (isDropdown(field) && !hasDropdownValueShape(field, effectiveValue)) {
+      actionRequired.push({
+        ruleId: "P-CF-REQ",
+        message:
+          field.type === "DROPDOWN_SINGLE"
+            ? `"${field.name}" needs one option. Select a current option.`
+            : `"${field.name}" needs one or more options. Select current options.`,
+        refId: field.id,
+      });
       continue;
     }
 
@@ -405,6 +479,14 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       actionRequired.push({
         ruleId: "P-CF-REQ",
         message: `"${field.name}" needs a number. Enter a value.`,
+        refId: field.id,
+      });
+      continue;
+    }
+    if (field.type === "CHECKBOX" && typeof effectiveValue !== "boolean") {
+      actionRequired.push({
+        ruleId: "P-CF-REQ",
+        message: `"${field.name}" needs a checkbox value. Select "Checked" or "Not checked".`,
         refId: field.id,
       });
       continue;

@@ -3,6 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/store/db.js";
 import { ingestDeletedEntry, getById, adopt, list } from "../../src/store/entries.js";
+import * as attempts from "../../src/store/attempts.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 
 function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
@@ -74,6 +77,32 @@ describe("UT-L01 lineage linking on ingestion", () => {
     expect(entry.parentRecoverableId).toBeNull();
   });
 
+  it("does not link a recreated entry owned by another member", () => {
+    const db = openDatabase(":memory:");
+    const { entry: foreignParent } = ingestDeletedEntry(db, {
+      id: "re-foreign",
+      workspaceId: "ws-1",
+      sourceEntryId: "foreign-source",
+      ownerId: "user-2",
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: source({ entryId: "foreign-source", ownerId: "user-2" }),
+    });
+    db.prepare(
+      "UPDATE recoverable_entries SET lifecycle_state='RECREATED', new_entry_id='shared-clockify-id' WHERE id=?",
+    ).run(foreignParent.id);
+
+    const { entry: child } = ingestDeletedEntry(db, {
+      id: "re-child",
+      workspaceId: "ws-1",
+      sourceEntryId: "shared-clockify-id",
+      ownerId: "user-1",
+      detectedAt: "2026-08-08T09:05:00Z",
+      source: source({ entryId: "shared-clockify-id", ownerId: "user-1" }),
+    });
+
+    expect(child.parentRecoverableId).toBeNull();
+  });
+
   it("a duplicate delivery (same source_entry_id) is not inserted twice", () => {
     const db = openDatabase(":memory:");
     const first = ingestDeletedEntry(db, {
@@ -106,14 +135,45 @@ describe("UT-L01 lineage linking on ingestion", () => {
 // the same Clockify entry. The guard is the partial unique index on
 // (workspace_id, new_entry_id), not application logic, so it is tested at the database.
 describe("double-adoption guard", () => {
-  function ambiguousRow(db: ReturnType<typeof openDatabase>, id: string, sourceEntryId: string) {
+  function ambiguousRow(
+    db: ReturnType<typeof openDatabase>,
+    id: string,
+    sourceEntryId: string,
+    workspaceId = "ws-1",
+  ) {
     ingestDeletedEntry(db, {
       id,
-      workspaceId: "ws-1",
+      workspaceId,
       sourceEntryId,
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
-      source: source({ entryId: sourceEntryId }),
+      source: source({ workspaceId, entryId: sourceEntryId }),
+    });
+    plans.createActive(db, {
+      id: `plan-${id}`,
+      recoverableEntryId: id,
+      createdBy: "user-1",
+      createdAt: "2026-08-08T09:00:01Z",
+      sourceHash: "hash",
+      choices: {},
+      resolution: [],
+      plannedRequest: {
+        workspaceId,
+        userId: "user-1",
+        start: "2026-08-08T10:00:00Z",
+        end: "2026-08-08T11:00:00Z",
+      },
+      warnings: [],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    insertAttemptFixture(db, {
+      id: `attempt-${id}`,
+      planId: `plan-${id}`,
+      recoverableEntryId: id,
+      startedAt: "2026-08-08T09:00:02Z",
+      baseline: [],
     });
     db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(id);
   }
@@ -128,13 +188,18 @@ describe("double-adoption guard", () => {
       newEntryId: "new-entry-x",
       recreatedAt: "2026-08-08T10:00:00Z",
       recreatedBy: "user-1",
+      diffs: [],
     };
-    expect(adopt(db, { id: "re-a", ...input })?.lifecycleState).toBe("RECREATED");
+    expect(adopt(db, {
+      id: "re-a",
+      expectedAttemptId: "attempt-re-a",
+      ...input,
+    })?.lifecycleState).toBe("RECREATED");
 
     // The route maps this throw to 409 and leaves the row AMBIGUOUS for the user to resolve.
     let thrown: unknown;
     try {
-      adopt(db, { id: "re-b", ...input });
+      adopt(db, { id: "re-b", expectedAttemptId: "attempt-re-b", ...input });
     } catch (err) {
       thrown = err;
     }
@@ -143,30 +208,33 @@ describe("double-adoption guard", () => {
     const rowB = getById(db, "ws-1", "re-b");
     expect(rowB?.lifecycleState).toBe("AMBIGUOUS");
     expect(rowB?.newEntryId).toBeNull();
+    expect(attempts.getById(db, "attempt-re-b")?.outcome).toBeNull();
   });
 
   it("allows the same new_entry_id in a different workspace", () => {
     const db = openDatabase(":memory:");
     ambiguousRow(db, "re-a", "entry-a");
-    ingestDeletedEntry(db, {
-      id: "re-other",
-      workspaceId: "ws-2",
-      sourceEntryId: "entry-a",
-      ownerId: "user-1",
-      detectedAt: "2026-08-08T09:00:00Z",
-      source: source({ workspaceId: "ws-2" }),
-    });
-    db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(
-      "re-other",
-    );
+    ambiguousRow(db, "re-other", "entry-a", "ws-2");
 
-    const common = { recreatedAt: "2026-08-08T10:00:00Z", recreatedBy: "user-1" };
+    const common = { recreatedAt: "2026-08-08T10:00:00Z", recreatedBy: "user-1", diffs: [] };
     expect(
-      adopt(db, { id: "re-a", workspaceId: "ws-1", newEntryId: "new-entry-x", ...common })
+      adopt(db, {
+        id: "re-a",
+        workspaceId: "ws-1",
+        expectedAttemptId: "attempt-re-a",
+        newEntryId: "new-entry-x",
+        ...common,
+      })
         ?.lifecycleState,
     ).toBe("RECREATED");
     expect(
-      adopt(db, { id: "re-other", workspaceId: "ws-2", newEntryId: "new-entry-x", ...common })
+      adopt(db, {
+        id: "re-other",
+        workspaceId: "ws-2",
+        expectedAttemptId: "attempt-re-other",
+        newEntryId: "new-entry-x",
+        ...common,
+      })
         ?.lifecycleState,
     ).toBe("RECREATED");
   });

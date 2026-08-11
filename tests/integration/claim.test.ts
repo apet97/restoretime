@@ -77,7 +77,7 @@ describe("IT-03 concurrent recreate claims", () => {
 });
 
 describe("IT-12 lease expiry and fenced writes", () => {
-  it("a crashed attempt (expired lease) is reclaimable by a new claim", () => {
+  it("an expired claim with no attempt row is reclaimable by a new claim", () => {
     const db = freshDb();
     const { entry } = entries.ingestDeletedEntry(db, {
       id: "re-1",
@@ -97,9 +97,8 @@ describe("IT-12 lease expiry and fenced writes", () => {
     });
     expect(firstClaim).toBeDefined();
 
-    // The attempt "crashes": no result write ever arrives. 61 seconds later (past the 60 s
-    // lease), a fresh claim must win — this is the exact case the lease clause in docs/07 §6
-    // exists for; without it a crashed attempt is permanently unclaimable.
+    // The process stops before it records an attempt. 61 seconds later (past the 60 s lease), a
+    // fresh claim can win because no Clockify write could have started.
     const laterNow = new Date("2026-08-08T09:01:01Z");
     const freshToken = randomUUID();
     const reclaimed = entries.claim(db, {

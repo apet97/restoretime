@@ -29,6 +29,8 @@ const ADDON_ID = "addon-1";
 const OWNER_ID = "user-1";
 const OTHER_ID = "user-2";
 const GONE_PROJECT_ID = "proj-deleted";
+const CURRENT_TAG_ID = "tag-current";
+const ARCHIVED_TAG_ID = "tag-archived";
 
 let dir: string;
 let keys: ClockifyTestKeys;
@@ -76,6 +78,18 @@ function currentWorkspaceStub(): typeof fetch {
       ]);
     }
     if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Still Here", archived: false }]);
+    if (path.endsWith("/tasks")) {
+      return jsonResponse([
+        { id: "task-active", name: "Current task", status: "ACTIVE" },
+        { id: "task-done", name: "Completed task", status: "DONE" },
+      ]);
+    }
+    if (path.endsWith("/tags")) {
+      return jsonResponse([
+        { id: CURRENT_TAG_ID, name: "Current tag", archived: false },
+        { id: ARCHIVED_TAG_ID, name: "Archived tag", archived: true },
+      ]);
+    }
     return jsonResponse([]);
   };
 }
@@ -233,5 +247,30 @@ describe("/api/options?kind=users — the suggestions behind the user filter", (
     const seeded = await seed();
     expect((await get(seeded, seeded.memberToken, "/api/options", { kind: "projects" })).status).toBe(200);
     expect((await get(seeded, seeded.memberToken, "/api/options", { kind: "tags" })).status).toBe(200);
+  });
+});
+
+describe("/api/options?kind=tags — replacement tag choices", () => {
+  it("returns current tags and omits archived tags", async () => {
+    const seeded = await seed();
+    const res = await get(seeded, seeded.memberToken, "/api/options", { kind: "tags" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ items: [{ id: CURRENT_TAG_ID, name: "Current tag", archived: false }] });
+    expect(JSON.stringify(res.body)).not.toContain(ARCHIVED_TAG_ID);
+  });
+});
+
+describe("/api/options?kind=tasks — replacement task choices", () => {
+  it("returns active tasks and omits completed tasks", async () => {
+    const seeded = await seed();
+    const res = await get(seeded, seeded.memberToken, "/api/options", {
+      kind: "tasks",
+      projectId: "proj-live",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      items: [{ id: "task-active", name: "Current task", status: "ACTIVE" }],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("task-done");
   });
 });

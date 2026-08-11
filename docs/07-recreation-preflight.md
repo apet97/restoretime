@@ -114,11 +114,23 @@ WHERE id=:id AND workspace_id=:ws
 RETURNING *;
 ```
 
-Zero rows returned → another attempt owns it or the state forbids it → respond with the current
-state ("already recreating" / "already recreated"). The uniqueness pair
-`UNIQUE(workspace_id, source_entry_id)` plus this atomic claim makes double recreation impossible,
-including concurrent user+admin clicks (F11). Replica-safe: the database serializes the CAS
-(advisor-confirmed). `claim_token` (UUID per attempt) fences all later writes of the attempt.
+The claim runs in an immediate transaction. Before it reclaims an expired `RECREATING` row, it
+checks the attempt that has the expired claim token:
+
+- No attempt exists: no create request started. A new token can claim the row.
+- The attempt has no outcome, or its outcome is `AMBIGUOUS`: the create request can have reached
+  Clockify. Change the row to `AMBIGUOUS`. Do not start a new attempt.
+- The attempt has the definitive `FAILED` outcome: change the row to `FAILED`. A later claim can
+  start a new attempt.
+- The attempt has the definitive `SUCCESS` outcome and a new entry ID: change the row to
+  `RECREATED`. Use the stored new entry ID and finish time.
+
+The same transaction makes the check and the state change atomic. Zero rows returned means that
+another attempt owns the row or that its state forbids a claim. Respond with the current state
+("already recreating" / "already recreated"). The uniqueness pair
+`UNIQUE(workspace_id, source_entry_id)` and this atomic claim prevent double recreation, including
+concurrent user and admin actions (F11). `claim_token` (one UUID for each attempt) fences all later
+writes. The attempt start also checks this token before the create request starts.
 
 ## 7. Revalidation (TOCTOU guard)
 
@@ -151,9 +163,17 @@ in the windowed variant, while description-filtered and unfiltered lists reflect
 immediately). Cost: one read. Purpose: the list has no created-at field (R10), so "new" can only
 mean "not in the baseline".
 
+If the baseline read fails, no attempt has started and no create request was sent. Release the
+fenced claim and require a fresh preflight; the consumed plan does not become active again. If the
+claim changes before the attempt starts, stop before the create request and do not release the new
+owner's claim. Return the current entry state instead.
+
 **Fingerprint** for matching: `start` and `end` (epoch-second compare), `description`
 (byte-exact), `billable`, `projectId`, `taskId`, `tagIds` (sorted compare). Only fields the list
-model returns are used; the release live suite pins the list shape (docs/13).
+model returns are used; the release live suite pins the list shape (docs/13). The match stays
+strict unless the persisted plan has `BILLABLE_MAY_CHANGE`. For that plan, only `billable` can
+differ because Clockify can apply the proved workspace override; the verification diff records
+the actual value.
 
 Branches:
 
@@ -165,7 +185,9 @@ Branches:
 
 **Reconcile (AMBIGUOUS)** — runs inline once, on each detail view while AMBIGUOUS (max once per
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
-and has had ≥3 checks shows the "not found" choice. List reads use the same description-filtered
+and has had ≥3 checks shows the "not found" choice. When that choice is already allowed, a detail
+view does not run another lazy check because that check would refresh the timestamp and hide the
+choice. Explicit "Check now" still starts a new check. List reads use the same description-filtered
 read as the baseline, `iterPages`-paginated (`pageSize: 200, maxPages: 10`); hitting the page bound
 stays AMBIGUOUS and reports the bound.
 

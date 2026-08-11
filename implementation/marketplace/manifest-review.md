@@ -19,12 +19,12 @@ deployed environment can supply.
 | Component | Sidebar, `allowEveryone()`, path `/component`, label "Time Entry Recovery", icon `/icon.svg` | `src/manifest.ts` `componentDescriptor()` |
 | Lifecycle events | `INSTALLED` → `/lifecycle/installed`; `STATUS_CHANGED` → `/lifecycle/status-changed`; `DELETED` → `/lifecycle/deleted` | `src/manifest.ts` `lifecycleDescriptors()` |
 
-## Boot-time validation (already proved, PASS-01)
+## Boot-time validation contract
 
 `createValidatedClockifyAddon` runs the SDK's manifest JSON-schema validation before the process
-accepts any request. `tests/unit/server.test.ts` covers this path offline; a malformed manifest
-(missing scope, bad URL shape, etc.) is a boot failure, not a runtime surprise a reviewer would
-discover after install.
+accepts any request. `tests/unit/server.test.ts` covers this path offline. A malformed manifest
+(missing scope, bad URL shape, etc.) is a boot failure. Run the current-candidate local gates before
+release; the existence of this review file is not test evidence.
 
 ## Terminology in manifest-visible strings
 

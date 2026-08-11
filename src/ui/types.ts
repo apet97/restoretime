@@ -86,13 +86,8 @@ export interface RecreateResponse {
   readonly entry?: RecoverableEntry;
 }
 
-export interface StaleResponse {
-  readonly stale: true;
-  readonly plan: RecreationPlan;
-}
-
 export interface ReconcileResult {
-  readonly kind: "none" | "one" | "adopted" | "adopt-conflict" | "many" | "truncated";
+  readonly kind: "none" | "adopted" | "adopt-conflict" | "many" | "truncated";
   readonly candidateIds?: readonly string[];
   readonly newEntryId?: string;
 }
@@ -119,7 +114,7 @@ export interface CustomFieldOption {
 
 export interface BulkPreflightRow {
   readonly entryId: string;
-  readonly status: "not-found" | "error" | "blocked" | "needs-input" | "ready";
+  readonly status: "not-found" | "not-actionable" | "error" | "blocked" | "needs-input" | "ready";
   readonly message?: string;
   readonly plan?: RecreationPlan;
   /** Absent only for `not-found`, where there is no entry left to describe. */
@@ -129,4 +124,12 @@ export interface BulkPreflightRow {
 export type BulkRecreateRow =
   // `entryId` is null when the plan id no longer resolves to an entry — there is nothing to open.
   | { readonly entryId: string | null; readonly planId: string; readonly outcome: "ERROR"; readonly message: string }
-  | ({ readonly entryId: string; readonly planId: string } & AttemptRecreationResult);
+  | ({ readonly entryId: string; readonly planId: string } & Exclude<AttemptRecreationResult, { readonly outcome: "AMBIGUOUS" }>)
+  | {
+      readonly entryId: string;
+      readonly planId: string;
+      readonly outcome: "AMBIGUOUS";
+      readonly baseline?: readonly string[];
+      /** Present when the attempt ended outside the normal result path. */
+      readonly message?: string;
+    };

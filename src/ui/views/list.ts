@@ -1,6 +1,7 @@
 // List view (docs/10 §1-§2). Regular users see only their own entries (the server enforces this —
-// docs/09 — the UI never filters by owner itself). Admins additionally get filters, a dismissed
-// toggle, and bulk selection. Nothing else: no dashboards, no charts (docs/10 §2).
+// docs/09 — the UI never filters by owner itself). All users can show entries they dismissed.
+// Admins additionally get filters and bulk selection. Nothing else: no dashboards, no charts
+// (docs/10 §2).
 
 import { el, mount } from "../dom.js";
 import { formatDetected, formatEntryHeader, statusLabel } from "../format.js";
@@ -38,8 +39,8 @@ async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListRespon
   const query: Record<string, string> = {};
   if (ctx.isAdminRole && filters.userName) query.userName = filters.userName;
   if (filters.projectName) query.projectName = filters.projectName;
-  if (filters.from) query.from = `${filters.from}T00:00:00.000Z`;
-  if (filters.to) query.to = `${filters.to}T23:59:59.999Z`;
+  if (filters.from) query.from = new Date(`${filters.from}T00:00:00.000`).toISOString();
+  if (filters.to) query.to = new Date(`${filters.to}T23:59:59.999`).toISOString();
   if (ctx.isAdminRole && filters.status) query.status = filters.status;
   if (filters.search) query.search = filters.search;
   if (filters.dismissed) query.dismissed = "true";
@@ -79,6 +80,7 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     nodes.push(el("p", { role: "status" }, "Clockify could not be reached; status and actions may be out of date."));
   }
 
+  nodes.push(renderDismissedControl(ctx, filters));
   if (ctx.isAdminRole) nodes.push(renderAdminControls(ctx, filters));
 
   // Built before the rows and updated in place by each row's checkbox handler (never a full
@@ -161,6 +163,19 @@ function fillSuggestions(ctx: Ctx, list: HTMLDataListElement, kind: "users" | "p
     .catch(() => suggestionCaches.get(ctx.api)?.delete(kind));
 }
 
+function renderDismissedControl(ctx: Ctx, filters: ListFilterState): HTMLElement {
+  const toggle = el("input", { type: "checkbox" });
+  toggle.checked = filters.dismissed;
+  toggle.addEventListener("change", () => {
+    filters.dismissed = toggle.checked;
+    // The admin status filter and this toggle select the same lifecycle-state column. The toggle
+    // owns that selection while it is on, so discard a stale status before the next list read.
+    if (filters.dismissed) filters.status = "";
+    load(ctx, filters);
+  });
+  return el("section", { "aria-label": "List options" }, el("label", {}, toggle, " Show dismissed"));
+}
+
 function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
   // Filtering by name, not by id: nobody knows a 24-character Clockify id by heart, and the names
   // shown on each row are the ones stored at deletion time, so what you type matches what you see
@@ -204,16 +219,6 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     load(ctx, filters);
   });
 
-  const dismissedToggle = el("input", { type: "checkbox" });
-  dismissedToggle.checked = filters.dismissed;
-  dismissedToggle.addEventListener("change", () => {
-    filters.dismissed = dismissedToggle.checked;
-    // Turning the toggle on drops any chosen status, so the next Apply cannot send both.
-    if (filters.dismissed) filters.status = "";
-    load(ctx, filters);
-  });
-  const dismissedLabel = el("label", {}, dismissedToggle, " Show dismissed");
-
   const bulkToggle = el("input", { type: "checkbox" });
   bulkToggle.checked = filters.bulkMode;
   bulkToggle.addEventListener("change", () => {
@@ -235,7 +240,6 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     el("label", {}, "Status", statusSelect),
     el("label", {}, "Search", searchInput),
     applyButton,
-    dismissedLabel,
     bulkLabel,
   );
 }
@@ -275,7 +279,7 @@ function renderRow(
     lines.push(el("div", {}, recreateButton));
   }
 
-  if (ctx.isAdminRole && filters.bulkMode) {
+  if (ctx.isAdminRole && filters.bulkMode && actionable && !disabledInstallation) {
     const checkbox = el("input", { type: "checkbox" });
     checkbox.checked = filters.selected.has(row.id);
     checkbox.addEventListener("change", () => {

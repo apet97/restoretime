@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { createClockifyClient } from "clockify-sdk-ts-115";
 import { openDatabase } from "../../src/store/db.js";
 import * as entries from "../../src/store/entries.js";
+import * as attempts from "../../src/store/attempts.js";
+import { insertAttemptFixture } from "../support/attempt-fixture.js";
 import * as plans from "../../src/store/plans.js";
 import { createSqliteInstallationStore, markInstallationBroken } from "../../src/platform/installations.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
@@ -235,7 +237,7 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
       // The production callback, not a test double: routes.ts wires exactly this.
       onAddonTokenInvalid: () => {
         markedBroken = true;
-        markInstallationBroken(db, WORKSPACE_ID, "addon-1", "2026-08-08T09:02:00Z");
+        markInstallationBroken(db, WORKSPACE_ID, "addon-1", 1_000, "2026-08-08T09:02:00Z");
       },
     });
 
@@ -256,7 +258,7 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
       `INSERT INTO installations (workspace_id, addon_id, addon_user_id, as_user, api_url, auth_token, installed_at)
        VALUES (?, 'addon-1', 'addon-user-1', 'user-1', 'https://developer.clockify.me/api', 'tok', 1000)`,
     ).run(WORKSPACE_ID);
-    markInstallationBroken(db, WORKSPACE_ID, "addon-1", "2026-08-08T09:02:00Z");
+    markInstallationBroken(db, WORKSPACE_ID, "addon-1", 1_000, "2026-08-08T09:02:00Z");
 
     const store = createSqliteInstallationStore(db);
     await store.save({
@@ -312,9 +314,14 @@ describe("IT-04 ambiguous protocol", () => {
     expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
 
     // Reconcile: this time the read client is not the slow/timing-out one — the entry is findable.
+    let verificationReads = 0;
     const reconcileFetch: typeof fetch = async (input) => {
       const path = pathOf(input);
       if (path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([candidateEntry()]);
+      if (path.endsWith("/time-entries/new-entry-1")) {
+        verificationReads += 1;
+        return jsonResponse(candidateEntry({ description: "server-normalized" }));
+      }
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = createClockifyClient({ addonToken: "tok", baseUrl: "https://developer.clockify.me/api/v1", timeoutInSeconds: 30, fetch: reconcileFetch });
@@ -327,6 +334,7 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -334,6 +342,12 @@ describe("IT-04 ambiguous protocol", () => {
     const row = entries.getById(db, WORKSPACE_ID, entry.id);
     expect(row?.lifecycleState).toBe("RECREATED");
     expect(row?.newEntryId).toBe("new-entry-1");
+    expect(verificationReads).toBe(1);
+    expect(attempts.getById(db, "tok-1")?.diffs).toContainEqual({
+      field: "description",
+      planned: "hello",
+      actual: "server-normalized",
+    });
   });
 
   it("nothing-committed: reconcile finds no match -> stays AMBIGUOUS -> user marks 'not created' -> IDLE", async () => {
@@ -358,6 +372,7 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -393,10 +408,105 @@ describe("IT-04 ambiguous protocol", () => {
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
+      expectedAttemptId: "tok-1",
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "many", candidateIds: ["cand-1", "cand-2"] });
     expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+  });
+
+  it("a stale in-flight reconcile cannot adopt its match into a replacement attempt", async () => {
+    const db = freshDb();
+    const entry = seedEntry(db);
+    seedPlan(db, entry.id);
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-a",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    insertAttemptFixture(db, {
+      id: "attempt-a",
+      planId: "plan-1",
+      recoverableEntryId: entry.id,
+      startedAt: "2026-08-08T09:01:01Z",
+      baseline: [],
+    });
+    entries.setAmbiguous(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "attempt-a",
+    });
+
+    const fetchStub: typeof fetch = async (input) => {
+      const path = pathOf(input);
+      if (path.endsWith("/time-entries") && path.includes("/user/")) {
+        // Reconcile A is waiting on this external read. Another request resolves A as not created,
+        // then starts replacement attempt B for the same deleted entry.
+        entries.markNotCreated(db, WORKSPACE_ID, entry.id);
+        plans.createActive(db, {
+          id: "plan-2",
+          recoverableEntryId: entry.id,
+          createdBy: USER_ID,
+          createdAt: "2026-08-08T09:02:00Z",
+          sourceHash: "hash",
+          choices: {},
+          resolution: [],
+          plannedRequest: PLANNED,
+          warnings: [],
+          blockers: [],
+          actionRequired: [],
+          fidelity: "FULL",
+        });
+        entries.claim(db, {
+          id: entry.id,
+          workspaceId: WORKSPACE_ID,
+          claimToken: "attempt-b",
+          now: new Date("2026-08-08T09:02:01Z"),
+        });
+        insertAttemptFixture(db, {
+          id: "attempt-b",
+          planId: "plan-2",
+          recoverableEntryId: entry.id,
+          startedAt: "2026-08-08T09:02:02Z",
+          baseline: [],
+        });
+        entries.setAmbiguous(db, {
+          id: entry.id,
+          workspaceId: WORKSPACE_ID,
+          claimToken: "attempt-b",
+        });
+        return jsonResponse([candidateEntry()]);
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    };
+    const client = createClockifyClient({
+      addonToken: "tok",
+      baseUrl: "https://developer.clockify.me/api/v1",
+      timeoutInSeconds: 30,
+      fetch: fetchStub,
+    });
+
+    const result = await runReconcile({
+      db,
+      client,
+      entryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      userId: USER_ID,
+      plannedRequest: PLANNED,
+      baseline: [],
+      expectedAttemptId: "attempt-a",
+      recreatedBy: "viewer-1",
+      now: new Date("2026-08-08T09:03:00Z"),
+    });
+
+    expect(result).toEqual({ kind: "adopt-conflict" });
+    expect(entries.getById(db, WORKSPACE_ID, entry.id)).toMatchObject({
+      lifecycleState: "AMBIGUOUS",
+      newEntryId: null,
+    });
+    expect(attempts.getById(db, "attempt-a")?.outcome).toBeNull();
+    expect(attempts.getById(db, "attempt-b")?.outcome).toBeNull();
   });
 });

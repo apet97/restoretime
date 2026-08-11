@@ -41,8 +41,8 @@ All paths are exact (the SDK router has no path parameters; docs/03 §5). `entry
 
 | Boundary | Check |
 |---|---|
-| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; admin filters (`userId`, `userName`, project, date, status, search, dismissed) are validated but never widen the workspace scope. `userId` and `userName` both name another person, so both are read only for an admin and silently ignored otherwise |
-| `GET /api/entries/detail` | row lookup scoped by claims workspace + entry id from query; then `canRead` else 404 (no existence leak) |
+| `GET /api/entries` | workspace from claims; non-admin queries add `owner_id = viewer`; filters are validated and never widen the workspace scope. `userId` and `userName` both name another person, so both are read only for an admin and silently ignored otherwise. Every viewer can use `dismissed` to find and undo their own dismissals. An inaccessible lineage reference is returned as `null` |
+| `GET /api/entries/detail` | row lookup scoped by claims workspace + entry id from query; then `canRead` else 404 (no existence leak). Parent and child lineage rows and references pass the same `canRead` check |
 | `POST /api/entries/preflight` | same scoping; then `canAct` |
 | `POST /api/entries/recreate` | same; plus P-PERM re-evaluated inside preflight (defense in depth) |
 | `POST /api/entries/reconcile` / `mark-not-created` / `resolve-ambiguous` / `dismiss` / `undismiss` | same scoping and `canAct` |

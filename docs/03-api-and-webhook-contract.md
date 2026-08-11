@@ -19,7 +19,8 @@ Everything the application relies on. Each item names the exact SDK method. Evid
   Normalization input rules:
   - `id`, `workspaceId`, `userId`, `description`, `billable`, `projectId`, `type`, `isLocked`,
     `currentlyRunning` — top level.
-  - `timeInterval.start` (required), `timeInterval.end` (null when running), `timeInterval.timeZone`,
+  - `timeInterval.start` (required valid timestamp), `timeInterval.end` (valid timestamp, or null
+    when running), `timeInterval.timeZone`. A stopped entry must have an end timestamp.
     `zonedStart`/`zonedEnd` (display only).
   - `project.name`, `project.clientName`, `project.archived`; `task.id`, `task.name` (or `task:null`);
     `tags[].id`, `tags[].name`; `user.name`.
@@ -169,7 +170,7 @@ Notes:
 
 | Method | Exact path | Request | Response |
 |---|---|---|---|
-| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (admin filters; validated, never widen workspace scope). The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — `broken` is `broken_at` read back (§6: reinstall notice) |
+| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (validated; never widen workspace scope). `dismissed` is available to every viewer so an owner can undo a dismissal; non-admin results remain owner-scoped. The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — `broken` is `broken_at` read back (§6: reinstall notice) |
 | GET | `/api/entries/detail` | query: `id` (entry id) | full detail (source, state, latest plan, attempts, lineage) |
 | POST | `/api/entries/preflight` | body: `{ entryId, choices? }` | plan or `{ actionRequired: [...] }` or `{ blockers: [...] }` |
 | POST | `/api/entries/recreate` | body: `{ entryId, planId }` | attempt result (RECREATED/FAILED/AMBIGUOUS) |
@@ -179,7 +180,7 @@ Notes:
 | POST | `/api/entries/dismiss` / `/api/entries/undismiss` | body: `{ entryId }` | 204 |
 | POST | `/api/entries/bulk-preflight` | body: `{ ids }` (max 50) | per-entry preflight lines; admin-only route |
 | POST | `/api/entries/bulk-recreate` | body: `{ planIds }` (max 50) | per-entry outcomes; admin-only route |
-| GET | `/api/options` | query: `kind=projects\|users\|tasks\|tags\|customFields`, `projectId?` | current workspace entities for pickers and filter suggestions. `kind=users` is admin-only (docs/09) and returns `{id, name}` for every member including deactivated ones (`status: "ALL"`) |
+| GET | `/api/options` | query: `kind=projects\|users\|tasks\|tags\|customFields`, `projectId?` | current workspace entities for pickers and filter suggestions. Replacement task results include only active tasks. Replacement tag results omit archived tags. `kind=users` is admin-only (docs/09) and returns `{id, name}` for every member including deactivated ones (`status: "ALL"`) |
 
 - Static: `GET /static/app.js` (UI bundle), `GET /icon.svg` (manifest icon), `GET /healthz`
   (no auth, docs/14). All exact paths.

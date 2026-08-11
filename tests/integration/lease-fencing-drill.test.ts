@@ -1,12 +1,7 @@
-// IT-12 extension (docs/13, docs/07 §6-§8). Crashes the REAL recreate handler mid-attempt — behind
-// the test-only `RT_TEST_CRASH_MID_ATTEMPT` env flag (`src/clockify/recreate.ts`, rejected unless
-// `NODE_ENV==="test"`) — and proves the full lease/fencing lifecycle that leaves behind: the row
-// stays RECREATING under the dead attempt's claim token; a claim before the lease expires is
-// refused; the row becomes reclaimable once the lease expires; and the dead attempt's own write, if
-// it ever arrives late, is rejected because it no longer owns the row (docs/07 §6's fencing
-// guarantee). `tests/integration/claim.test.ts` already pins the store-level primitives in
-// isolation (IT-12) — this test's addition is driving the crash through the actual HTTP route and
-// the actual `attemptRecreation` orchestration, not a hand-built scenario.
+// IT-12 extension (docs/13, docs/07 §6-§8). Crashes the real recreate handler after its attempt
+// row exists. At that point a create can be in flight, so lease expiry must recover the entry to
+// AMBIGUOUS. It must not authorize a second create. The pre-write no-attempt recovery case stays
+// independently reclaimable in `claim.test.ts`.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +19,7 @@ import { createServer, type AppServer } from "../../src/server.js";
 import { openDatabase } from "../../src/store/db.js";
 import type { AppConfig } from "../../src/config.js";
 import * as entries from "../../src/store/entries.js";
+import * as attempts from "../../src/store/attempts.js";
 import * as plans from "../../src/store/plans.js";
 import { attemptRecreation } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
@@ -90,8 +86,8 @@ function stableClockifyStub(): typeof fetch {
   }) as typeof fetch;
 }
 
-describe("IT-12 lease/fencing drill: a real crashed attempt is reclaimable, and the dead attempt is fenced out", () => {
-  it("row stays RECREATING under the dead token; too-soon reclaim is refused; post-lease reclaim wins; the dead attempt's late write is rejected; the fresh attempt succeeds", async () => {
+describe("IT-12 lease/fencing drill: a crashed started attempt becomes AMBIGUOUS", () => {
+  it("the detail route recovers the expired attempt and fences a late write from the dead process", async () => {
     const server = await boot();
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
     const installToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
@@ -179,17 +175,24 @@ describe("IT-12 lease/fencing drill: a real crashed attempt is reclaimable, and 
     expect(tooSoon).toBeUndefined();
     expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.claimToken).toBe(deadToken);
 
-    // Past the lease: reclaimable by a fresh attempt (no wall-clock sleep — the lease comparison is
-    // entirely driven by the injected `now`).
-    const freshToken = "fresh-attempt-token";
-    const reclaimed = entries.claim(server.db, {
-      id: entryId,
-      workspaceId: WORKSPACE_ID,
-      claimToken: freshToken,
-      now: new Date(deadClaimExpiresAt.getTime() + 1_000),
+    // Make the lease expired for the real wall clock, then use the route the UI refreshes. No
+    // second recreate call is available for a RECREATING row, so detail must perform recovery.
+    server.db.prepare(
+      "UPDATE recoverable_entries SET claim_expires_at=? WHERE id=?",
+    ).run(new Date(Date.now() - 1_000).toISOString(), entryId);
+    const detailResponse = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entryId }),
+      headers: { authorization: `Bearer ${token}` },
     });
-    expect(reclaimed).toBeDefined();
-    expect(reclaimed?.claimToken).toBe(freshToken);
+    expect(detailResponse.status).toBe(200);
+    expect((detailResponse.body as { entry: { lifecycleState: string } }).entry.lifecycleState)
+      .toBe("AMBIGUOUS");
+    const recovered = entries.getById(server.db, WORKSPACE_ID, entryId);
+    expect(recovered?.lifecycleState).toBe("AMBIGUOUS");
+    expect(recovered?.claimToken).toBeNull();
+    expect(attempts.getById(server.db, deadToken)?.outcome).toBe("AMBIGUOUS");
 
     // The dead attempt's own outcome, if its (already-abandoned) in-flight request ever resolves
     // and tries to report a result, must be refused: it no longer owns the row.
@@ -203,18 +206,7 @@ describe("IT-12 lease/fencing drill: a real crashed attempt is reclaimable, and 
     });
     expect(staleWrite).toBeUndefined();
     expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.newEntryId).toBeNull();
-
-    // The fresh attempt's own write succeeds, fenced by its own (current) token.
-    const freshWrite = entries.setRecreated(server.db, {
-      id: entryId,
-      workspaceId: WORKSPACE_ID,
-      claimToken: freshToken,
-      newEntryId: "real-entry-from-fresh-attempt",
-      recreatedAt: new Date().toISOString(),
-      recreatedBy: OWNER_ID,
-    });
-    expect(freshWrite?.newEntryId).toBe("real-entry-from-fresh-attempt");
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("RECREATED");
+    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });
 
@@ -249,7 +241,6 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       detectedAt: "2026-08-08T09:00:00Z",
       source,
     }).entry;
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-guard", now: new Date("2026-08-08T09:01:00Z") });
     const planned: PlannedRequest = { workspaceId: WORKSPACE_ID, userId: OWNER_ID, start: source.start, end: "2026-08-08T11:00:00Z", description: source.description, billable: source.billable };
     plans.createActive(db, {
       id: "plan-guard",
@@ -265,6 +256,7 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       actionRequired: [],
       fidelity: "FULL",
     });
+    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-guard", now: new Date("2026-08-08T09:01:00Z") });
 
     const fetchStub: typeof fetch = async (input, init) => {
       const path = pathOf(input);

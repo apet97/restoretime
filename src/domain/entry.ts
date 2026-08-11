@@ -1,6 +1,6 @@
 // Domain types (docs/06 "Recovery domain"). Pure data shapes only — no I/O, no SDK imports.
-// Mandated terminology: recreate/recreation/recreated, deleted entry, new entry. Never
-// restore/undelete/original entry (AGENTS.md rule 20).
+// Mandated terminology: recreate/recreation/recreated, deleted entry, new entry (AGENTS.md rule
+// 20). User-facing copy uses only these terms.
 
 /** The normalized record of one deleted Clockify time entry, built once from the
  * `TIME_ENTRY_DELETED` payload at ingestion. Immutable after creation (docs/06). */

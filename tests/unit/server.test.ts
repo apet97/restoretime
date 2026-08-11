@@ -38,6 +38,15 @@ async function boot() {
   return createServer(testConfig(), { publicKey: keys.publicKey });
 }
 
+function expectBrowserSecurityHeaders(response: { headers?: Record<string, string | readonly string[]> }): void {
+  expect(response.headers?.["cache-control"]).toBe("no-store");
+  expect(response.headers?.["referrer-policy"]).toBe("no-referrer");
+  expect(response.headers?.["x-content-type-options"]).toBe("nosniff");
+  expect(response.headers?.["permissions-policy"]).toBe(
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  );
+}
+
 function lifecycleToken(claims: Record<string, unknown> = {}) {
   return signTestToken(keys.privateKey, ADDON_KEY, {
     workspaceId: WORKSPACE_ID,
@@ -105,6 +114,7 @@ describe("GET /component", () => {
     // style-src `default-src 'none'` blocks it and the component renders unstyled.
     expect(csp).toContain("style-src 'self'");
     expect(String(response.body)).toContain('<link rel="stylesheet" href="/static/app.css">');
+    expectBrowserSecurityHeaders(response);
   });
 
   it("serves the stylesheet the shell links, as CSS", async () => {

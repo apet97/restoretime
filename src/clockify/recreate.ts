@@ -28,6 +28,23 @@ export class BaselineTruncatedError extends Error {
   }
 }
 
+/** A baseline read failed before an attempt row or Clockify create could start. The route can
+ * safely release its claim and classify the original SDK error without implying an unknown write
+ * outcome. */
+export class PreWriteBaselineError extends Error {
+  constructor(readonly cause: unknown) {
+    super("the recreation baseline read failed before create");
+  }
+}
+
+/** The claim changed while the baseline read was in flight. No create was sent because the
+ * durable attempt row could not pass its claim-token fence. */
+export class PreWriteClaimChangedError extends Error {
+  constructor() {
+    super("the recreation claim changed before create");
+  }
+}
+
 /** Both the baseline read (§8) and the reconcile read (§8) use this: the description-filtered
  * `listForUser` (fallback: unfiltered when the description is empty), never the windowed query
  * (R10). Truncation is reported, never silently guessed. */
@@ -212,11 +229,15 @@ export function fingerprintFromPlanned(p: PlannedRequest): Fingerprint {
   };
 }
 
-export function fingerprintMatches(fp: Fingerprint, candidate: TimeEntry): boolean {
+export function fingerprintMatches(
+  fp: Fingerprint,
+  candidate: TimeEntry,
+  allowBillableOverride = false,
+): boolean {
   if (epochSeconds(fp.start) !== epochSeconds(candidate.timeInterval.start)) return false;
   if (epochSeconds(fp.end ?? null) !== epochSeconds(candidate.timeInterval.end)) return false;
   if (fp.description !== candidate.description) return false;
-  if (fp.billable !== candidate.billable) return false;
+  if (!allowBillableOverride && fp.billable !== candidate.billable) return false;
   if ((fp.projectId ?? null) !== (candidate.projectId ?? null)) return false;
   if ((fp.taskId ?? null) !== (candidate.taskId ?? null)) return false;
   const a = [...fp.tagIds].sort();
@@ -225,10 +246,15 @@ export function fingerprintMatches(fp: Fingerprint, candidate: TimeEntry): boole
 }
 
 /** Baseline-delta, fingerprint-filtered (UT-P13). Pure: no I/O. */
-export function matchCandidates(fp: Fingerprint, baseline: readonly string[], freshList: readonly TimeEntry[]): TimeEntry[] {
+export function matchCandidates(
+  fp: Fingerprint,
+  baseline: readonly string[],
+  freshList: readonly TimeEntry[],
+  allowBillableOverride = false,
+): TimeEntry[] {
   const baselineSet = new Set(baseline);
   const delta = freshList.filter((i) => !baselineSet.has(i.id));
-  return delta.filter((i) => fingerprintMatches(fp, i));
+  return delta.filter((i) => fingerprintMatches(fp, i, allowBillableOverride));
 }
 
 export type ReconcileDecision =
@@ -251,11 +277,18 @@ export interface ReconcileInput {
   readonly userId: string;
   readonly plannedRequest: PlannedRequest;
   readonly baseline: readonly string[];
+  /** P-BILL records that Clockify can replace the submitted billable value with its current
+   * workspace default. All other fingerprint fields remain exact. */
+  readonly allowBillableOverride?: boolean;
+  /** The attempt whose baseline and plan produced this read. Adoption must refuse the result if
+   * another attempt becomes current while the external Clockify read is in flight. */
+  readonly expectedAttemptId: string;
   /** The viewer performing the check — recorded as `recreated_by` on adoption. Distinct from
    * `userId`, which selects whose entry list is read: an admin can reconcile another user's
    * entry, and the audit must name the actor, not the owner. */
   readonly recreatedBy: string;
   readonly now: Date;
+  readonly onVerificationError?: (error: unknown) => void;
 }
 
 export type ReconcileResult =
@@ -278,19 +311,33 @@ export async function runReconcile(input: ReconcileInput): Promise<ReconcileResu
   if (truncated) return { kind: "truncated" };
 
   const fp = fingerprintFromPlanned(input.plannedRequest);
-  const matches = matchCandidates(fp, input.baseline, items);
+  const matches = matchCandidates(fp, input.baseline, items, input.allowBillableOverride);
   const decision = decideReconcile(matches);
   if (decision.kind === "none") return { kind: "none" };
   if (decision.kind === "many") return { kind: "many", candidateIds: decision.candidateIds };
+
+  let diffs: VerificationDiff[];
+  try {
+    const actual = await input.client.timeEntries.get({
+      workspaceId: input.workspaceId,
+      timeEntryId: decision.id,
+    });
+    diffs = diffPlannedVsActual(input.plannedRequest, actual);
+  } catch (err) {
+    input.onVerificationError?.(err);
+    diffs = [{ field: "_verification", planned: null, actual: VERIFICATION_READ_UNAVAILABLE }];
+  }
 
   const nowIso = input.now.toISOString();
   try {
     const adopted = entries.adopt(input.db, {
       id: input.entryId,
       workspaceId: input.workspaceId,
+      expectedAttemptId: input.expectedAttemptId,
       newEntryId: decision.id,
       recreatedAt: nowIso,
       recreatedBy: input.recreatedBy,
+      diffs,
     });
     if (!adopted) return { kind: "adopt-conflict" };
     return { kind: "adopted", newEntryId: decision.id };
@@ -330,29 +377,60 @@ export type AttemptRecreationResult =
  * Test-only crash injection (IT-12 lease/fencing drill, PASS-04). When set, `attemptRecreation`
  * throws immediately after the baseline snapshot is recorded and before the create call —
  * modeling a process crash mid-attempt: the row stays RECREATING under the dead `claim_token`,
- * with a started-but-never-finished attempt row, exactly what killing the process at that instant
- * leaves behind. Never fires unless `NODE_ENV==="test"`, the same guard `RT_CHAOS_FETCH` (docs/13
- * LV-10) uses, so this can never trigger in production regardless of how the env var is set.
+ * with a started-but-never-finished attempt row. Lease recovery must treat that durable state as
+ * AMBIGUOUS because the same state can remain after a create was sent. Never fires unless
+ * `NODE_ENV==="test"`, the same guard `RT_CHAOS_FETCH` (docs/13 LV-10) uses, so this can never
+ * trigger in production regardless of how the env var is set.
  */
 function shouldCrashMidAttempt(): boolean {
   return process.env.NODE_ENV === "test" && process.env.RT_TEST_CRASH_MID_ATTEMPT === "1";
 }
 
+/** Commits the attempt audit and the fenced entry state as one SQLite transaction. A lost claim
+ * rolls both writes back, so a stale process cannot report an outcome that the entry does not
+ * carry. */
+function commitClaimedOutcome(
+  db: Database.Database,
+  attempt: Parameters<typeof attempts.finishUnfinished>[1],
+  transitionEntry: () => boolean,
+): void {
+  const commit = db.transaction(() => {
+    if (!attempts.finishUnfinished(db, attempt)) {
+      throw new Error("recreation attempt no longer accepts an outcome");
+    }
+    if (!transitionEntry()) {
+      throw new Error("recreation claim was lost before its outcome committed");
+    }
+  });
+  commit.immediate();
+}
+
 export async function attemptRecreation(input: AttemptRecreationInput): Promise<AttemptRecreationResult> {
   const startedAt = input.now.toISOString();
-  const baseline = await fetchBaseline(
-    input.client,
-    input.workspaceId,
-    input.plannedRequest.userId,
-    input.plannedRequest.description ?? "",
-  );
-  attempts.start(input.db, {
+  let baseline: string[];
+  try {
+    baseline = await fetchBaseline(
+      input.client,
+      input.workspaceId,
+      input.plannedRequest.userId,
+      input.plannedRequest.description ?? "",
+    );
+  } catch (err) {
+    if (err instanceof BaselineTruncatedError) throw err;
+    throw new PreWriteBaselineError(err);
+  }
+  const started = attempts.startForClaim(input.db, {
     id: input.claimToken,
     planId: input.planId,
     recoverableEntryId: input.entryId,
     startedAt,
     baseline,
   });
+  if (!started) {
+    // The baseline read can outlive the lease. A newer request can then recover the row before
+    // this process resumes. The pre-write fence makes that stale process stop before create.
+    throw new PreWriteClaimChangedError();
+  }
 
   if (shouldCrashMidAttempt()) {
     throw new Error("RT_TEST_CRASH_MID_ATTEMPT: simulated crash after the baseline snapshot, before the create call");
@@ -362,53 +440,73 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
   const finishedAt = new Date().toISOString();
 
   if (outcome.kind === "RECREATED") {
-    attempts.finish(input.db, {
-      id: input.claimToken,
-      finishedAt,
-      outcome: "SUCCESS",
-      newEntryId: outcome.newEntry.id,
-      errorStatus: null,
-      errorCode: null,
-      errorMessage: null,
-      diffs: outcome.diffs,
-    });
-    entries.setRecreated(input.db, {
-      id: input.entryId,
-      workspaceId: input.workspaceId,
-      claimToken: input.claimToken,
-      newEntryId: outcome.newEntry.id,
-      recreatedAt: finishedAt,
-      recreatedBy: input.recreatedBy,
-    });
+    commitClaimedOutcome(
+      input.db,
+      {
+        id: input.claimToken,
+        finishedAt,
+        outcome: "SUCCESS",
+        newEntryId: outcome.newEntry.id,
+        errorStatus: null,
+        errorCode: null,
+        errorMessage: null,
+        diffs: outcome.diffs,
+      },
+      () =>
+        entries.setRecreated(input.db, {
+          id: input.entryId,
+          workspaceId: input.workspaceId,
+          claimToken: input.claimToken,
+          newEntryId: outcome.newEntry.id,
+          recreatedAt: finishedAt,
+          recreatedBy: input.recreatedBy,
+        }) !== undefined,
+    );
     return { outcome: "RECREATED", newEntryId: outcome.newEntry.id, diffs: outcome.diffs };
   }
 
   if (outcome.kind === "FAILED") {
     if (outcome.status === 401 && outcome.code === "4017") input.onAddonTokenInvalid?.();
-    attempts.finish(input.db, {
-      id: input.claimToken,
-      finishedAt,
-      outcome: "FAILED",
-      newEntryId: null,
-      errorStatus: outcome.status ?? null,
-      errorCode: outcome.code ?? null,
-      errorMessage: outcome.message,
-      diffs: null,
-    });
-    entries.setFailed(input.db, { id: input.entryId, workspaceId: input.workspaceId, claimToken: input.claimToken });
+    commitClaimedOutcome(
+      input.db,
+      {
+        id: input.claimToken,
+        finishedAt,
+        outcome: "FAILED",
+        newEntryId: null,
+        errorStatus: outcome.status ?? null,
+        errorCode: outcome.code ?? null,
+        errorMessage: outcome.message,
+        diffs: null,
+      },
+      () =>
+        entries.setFailed(input.db, {
+          id: input.entryId,
+          workspaceId: input.workspaceId,
+          claimToken: input.claimToken,
+        }) !== undefined,
+    );
     return { outcome: "FAILED", status: outcome.status, code: outcome.code, message: outcome.message };
   }
 
-  attempts.finish(input.db, {
-    id: input.claimToken,
-    finishedAt,
-    outcome: "AMBIGUOUS",
-    newEntryId: null,
-    errorStatus: null,
-    errorCode: null,
-    errorMessage: null,
-    diffs: null,
-  });
-  entries.setAmbiguous(input.db, { id: input.entryId, workspaceId: input.workspaceId, claimToken: input.claimToken });
+  commitClaimedOutcome(
+    input.db,
+    {
+      id: input.claimToken,
+      finishedAt,
+      outcome: "AMBIGUOUS",
+      newEntryId: null,
+      errorStatus: null,
+      errorCode: null,
+      errorMessage: null,
+      diffs: null,
+    },
+    () =>
+      entries.setAmbiguous(input.db, {
+        id: input.entryId,
+        workspaceId: input.workspaceId,
+        claimToken: input.claimToken,
+      }) !== undefined,
+  );
   return { outcome: "AMBIGUOUS", baseline };
 }

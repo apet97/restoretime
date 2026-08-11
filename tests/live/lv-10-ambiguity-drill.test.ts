@@ -129,11 +129,13 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       const recreate = await apiCall(harness, viewer, { method: "POST", path: "/api/entries/recreate", body: { entryId: recoverableId, planId: plan.id } });
       delete process.env.RT_CHAOS_FETCH;
       expect(recreate.status).toBe(200);
-      // `attemptRecreation`'s own outcome literal always stays "AMBIGUOUS" here (docs/03 §3) even
-      // when `confirmPlan`'s built-in immediate reconcile pass (docs/07 §8) already adopted it
-      // within this same request — the row's actual state is `entry`, not `result.outcome`.
+      // The immediate reconcile can already adopt the entry before this response is built. When
+      // Clockify has not exposed the new entry yet, both fields stay AMBIGUOUS and the explicit
+      // reconcile below finishes the proof. The response must never mix the earlier uncertain
+      // attempt result with a newer RECREATED entry state.
       const body = recreate.body as { result: { outcome: string }; entry?: { lifecycleState: string; newEntryId: string | null } };
-      expect(body.result.outcome).toBe("AMBIGUOUS");
+      expect(["AMBIGUOUS", "RECREATED"]).toContain(body.result.outcome);
+      expect(body.result.outcome).toBe(body.entry?.lifecycleState);
 
       let finalEntry = entries.getById(harness.server.db, env.workspaceId, recoverableId);
       if (finalEntry?.lifecycleState !== "RECREATED") {
@@ -156,6 +158,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
               userId: owner.id,
               plannedRequest: planRow.plannedRequest,
               baseline: attempt.baseline ?? [],
+              expectedAttemptId: attempt.id,
               recreatedBy: owner.id,
               now: new Date(),
             });

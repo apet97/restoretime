@@ -43,13 +43,18 @@ function rowToAttempt(row: AttemptRow): RecreationAttempt {
   };
 }
 
-export function start(
+/** Starts an attempt only while its claim token still owns the RECREATING row. This is the
+ * pre-write fence: if a lease was recovered while the baseline read was in flight, the stale
+ * process cannot persist an attempt and must not send a create request. */
+export function startForClaim(
   db: Database.Database,
   input: { id: string; planId: string; recoverableEntryId: string; startedAt: string; baseline: readonly string[] },
-): void {
-  db.prepare(
+): boolean {
+  const result = db.prepare(
     `INSERT INTO recreation_attempts (id, plan_id, recoverable_entry_id, started_at, baseline_json)
-     VALUES (@id, @planId, @recoverableEntryId, @startedAt, @baselineJson)`,
+     SELECT @id, @planId, @recoverableEntryId, @startedAt, @baselineJson
+     FROM recoverable_entries
+     WHERE id=@recoverableEntryId AND lifecycle_state='RECREATING' AND claim_token=@id`,
   ).run({
     id: input.id,
     planId: input.planId,
@@ -57,6 +62,7 @@ export function start(
     startedAt: input.startedAt,
     baselineJson: JSON.stringify(input.baseline),
   });
+  return result.changes === 1;
 }
 
 export function finish(
@@ -71,8 +77,8 @@ export function finish(
     errorMessage: string | null;
     diffs: readonly VerificationDiff[] | null;
   },
-): void {
-  db.prepare(
+): boolean {
+  const result = db.prepare(
     `UPDATE recreation_attempts
      SET finished_at=@finishedAt, outcome=@outcome, new_entry_id=@newEntryId,
          error_status=@errorStatus, error_code=@errorCode, error_message=@errorMessage,
@@ -88,6 +94,71 @@ export function finish(
     errorMessage: input.errorMessage,
     diffJson: input.diffs === null ? null : JSON.stringify(input.diffs),
   });
+  return result.changes === 1;
+}
+
+/** Records the first outcome only. The caller uses this inside the same transaction as the
+ * fenced entry-state change, so neither half can commit alone. */
+export function finishUnfinished(
+  db: Database.Database,
+  input: Parameters<typeof finish>[1],
+): boolean {
+  const result = db.prepare(
+    `UPDATE recreation_attempts
+     SET finished_at=@finishedAt, outcome=@outcome, new_entry_id=@newEntryId,
+         error_status=@errorStatus, error_code=@errorCode, error_message=@errorMessage,
+         diff_json=@diffJson
+     WHERE id=@id AND outcome IS NULL`,
+  ).run({
+    id: input.id,
+    finishedAt: input.finishedAt,
+    outcome: input.outcome,
+    newEntryId: input.newEntryId,
+    errorStatus: input.errorStatus,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    diffJson: input.diffs === null ? null : JSON.stringify(input.diffs),
+  });
+  return result.changes === 1;
+}
+
+/** Marks the exact current AMBIGUOUS attempt as being checked before its Clockify read starts.
+ * The immediate transaction makes this mutually exclusive with the mark-not-created transition:
+ * either that transition wins first and this returns false, or the fresh timestamp closes its
+ * age gate until the read completes. Existing check evidence is preserved. */
+export function beginReconcile(
+  db: Database.Database,
+  input: {
+    recoverableEntryId: string;
+    workspaceId: string;
+    expectedAttemptId: string;
+    checkedAt: string;
+  },
+): boolean {
+  const begin = db.transaction(() => {
+    const row = db.prepare<[string, string, string], Pick<AttemptRow, "reconcile_json">>(
+      `SELECT a.reconcile_json
+       FROM recreation_attempts a
+       JOIN recoverable_entries e ON e.id=a.recoverable_entry_id
+       WHERE a.id=? AND a.recoverable_entry_id=? AND e.workspace_id=?
+         AND e.lifecycle_state='AMBIGUOUS'
+         AND a.id = (
+           SELECT id FROM recreation_attempts
+           WHERE recoverable_entry_id=a.recoverable_entry_id
+           ORDER BY started_at DESC, rowid DESC LIMIT 1
+         )`,
+    ).get(input.expectedAttemptId, input.recoverableEntryId, input.workspaceId);
+    if (!row) return false;
+
+    const prior = row.reconcile_json === null
+      ? { checks: 0, matchCount: 0, candidateIds: [], truncated: false }
+      : (JSON.parse(row.reconcile_json) as Omit<ReconcileSummary, "checkedAt"> & { checkedAt: string });
+    const result = db.prepare(
+      "UPDATE recreation_attempts SET reconcile_json=? WHERE id=?",
+    ).run(JSON.stringify({ ...prior, checkedAt: input.checkedAt }), input.expectedAttemptId);
+    return result.changes === 1;
+  });
+  return begin.immediate();
 }
 
 export function updateReconcile(db: Database.Database, id: string, reconcile: ReconcileSummary): void {
@@ -121,7 +192,9 @@ export function latestForEntry(
 ): RecreationAttempt | undefined {
   const row = db
     .prepare<[string], AttemptRow>(
-      "SELECT * FROM recreation_attempts WHERE recoverable_entry_id = ? ORDER BY started_at DESC LIMIT 1",
+      `SELECT * FROM recreation_attempts
+       WHERE recoverable_entry_id = ?
+       ORDER BY started_at DESC, rowid DESC LIMIT 1`,
     )
     .get(recoverableEntryId);
   return row ? rowToAttempt(row) : undefined;

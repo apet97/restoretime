@@ -49,6 +49,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isTimestamp(value: unknown): value is string {
+  return isNonEmptyString(value) && Number.isFinite(Date.parse(value));
+}
+
 /** Rejects a body missing required fields or carrying the wrong type for one (UT-N01). Accepts
  * everything else — unknown extra fields are ignored, matching the webhook's "flat superset"
  * shape (W1). */
@@ -72,24 +76,23 @@ export function guardDeletedEntryPayload(body: unknown): GuardResult {
   if (typeof body.currentlyRunning !== "boolean") {
     return { ok: false, reason: "missing or invalid currentlyRunning" };
   }
-  if (
-    body.projectId !== null &&
-    body.projectId !== undefined &&
-    typeof body.projectId !== "string"
-  ) {
+  if (body.projectId !== null && body.projectId !== undefined && !isNonEmptyString(body.projectId)) {
     return { ok: false, reason: "invalid projectId" };
   }
 
   const timeInterval = body.timeInterval;
-  if (!isRecord(timeInterval) || !isNonEmptyString(timeInterval.start)) {
+  if (!isRecord(timeInterval) || !isTimestamp(timeInterval.start)) {
     return { ok: false, reason: "missing or invalid timeInterval.start" };
   }
   if (
     timeInterval.end !== null &&
     timeInterval.end !== undefined &&
-    typeof timeInterval.end !== "string"
+    !isTimestamp(timeInterval.end)
   ) {
     return { ok: false, reason: "invalid timeInterval.end" };
+  }
+  if (!body.currentlyRunning && (timeInterval.end === null || timeInterval.end === undefined)) {
+    return { ok: false, reason: "a stopped entry needs timeInterval.end" };
   }
   if (
     timeInterval.timeZone !== null &&

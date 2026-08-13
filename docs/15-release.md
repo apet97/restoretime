@@ -40,6 +40,9 @@ RC.11 run as proof for either boundary.
    secrets with the approved release scanner. Railway performs a separate build in step 4. Deploy
    it from the same clean checkout. The source fingerprint checks accidental input drift; it is
    not a signed build attestation. Record the Railway image digest as the deployed artifact ID.
+   The image scan must fail on a secret or on a high or critical finding when the vendor provides
+   a fixed version. Record vendor-unfixed findings and their status. Stop if the application can
+   reach the affected function or if the finding exceeds the accepted release risk.
    For the local migration and rollback drill, create a temporary version-2 database with
    migrations `0001` and `0002`, and seed one known row. Verify the seed and require
    `PRAGMA integrity_check` to return `ok`. Preserve one unchanged backup. Start the candidate on

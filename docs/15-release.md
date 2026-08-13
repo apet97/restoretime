@@ -92,9 +92,10 @@ RC.11 run as proof for either boundary.
    across all current and deactivated workspace users and zero `RT-PROBE-` tags or custom fields.
    The diagnostic `npm run test:live` command is not a release gate.
 8. In the same `restoretime` Railway project and environment, quiesce the writer and create a
-   Railway volume backup by the procedure in docs/14. Lock that backup against expiration and
-   deletion. The lock does not stop database writes; keep the writer quiesced until the backup is
-   complete.
+   Railway volume backup by the procedure in docs/14. Lock that backup against expiration. The
+   lock does not stop database writes and does not replace the operator deletion rule. Keep the
+   writer quiesced until the backup is complete. Do not delete the backup or wipe its source
+   volume.
    Record the image digest, database checksum, `PRAGMA integrity_check`, `PRAGMA user_version`, and
    backup location. Keep the original backup and prior volume unchanged. Restore a copy to an
    isolated replacement volume in the same project and environment, boot the recorded candidate

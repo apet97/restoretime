@@ -1,10 +1,9 @@
 // Shared support for tests/live/* (docs/13 "Live suite"). Runs LV-01…LV-10 against the sacrificial
-// workspace on whichever real Clockify environment `CK_LIVE_API_BASE` names — production by
-// default, the developer environment when overridden. Nothing here is a simulation: every call
-// leaves this machine. With any required env var missing, every LV test reports
-// "blocked — no valid live installation (missing <VAR>)" and does **not** fail the pass — same
-// convention as tests/dev-smoke/support.ts — and it is never silently skipped (`--passWithNoTests`
-// is off for `npm run test:live`, so the files must exist and each must run and log its status).
+// workspace on the explicit Clockify environment named by `CK_LIVE_TARGET`. RC.11 accepts only
+// `developer`: the suite mutates real entries, and an implicit production default is unsafe.
+// Nothing here is a simulation: every Clockify call leaves this machine. `npm run test:live` is a
+// diagnostic command, so a missing prerequisite is reported as BLOCKED. `npm run
+// test:live:release` sets `CK_LIVE_STRICT=1`; the same condition throws and fails the release gate.
 //
 // LV-03…LV-10 boot the app's own `createServer()` **in-process** with a test-signed platform key
 // (`@apet97/clockify-addon-sdk/testing`, the identical pattern PASS-01…04's offline integration
@@ -22,7 +21,7 @@
 // real deployed host) and this in-process harness must never be used for them — they require
 // `CK_LIVE_ADDON_BASE_URL` and report blocked without it (`checkLiveDeployedHost`).
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddonRequest } from "@apet97/clockify-addon-sdk";
@@ -42,25 +41,49 @@ import * as entries from "../../src/store/entries.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 
 /**
- * Which Clockify the live suite talks to. Production by default; `CK_LIVE_API_BASE` overrides it
- * so the same suite can run against the developer environment, where the addon is installed and
- * where DS-01…DS-03 already run (docs/13 "Developer-environment smoke").
+ * Which Clockify the live suite talks to. The suite requires the explicit developer API URL,
+ * where the add-on is installed and where DS-01…DS-03 already run (docs/13).
  *
  * This is the installation `apiUrl` shape (no `/v1`) — the addon SDK's `resolveClockifyApiBaseUrl`
  * appends the version, exactly as it does for a real INSTALLED payload.
  */
-export const LIVE_API_URL = (process.env.CK_LIVE_API_BASE ?? "https://api.clockify.me/api").replace(/\/+$/, "");
+const DEVELOPER_API_URL = "https://developer.clockify.me/api";
+const DEVELOPER_PARENT_ORIGIN = "https://developer.clockify.me";
+export const LIVE_API_URL = (process.env.CK_LIVE_API_BASE ?? "").replace(/\/+$/, "");
 export const RT_PROBE_PREFIX = "RT-PROBE-";
 export const LIVE_ADDON_KEY = "restoretime-live-suite";
 export const LIVE_ADDON_ID = "restoretime-live-addon";
 
 // --- Env gating -----------------------------------------------------------------------------
 
-const REQUIRED_VARS = ["CK_LIVE_API_KEY", "CK_LIVE_WS"] as const;
+const REQUIRED_VARS = [
+  "CK_LIVE_TARGET",
+  "CK_LIVE_API_KEY",
+  "CK_LIVE_API_USER_ID",
+  "CK_LIVE_WS",
+  "CK_LIVE_ADDON_ID",
+  "CK_LIVE_ADDON_KEY",
+  "CK_LIVE_API_BASE",
+] as const;
+
+export function isStrictLiveRelease(): boolean {
+  return process.env.CK_LIVE_STRICT === "1";
+}
+
+function blocked(reason: string): { readonly blocked: true; readonly reason: string } {
+  if (isStrictLiveRelease()) throw new Error(`release gate blocked — ${reason}`);
+  return { blocked: true, reason: `blocked — ${reason}` };
+}
 
 export interface LiveEnv {
   readonly apiKey: string;
+  readonly apiUserId: string;
   readonly workspaceId: string;
+  readonly target: "developer";
+  readonly addonId: string;
+  readonly addonKey: string;
+  readonly candidateId?: string;
+  readonly lv02SourceId?: string;
   /** The installation `authToken` Clockify issued when the addon was installed on this workspace.
    * Present only once a real installation exists; the app-driving rows require it (R11). */
   readonly addonToken?: string;
@@ -68,18 +91,42 @@ export interface LiveEnv {
 
 export type EnvCheck = { readonly blocked: false; readonly env: LiveEnv } | { readonly blocked: true; readonly reason: string };
 
-export function checkLiveEnv(): EnvCheck {
+export function checkLiveEnv(options: { readonly requireReleaseIdentity?: boolean } = {}): EnvCheck {
   for (const name of REQUIRED_VARS) {
     const value = process.env[name];
     if (value === undefined || value.trim() === "") {
-      return { blocked: true, reason: `blocked — no valid live installation (missing ${name})` };
+      return blocked(`no valid live installation (missing ${name})`);
     }
+  }
+  if (process.env.CK_LIVE_TARGET !== "developer") {
+    return blocked("CK_LIVE_TARGET must be developer for this mutating suite");
+  }
+  if (process.env.CK_LIVE_API_BASE!.replace(/\/+$/, "") !== DEVELOPER_API_URL) {
+    return blocked(`CK_LIVE_API_BASE must be ${DEVELOPER_API_URL} when CK_LIVE_TARGET=developer`);
+  }
+  const requireReleaseIdentity = options.requireReleaseIdentity ?? true;
+  if (isStrictLiveRelease() && requireReleaseIdentity && !process.env.CK_LIVE_CANDIDATE_ID?.trim()) {
+    return blocked("no candidate identity (missing CK_LIVE_CANDIDATE_ID)");
+  }
+  if (
+    isStrictLiveRelease() &&
+    requireReleaseIdentity &&
+    process.env.CK_LIVE_LV02_TRIGGER !== "1" &&
+    !process.env.CK_LIVE_LV02_SOURCE_ID?.trim()
+  ) {
+    return blocked("no correlated LV-02 trigger identity (missing CK_LIVE_LV02_SOURCE_ID)");
   }
   return {
     blocked: false,
     env: {
       apiKey: process.env.CK_LIVE_API_KEY!,
+      apiUserId: process.env.CK_LIVE_API_USER_ID!,
       workspaceId: process.env.CK_LIVE_WS!,
+      target: "developer",
+      addonId: process.env.CK_LIVE_ADDON_ID!,
+      addonKey: process.env.CK_LIVE_ADDON_KEY!,
+      ...(process.env.CK_LIVE_CANDIDATE_ID ? { candidateId: process.env.CK_LIVE_CANDIDATE_ID } : {}),
+      ...(process.env.CK_LIVE_LV02_SOURCE_ID ? { lv02SourceId: process.env.CK_LIVE_LV02_SOURCE_ID } : {}),
       ...(process.env.CK_LIVE_ADDON_TOKEN ? { addonToken: process.env.CK_LIVE_ADDON_TOKEN } : {}),
     },
   };
@@ -96,11 +143,65 @@ export function checkLiveEnv(): EnvCheck {
  */
 export function checkLiveAddonToken(env: LiveEnv): EnvCheck {
   if (!env.addonToken) {
-    return {
-      blocked: true,
-      reason:
-        "blocked — no valid live installation (missing CK_LIVE_ADDON_TOKEN: the installation authToken Clockify sent when the addon was installed on the sacrificial workspace). An API key cannot substitute — the app authenticates as an addon (R11).",
+    return blocked(
+      "no valid live installation (missing CK_LIVE_ADDON_TOKEN: the installation authToken Clockify sent when the addon was installed on the sacrificial workspace). An API key cannot substitute — the app authenticates as an addon (R11).",
+    );
+  }
+  if (isStrictLiveRelease() && (!process.env.CK_DEV_WORKSPACE_ID || !process.env.CK_DEV_ADDON_ID || !process.env.CK_DEV_ADDON_TOKEN)) {
+    return blocked("the strict command must run through scripts/live-env.sh so the exact Railway installation identity is present");
+  }
+  if (isStrictLiveRelease() && process.env.CK_LIVE_INSTALLATION_SOURCE !== "railway-handoff") {
+    return blocked("the strict command requires the candidate-bound Railway installation handoff; a local installation row is not release proof");
+  }
+  if (isStrictLiveRelease()) {
+    const handoffFields = {
+      CK_LIVE_HANDOFF_PROJECT_ID: process.env.CK_RAILWAY_PROJECT_ID,
+      CK_LIVE_HANDOFF_ENVIRONMENT_ID: process.env.CK_RAILWAY_ENVIRONMENT_ID,
+      CK_LIVE_HANDOFF_SERVICE_ID: process.env.CK_RAILWAY_SERVICE_ID,
+      CK_LIVE_HANDOFF_DEPLOYMENT_ID: process.env.CK_RAILWAY_DEPLOYMENT_ID,
+      CK_LIVE_HANDOFF_DEPLOYMENT_INSTANCE_ID: process.env.CK_RAILWAY_DEPLOYMENT_INSTANCE_ID,
+      CK_LIVE_HANDOFF_CANDIDATE_ID: env.candidateId,
     };
+    for (const [name, expected] of Object.entries(handoffFields)) {
+      if (!expected || process.env[name] !== expected) {
+        return blocked(`the Railway installation handoff ${name} does not match the release target`);
+      }
+    }
+  }
+  if (process.env.CK_DEV_WORKSPACE_ID && process.env.CK_DEV_WORKSPACE_ID !== env.workspaceId) {
+    return blocked("the selected installation workspace does not match CK_LIVE_WS");
+  }
+  if (process.env.CK_DEV_ADDON_ID && process.env.CK_DEV_ADDON_ID !== env.addonId) {
+    return blocked("the selected installation add-on does not match CK_LIVE_ADDON_ID");
+  }
+  if (process.env.CK_DEV_ADDON_TOKEN && process.env.CK_DEV_ADDON_TOKEN !== env.addonToken) {
+    return blocked("the selected installation token does not match CK_LIVE_ADDON_TOKEN");
+  }
+  if (isStrictLiveRelease()) {
+    const parts = env.addonToken.split(".");
+    let claims: unknown;
+    try {
+      if (parts.length !== 3 || !parts[1]) throw new Error("not a JWT");
+      claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as unknown;
+    } catch {
+      return blocked("the selected installation token does not contain a valid JWT payload");
+    }
+    if (!isRecord(claims)) return blocked("the selected installation token JWT payload is not an object");
+    const exactClaims: Readonly<Record<string, string>> = {
+      iss: "clockify",
+      sub: env.addonKey,
+      type: "addon",
+      workspaceId: env.workspaceId,
+      addonId: env.addonId,
+    };
+    for (const [claim, expected] of Object.entries(exactClaims)) {
+      if (claims[claim] !== expected) {
+        return blocked(`the selected installation token ${claim} claim does not match ${claim === "sub" ? "CK_LIVE_ADDON_KEY" : claim === "workspaceId" ? "CK_LIVE_WS" : claim === "addonId" ? "CK_LIVE_ADDON_ID" : expected}`);
+      }
+    }
+    if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= Date.now() / 1000) {
+      return blocked("the selected installation token exp claim is invalid or expired");
+    }
   }
   return { blocked: false, env };
 }
@@ -113,13 +214,244 @@ export type HostCheck = { readonly blocked: false; readonly addonBaseUrl: string
 export function checkLiveDeployedHost(): HostCheck {
   const raw = process.env.CK_LIVE_ADDON_BASE_URL;
   if (raw === undefined || raw.trim() === "") {
-    return {
-      blocked: true,
-      reason:
-        "blocked — no valid live installation (missing CK_LIVE_ADDON_BASE_URL: the public base URL of a RestoreTime instance already deployed and already installed on the sacrificial workspace)",
-    };
+    return blocked(
+      "no valid live installation (missing CK_LIVE_ADDON_BASE_URL: the public base URL of a RestoreTime instance already deployed and already installed on the sacrificial workspace)",
+    );
   }
-  return { blocked: false, addonBaseUrl: raw.replace(/\/+$/, "") };
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return blocked("CK_LIVE_ADDON_BASE_URL must be a valid HTTPS origin");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return blocked("CK_LIVE_ADDON_BASE_URL must be an HTTPS origin with no path, query, fragment, or credentials");
+  }
+  return { blocked: false, addonBaseUrl: url.origin };
+}
+
+export function skipOrFailLiveScenario(ctx: { skip(reason?: string): void }, reason: string): void {
+  if (isStrictLiveRelease()) throw new Error(`release gate blocked — ${reason}`);
+  ctx.skip(reason);
+}
+
+export async function assertLiveTargetIdentity(
+  env: LiveEnv,
+  client: ClockifyClient = buildLiveRestClient(env),
+): Promise<{ readonly userId: string; readonly workspaceName: string }> {
+  const [user, workspace] = await Promise.all([
+    client.users.getCurrentUser({ "include-memberships": true }),
+    client.workspaces.get({ workspaceId: env.workspaceId }),
+  ]);
+  if (workspace.id !== env.workspaceId) {
+    throw new Error(`live target mismatch: workspace lookup returned ${String(workspace.id)}, expected ${env.workspaceId}`);
+  }
+  if (user.id !== env.apiUserId) {
+    throw new Error(`live target mismatch: API-key user ${user.id} does not match CK_LIVE_API_USER_ID ${env.apiUserId}`);
+  }
+  const activeMembership = user.memberships?.some(
+    (membership) =>
+      membership.membershipType === "WORKSPACE" &&
+      membership.targetId === env.workspaceId &&
+      membership.membershipStatus === "ACTIVE",
+  );
+  if (!activeMembership) {
+    throw new Error(`live target mismatch: API-key user ${user.id} has no ACTIVE membership in ${env.workspaceId}`);
+  }
+  return { userId: user.id, workspaceName: workspace.name ?? env.workspaceId };
+}
+
+interface LiveMutationTargetOptions {
+  readonly apiKeyClient?: ClockifyClient;
+  readonly addonClient?: ClockifyClient;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * Safety fence for every row that can mutate the sacrificial workspace. It verifies both
+ * credentials and the deployed candidate before the caller can issue its first mutation. Test
+ * files must call this directly; Vitest file order is not a safety boundary.
+ */
+export async function assertLiveMutationTarget(
+  env: LiveEnv,
+  addonBaseUrl: string,
+  options: LiveMutationTargetOptions = {},
+): Promise<void> {
+  if (!env.addonToken) {
+    throw new Error("live mutation target requires CK_LIVE_ADDON_TOKEN");
+  }
+  const apiKeyClient = options.apiKeyClient ?? buildLiveRestClient(env);
+  const apiUser = await apiKeyClient.users.getCurrentUser({ "include-memberships": true });
+  const apiWorkspace = await apiKeyClient.workspaces.get({ workspaceId: env.workspaceId });
+  if (apiWorkspace.id !== env.workspaceId) {
+    throw new Error(`live mutation target mismatch: API-key workspace returned ${String(apiWorkspace.id)}, expected ${env.workspaceId}`);
+  }
+  if (apiUser.id !== env.apiUserId) {
+    throw new Error(`live mutation target mismatch: API-key user ${apiUser.id} does not match CK_LIVE_API_USER_ID ${env.apiUserId}`);
+  }
+  const activeApiMembership = apiUser.memberships?.some(
+    (membership) =>
+      membership.membershipType === "WORKSPACE" &&
+      membership.targetId === env.workspaceId &&
+      membership.membershipStatus === "ACTIVE",
+  );
+  if (!activeApiMembership) {
+    throw new Error(`live mutation target mismatch: API-key user ${apiUser.id} has no ACTIVE membership in ${env.workspaceId}`);
+  }
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const manifestResponse = await fetchImpl(`${addonBaseUrl}/manifest`);
+  if (!manifestResponse.ok) {
+    throw new Error(`live mutation target mismatch: deployed manifest returned HTTP ${manifestResponse.status}`);
+  }
+  const manifest = (await manifestResponse.json()) as { key?: unknown; baseUrl?: unknown };
+  if (manifest.key !== env.addonKey) {
+    throw new Error(`live mutation target mismatch: deployed manifest key does not match ${env.addonKey}`);
+  }
+  if (typeof manifest.baseUrl !== "string" || manifest.baseUrl.replace(/\/+$/, "") !== addonBaseUrl) {
+    throw new Error(`live mutation target mismatch: deployed manifest baseUrl does not match ${addonBaseUrl}`);
+  }
+
+  const addonClient =
+    options.addonClient ??
+    createClockifyClient({
+      addonToken: env.addonToken,
+      baseUrl: `${LIVE_API_URL}/v1`,
+      timeoutInSeconds: CLOCKIFY_CLIENT_TIMEOUT_SECONDS,
+    });
+  const addonUser = await addonClient.users.getCurrentUser({ "include-memberships": true });
+  const addonWorkspace = await addonClient.workspaces.get({ workspaceId: env.workspaceId });
+  if (addonWorkspace.id !== env.workspaceId) {
+    throw new Error(
+      `live mutation target mismatch: add-on ${env.addonId} token read workspace ${String(addonWorkspace.id)}, expected ${env.workspaceId}`,
+    );
+  }
+  const activeAddonMembership = addonUser.memberships?.some(
+    (membership) =>
+      membership.membershipType === "WORKSPACE" &&
+      membership.targetId === env.workspaceId &&
+      membership.membershipStatus === "ACTIVE",
+  );
+  if (!activeAddonMembership) {
+    throw new Error(
+      `live mutation target mismatch: add-on ${env.addonId} token identity ${addonUser.id} has no ACTIVE membership in ${env.workspaceId}`,
+    );
+  }
+}
+
+type ReceiptRow = "LV-01B" | "LV-02B";
+
+interface ReceiptExpected {
+  readonly row: ReceiptRow;
+  readonly env: LiveEnv;
+  readonly addonBaseUrl: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function validateLiveReceipt(value: unknown, expected: ReceiptExpected): string | undefined {
+  if (!isRecord(value)) return "receipt must be a JSON object";
+  const expectedCommon: Readonly<Record<string, string | number>> = {
+    schemaVersion: 1,
+    row: expected.row,
+    target: expected.env.target,
+    workspaceId: expected.env.workspaceId,
+    addonId: expected.env.addonId,
+    addonKey: expected.env.addonKey,
+    addonBaseUrl: expected.addonBaseUrl,
+    candidateId: expected.env.candidateId ?? "",
+  };
+  for (const [field, wanted] of Object.entries(expectedCommon)) {
+    if (value[field] !== wanted) return `${expected.row} receipt ${field} does not match the release environment`;
+  }
+  const observedAt = value.observedAt;
+  if (typeof observedAt !== "string" || !Number.isFinite(Date.parse(observedAt))) {
+    return `${expected.row} receipt observedAt must be an ISO timestamp`;
+  }
+  if (typeof value.evidence !== "string" || value.evidence.trim() === "") {
+    return `${expected.row} receipt evidence must identify the operator evidence`;
+  }
+  if (expected.row === "LV-01B") {
+    if (value.authenticatedComponentRendered !== true) return "LV-01B receipt must confirm authenticatedComponentRendered";
+    if (value.sidebarIconRendered !== true) return "LV-01B receipt must confirm sidebarIconRendered";
+    if (value.deletedEntryListLoaded !== true) return "LV-01B receipt must confirm deletedEntryListLoaded";
+    if (value.contentSecurityPolicyVerified !== true) return "LV-01B receipt must confirm contentSecurityPolicyVerified";
+    if (value.appConsoleErrorCount !== 0) return "LV-01B receipt appConsoleErrorCount must be 0";
+    if (value.cspErrorCount !== 0) return "LV-01B receipt cspErrorCount must be 0";
+    if (value.frameAncestorsOrigin !== DEVELOPER_PARENT_ORIGIN) {
+      return `LV-01B receipt frameAncestorsOrigin must be ${DEVELOPER_PARENT_ORIGIN}`;
+    }
+  } else {
+    if (!expected.env.lv02SourceId) {
+      return "LV-02B validation requires CK_LIVE_LV02_SOURCE_ID from the trigger-only run";
+    }
+    if (value.sourceEntryId !== expected.env.lv02SourceId) {
+      return "LV-02B receipt sourceEntryId does not match CK_LIVE_LV02_SOURCE_ID";
+    }
+    if (value.railwayWebhookLogCorrelated !== true) {
+      return "LV-02B receipt must confirm railwayWebhookLogCorrelated";
+    }
+    if (value.remoteSqliteRowPresent !== true) return "LV-02B receipt must confirm remoteSqliteRowPresent";
+  }
+  return undefined;
+}
+
+export type ReceiptCheck =
+  | { readonly blocked: false; readonly receipt: Record<string, unknown> }
+  | { readonly blocked: true; readonly reason: string };
+
+export function checkLiveReceipt(expected: ReceiptExpected): ReceiptCheck {
+  const envName = expected.row === "LV-01B" ? "CK_LIVE_LV01B_RECEIPT" : "CK_LIVE_LV02B_RECEIPT";
+  const path = process.env[envName]?.trim();
+  if (!path) return blocked(`missing ${envName}: an operator receipt is required for ${expected.row}`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch (error) {
+    return blocked(`${expected.row} receipt could not be read as JSON (${error instanceof Error ? error.message : "unknown error"})`);
+  }
+  const error = validateLiveReceipt(parsed, expected);
+  if (error) return blocked(error);
+  return { blocked: false, receipt: parsed as Record<string, unknown> };
+}
+
+export function assertNoSkippedLiveTests(testOutput: string): void {
+  if (/(?:Tests|Test Files)\s+[^\n]*?[1-9]\d* skipped/.test(testOutput)) {
+    throw new Error("release gate blocked — strict live run reported a skipped test");
+  }
+  if (/\bPARTIAL\b|\bblocked —|^LV-[^\n]*\bSKIP(?:PED)?\b|^(?:BLOCKED|SKIP(?:PED)?)\b/im.test(testOutput)) {
+    throw new Error("release gate blocked — strict live run reported an incomplete scenario");
+  }
+}
+
+export interface LiveCleanupStep {
+  readonly label: string;
+  readonly run: () => Promise<unknown>;
+}
+
+/** Run every cleanup step. A failed strict cleanup fails the row after all remaining steps run. */
+export async function runLiveCleanup(steps: readonly LiveCleanupStep[]): Promise<void> {
+  const failures: string[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch {
+      failures.push(step.label);
+    }
+  }
+  if (failures.length === 0) return;
+  const message = `live cleanup failed for: ${failures.join(", ")}`;
+  if (isStrictLiveRelease()) throw new Error(message);
+  console.error(message);
 }
 
 /** A Clockify auth rejection is a real, actionable live finding (R11 resolving negatively), never
@@ -211,6 +543,173 @@ export function buildLiveRestClient(env: LiveEnv): ClockifyClient {
   });
 }
 
+const CLEANUP_PAGE_SIZE = 200;
+const CLEANUP_MAX_PAGES = 100;
+
+async function listAllWorkspaceUsers(client: ClockifyClient, workspaceId: string): Promise<readonly { readonly id: string }[]> {
+  const users: { id: string }[] = [];
+  for (let page = 1; page <= CLEANUP_MAX_PAGES; page += 1) {
+    const next = await client.users.list({
+      workspaceId,
+      status: "ALL",
+      "include-roles": false,
+      page,
+      "page-size": CLEANUP_PAGE_SIZE,
+    });
+    users.push(...next.map((user) => ({ id: user.id })));
+    if (next.length < CLEANUP_PAGE_SIZE) return users;
+  }
+  throw new Error(`live cleanup exceeded ${CLEANUP_MAX_PAGES} user pages; the scan was not complete`);
+}
+
+interface ProbeEntryRef {
+  readonly id: string;
+  readonly userId: string;
+}
+
+/**
+ * Scan every current or deactivated workspace user and every returned time-entry page, not only
+ * the API-key user. A deactivated user can still own an active entry. The prefix check prevents
+ * cleanup from deleting a non-probe entry. Page limits make an incomplete scan fail instead of
+ * looping without a bound.
+ */
+export async function scanAllWorkspaceProbeEntries(client: ClockifyClient, workspaceId: string): Promise<readonly ProbeEntryRef[]> {
+  const users = await listAllWorkspaceUsers(client, workspaceId);
+  const probes: ProbeEntryRef[] = [];
+  for (const user of users) {
+    for (let page = 1; page <= CLEANUP_MAX_PAGES; page += 1) {
+      const entries = await client.timeEntries.listForUser({
+        workspaceId,
+        userId: user.id,
+        page,
+        "page-size": CLEANUP_PAGE_SIZE,
+      });
+      for (const entry of entries) {
+        if (entry.id && entry.description?.startsWith(RT_PROBE_PREFIX)) {
+          probes.push({ id: entry.id, userId: user.id });
+        }
+      }
+      if (entries.length < CLEANUP_PAGE_SIZE) break;
+      if (page === CLEANUP_MAX_PAGES) {
+        throw new Error(`live cleanup exceeded ${CLEANUP_MAX_PAGES} time-entry pages for user ${user.id}; the scan was not complete`);
+      }
+    }
+  }
+  return probes;
+}
+
+/** Release teardown: delete all active RestoreTime probes, then prove a bounded second scan is empty. */
+export async function cleanupAllWorkspaceProbes(
+  env: LiveEnv,
+  client: ClockifyClient = buildLiveRestClient(env),
+): Promise<{ readonly deleted: number }> {
+  const before = await scanAllWorkspaceProbeEntries(client, env.workspaceId);
+  const failures: string[] = [];
+  for (const probe of before) {
+    try {
+      await client.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: probe.id });
+    } catch {
+      failures.push(`${probe.userId}/${probe.id}`);
+    }
+  }
+  const remaining = await scanAllWorkspaceProbeEntries(client, env.workspaceId);
+  if (failures.length > 0 || remaining.length > 0) {
+    throw new Error(
+      `live cleanup failed: ${failures.length} delete request(s) failed and ${remaining.length} RT-PROBE- entry or entries remain after the verification scan`,
+    );
+  }
+  return { deleted: before.length };
+}
+
+export interface ProbeArtifactScan {
+  readonly tagIds: readonly string[];
+  readonly customFieldIds: readonly string[];
+}
+
+/** Finds non-entry artifacts provisioned by live rows. Both active and inactive shapes are read. */
+export async function scanWorkspaceProbeArtifacts(
+  client: ClockifyClient,
+  workspaceId: string,
+): Promise<ProbeArtifactScan> {
+  const tagIds: string[] = [];
+  for (const archived of [false, true]) {
+    for (let page = 1; page <= CLEANUP_MAX_PAGES; page += 1) {
+      const tags = await client.tags.list({ workspaceId, archived, page, "page-size": CLEANUP_PAGE_SIZE });
+      for (const tag of tags) {
+        if (tag.id && tag.name?.startsWith(RT_PROBE_PREFIX)) tagIds.push(tag.id);
+      }
+      if (tags.length < CLEANUP_PAGE_SIZE) break;
+      if (page === CLEANUP_MAX_PAGES) throw new Error(`live cleanup exceeded ${CLEANUP_MAX_PAGES} tag pages`);
+    }
+  }
+
+  const customFieldIds: string[] = [];
+  for (const status of ["VISIBLE", "INVISIBLE", "INACTIVE"] as const) {
+    for (let page = 1; page <= CLEANUP_MAX_PAGES; page += 1) {
+      const fields = await client.customFields.listForWorkspace({
+        workspaceId,
+        status,
+        page,
+        "page-size": CLEANUP_PAGE_SIZE,
+      });
+      for (const field of fields) {
+        if (field.id && field.name?.startsWith(RT_PROBE_PREFIX)) customFieldIds.push(field.id);
+      }
+      if (fields.length < CLEANUP_PAGE_SIZE) break;
+      if (page === CLEANUP_MAX_PAGES) throw new Error(`live cleanup exceeded ${CLEANUP_MAX_PAGES} custom-field pages`);
+    }
+  }
+  return { tagIds: [...new Set(tagIds)], customFieldIds: [...new Set(customFieldIds)] };
+}
+
+/** Release teardown for every RT-PROBE artifact, followed by a bounded verification scan. */
+export async function cleanupAllWorkspaceProbeArtifacts(
+  env: LiveEnv,
+  client: ClockifyClient = buildLiveRestClient(env),
+): Promise<{ readonly entries: number; readonly tags: number; readonly customFields: number }> {
+  const [entries, artifacts] = await Promise.all([
+    scanAllWorkspaceProbeEntries(client, env.workspaceId),
+    scanWorkspaceProbeArtifacts(client, env.workspaceId),
+  ]);
+  const steps: LiveCleanupStep[] = [
+    ...entries.map((entry) => ({
+      label: `entry ${entry.userId}/${entry.id}`,
+      run: () => client.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: entry.id }),
+    })),
+    ...artifacts.tagIds.map((tagId) => ({
+      label: `tag ${tagId}`,
+      run: () => client.tags.delete({ workspaceId: env.workspaceId, tagId }),
+    })),
+    ...artifacts.customFieldIds.map((customFieldId) => ({
+      label: `custom field ${customFieldId}`,
+      run: () => client.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId }),
+    })),
+  ];
+  const failures: string[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch {
+      failures.push(step.label);
+    }
+  }
+  const [remainingEntries, remainingArtifacts] = await Promise.all([
+    scanAllWorkspaceProbeEntries(client, env.workspaceId),
+    scanWorkspaceProbeArtifacts(client, env.workspaceId),
+  ]);
+  if (
+    failures.length > 0 ||
+    remainingEntries.length > 0 ||
+    remainingArtifacts.tagIds.length > 0 ||
+    remainingArtifacts.customFieldIds.length > 0
+  ) {
+    throw new Error(
+      `live cleanup failed: ${failures.length} delete request(s) failed; ${remainingEntries.length} RT-PROBE- entry or entries, ${remainingArtifacts.tagIds.length} tag(s), and ${remainingArtifacts.customFieldIds.length} custom field(s) remain`,
+    );
+  }
+  return { entries: entries.length, tags: artifacts.tagIds.length, customFields: artifacts.customFieldIds.length };
+}
+
 // --- In-process harness (LV-03…LV-10) ---------------------------------------------------------
 
 export interface LiveHarness {
@@ -236,7 +735,7 @@ export async function bootLiveHarness(env: LiveEnv): Promise<LiveHarness> {
   const config: AppConfig = {
     port: 0,
     publicBaseUrl: "https://addon.example.invalid",
-    clockifyParentOrigin: "https://app.clockify.me",
+    clockifyParentOrigin: DEVELOPER_PARENT_ORIGIN,
     databasePath: join(dir, "restoretime.sqlite"),
     addonKey: LIVE_ADDON_KEY,
     // A per-boot random key, not a fixed constant. This harness stores the operator's REAL

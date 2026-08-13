@@ -2,8 +2,9 @@
 // Clockify; a non-default custom-field value is preserved on the new entry — R5 write path)."
 //
 // Uses the in-process test-signed harness (tests/live/support.ts module header): the platform-JWT
-// boundary is test-signed, the Clockify REST boundary is real production (CK_LIVE_API_KEY,
-// CK_LIVE_WS). A real time entry is created and deleted via `CK_LIVE_API_KEY` first (capturing its
+// boundary is test-signed, and the Clockify REST boundary is the explicit developer target
+// (`CK_LIVE_TARGET=developer`). A real time entry is created and deleted via `CK_LIVE_API_KEY`
+// first (capturing its
 // exact shape before deletion), then seeded as a `recoverable_entries` row directly — standing in
 // for "the webhook already delivered" (LV-02 proves live delivery itself; webhook ingestion
 // correctness is proved exhaustively offline, IT-01/02, CT-01…05). The whole point of this row is
@@ -13,15 +14,19 @@ import { randomUUID } from "node:crypto";
 import { ClockifyApiError } from "clockify-sdk-ts-115";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   deletedEntryFromLiveTimeEntry,
   describeIfAuthRejected,
   requiredCustomFieldValues,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
+  skipOrFailLiveScenario,
   teardownLiveHarness,
   type LiveEnv,
   type LiveHarness,
@@ -35,7 +40,7 @@ afterEach(() => {
 });
 
 describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
-  it("plan -> confirm -> RECREATED against real Clockify; a non-default custom-field value is preserved (R5)", async () => {
+  it("plan -> confirm -> RECREATED against real Clockify; a non-default custom-field value is preserved (R5)", async (ctx) => {
     const check = checkLiveEnv();
     if (check.blocked) {
       console.log(`LV-03 ${check.reason}`);
@@ -48,7 +53,14 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-03 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     let recreatedEntryId: string | undefined;
@@ -137,8 +149,9 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
         // Recorded loudly rather than silently: the core recreation path above DID run and its
         // assertions held, but R5 — the custom-field write path, one of this row's named claims —
         // did not. A reader of the run output must be able to tell those apart.
-        console.log(
-          "LV-03 PARTIAL — no usable custom field on this workspace, so the R5 custom-field-preservation assertion did not run. The core recreation path was fully exercised and asserted. LV-08 is the row that pins the custom-field behaviour.",
+        skipOrFailLiveScenario(
+          ctx,
+          "LV-03 blocked — no usable custom field exists, so the required R5 custom-field-preservation assertion did not run",
         );
       }
     } catch (err) {
@@ -152,9 +165,11 @@ describe("LV-03 own-entry recreation end-to-end (docs/13)", () => {
       }
       throw err;
     } finally {
-      if (recreatedEntryId) {
-        await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
-      }
+      await runLiveCleanup(
+        recreatedEntryId
+          ? [{ label: `LV-03 entry ${recreatedEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! }) }]
+          : [],
+      );
     }
   }, 60_000);
 });

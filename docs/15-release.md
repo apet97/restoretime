@@ -1,14 +1,20 @@
-# 15 — Release
+# 15 — RC.11 release
 
-The release workflow for the implementation that follows this blueprint. Values marked
-`<operator>` are environment-specific and must be supplied at release time; nothing else is
-placeholder.
+This workflow releases `v1.0.0-rc.11` for developer-environment evaluation. It does not deploy to
+Clockify production and it does not submit the add-on to the Marketplace. Do not use a successful
+RC.11 run as proof for either boundary.
 
 ## Repository
 
-- Remote: `github.com/apet97/restoretime` (created at planning time; private until release).
-- Branching: `main` is protected; feature branches merge by PR with CI green.
-- Versioning: SemVer. Tags `v0.1.0` (first deployed build) … `v1.0.0` (Marketplace submission).
+- Remote: `github.com/apet97/restoretime`. This document does not claim a repository visibility
+  setting.
+- A feature branch merges to `main` through a manually reviewed PR with green CI. Before merge,
+  inspect and record the current branch-protection or ruleset settings. Workflow files cannot
+  prove this external setting. If the host does not enforce the required review, stop and apply
+  the manual review policy before merge.
+- The RC.11 candidate is the exact merge commit on `main`, not the branch head before merge.
+- `v1.0.0-rc.11` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
+  Marketplace proof.
 
 ## CI gates (every PR)
 
@@ -16,48 +22,110 @@ placeholder.
 2. `npm run typecheck`
 3. `npm run lint`
 4. `npm run test` (unit + contract + integration)
-5. `npm run build` (server bundle + UI bundle)
-6. Secret scan of the diff (no tokens, no API keys — the repo must never contain any; see
+5. `npm run test:e2e` (builds the server and UI bundles once, then runs the component journeys)
+6. Secret scan of the CI change set (no tokens or API keys; see
    `AGENTS.md`).
 
-## Release pipeline (tag push)
+## RC.11 pipeline (manual, not tag-triggered)
 
-1. All CI gates.
-2. Build the container image; tag with the release version.
-3. Deploy to the production environment `<operator: host/orchestrator>`.
-4. Run migrations at boot (automatic).
-5. Live suite (`npm run test:live`) against the sacrificial workspace with the production build's
-   public URL wired as the webhook/component base:
-   `LV-01…LV-10` must pass. This closes the addon-token success-path question (R11) and proves
-   the ambiguity protocol live (LV-10) before any Marketplace submission. Environment: `CK_LIVE_API_KEY`,
-   `CK_LIVE_WS` (all rows); `CK_LIVE_ADDON_BASE_URL` additionally for LV-01/LV-02, which need the
-   step-3 deployed host itself, not just credentials (docs/13 "Live suite"). Missing any of these,
-   the affected rows report **blocked** by the exact variable name and the release does not proceed
-   past this step.
-6. Production smoke: install on the sacrificial workspace, delete one entry, recreate it, confirm
-   the success view.
-7. Tag the release on GitHub with release notes.
+1. Open the PR. Complete the required manual review and all PR CI gates. Do not merge first and
+   review later.
+2. Merge the reviewed PR to `main`. Wait for the `main` CI run. Record the exact merged commit with
+   `git rev-parse HEAD`, and verify that the remote `main` resolves to it. Stop if the commits
+   differ.
+3. From a clean checkout of that exact commit, use Node 22 and run the CI gates above. Build the
+   container once. Record its immutable digest. Scan the image and reachable Git history for
+   secrets with the approved release scanner. Do not build a different source tree for Railway.
+4. Create a new Railway project named `restoretime`. In it, create an environment named
+   `restoretime` and a service named `restoretime`. This is not the production project. Deploy the
+   repository `Dockerfile` from the exact merged commit with `railway up`, and record the resulting
+   immutable image digest. Configure exactly one replica and one persistent encrypted volume
+   mounted at `/data`; Railway volume attachment causes deployment downtime, so plan this as a
+   single-writer maintenance operation. Set `DATABASE_PATH` under `/data` and set all variables
+   from docs/05. Set `CLOCKIFY_PARENT_ORIGIN=https://developer.clockify.me`, set `PUBLIC_BASE_URL`
+   to this Railway deployment, and set the non-secret release metadata
+   `RESTORETIME_CANDIDATE_ID=<full-merged-commit>`. Set it before `railway up` so it belongs to the
+   candidate deployment. The application does not read this value during normal operation. The
+   strict handoff uses it to reject a different deployment. If the new mount is not writable by
+   UID/GID 1000, use a one-time
+   root start-command override only to assign `/data` to UID/GID 1000. Remove that override before
+   candidate proof. Then prove that the final application process runs as UID 1000 and can create,
+   write, and read the database under `/data`.
+5. Verify `/healthz`, `GET /manifest`, `GET /icon.svg`, `GET /static/app.js`, and the unauthenticated
+   `/component` boundary on the deployed digest. Install this exact candidate in the sacrificial
+   developer workspace.
+6. Record the exact Railway project, environment, service, deployment, and deployment-instance
+   IDs. Set them as `CK_RAILWAY_PROJECT_ID`, `CK_RAILWAY_ENVIRONMENT_ID`,
+   `CK_RAILWAY_SERVICE_ID`, `CK_RAILWAY_DEPLOYMENT_ID`, and
+   `CK_RAILWAY_DEPLOYMENT_INSTANCE_ID`. Set `CK_LIVE_TARGET=developer`, the exact API-key user ID,
+   workspace and add-on identities, the explicit developer API URL, the deployed HTTPS origin,
+   and the full merged commit as `CK_LIVE_CANDIDATE_ID`. Do not use names, linked CLI defaults, or
+   the newest deployment as selectors.
+7. Use `scripts/live-env.sh <exact-railway-origin> ...` for both strict commands. It obtains the
+   installation from the selected deployment through a memory-only encrypted handoff. It rejects
+   a stale local installation row. Run `npm run test:live:trigger`. Record its exact source ID.
+   Capture LV-01B proof of the working
+   authenticated iframe, loaded list, icon, developer CSP, and zero console/CSP errors. Capture
+   LV-02B from correlated Railway webhook logs and the exact persisted source row in remote
+   SQLite. Both receipts must name the same commit; LV-02B must name the trigger source ID. Then
+   run `npm run test:live:release`. The strict command fails on a missing prerequisite, mismatched
+   receipt, skipped test, or incomplete cleanup. It must end with zero active `RT-PROBE-` entries
+   across all current and deactivated workspace users and zero `RT-PROBE-` tags or custom fields.
+   The diagnostic `npm run test:live` command is not a release gate.
+8. In the same `restoretime` Railway project and environment, quiesce the writer and create a
+   Railway volume backup by the procedure in docs/14. Lock that backup against further writes.
+   Record the image digest, database checksum, `PRAGMA integrity_check`, `PRAGMA user_version`, and
+   backup location. Keep the original backup and prior volume unchanged. Restore a copy to an
+   isolated replacement volume in the same project and environment, boot the recorded candidate
+   digest against it, and verify `/healthz`, the expected schema version, and one authenticated
+   component load. Retain the prior volume as the rollback target. This proves the RC.11 backup
+   can be restored; it does not by itself prove that an older image can read a version-3 database.
+9. Only after steps 1–8 pass, create `v1.0.0-rc.11` on the exact merged `main` commit. Publish it as
+   a GitHub prerelease. The notes must list the developer-only proof, image digest, backup and
+   restore receipt, live-test totals, cleanup result, and the open production and Marketplace
+   gaps.
 
-## Marketplace submission prerequisites
+## Future Marketplace submission prerequisites
+
+RC.11 does not satisfy or execute a Marketplace submission. The later submission must meet all of
+these conditions:
 
 - Manifest validated at boot (`createValidatedClockifyAddon`) and reviewable at `GET /manifest`.
-- Scopes requested (minimum set): `TIME_ENTRY` READ+WRITE, `PROJECT` READ, `TASK` READ, `TAG`
-  READ, `USER` READ, `CUSTOM_FIELDS` READ, `WORKSPACE` READ. Justification for each is in the
-  submission text: reads feed preflight; write creates the new entry.
+- Scopes requested (minimum set): `TIME_ENTRY_READ`, `TIME_ENTRY_WRITE`, `PROJECT_READ`,
+  `TASK_READ`, `TAG_READ`, `USER_READ`, `CUSTOM_FIELDS_READ`, and `WORKSPACE_READ`. Justification
+  for each is in the submission text: reads feed preflight; write creates the new entry.
 - `minimalSubscriptionPlan`: FREE unless review evidence demands otherwise.
 - Privacy text: what is stored (docs/08), uninstall purge behavior (F17), no raw payload retention
   (ADR-009).
-- Rollback proof: the previous image redeploys and boots against the pre-migration backup.
+- Rollback proof: the previous image redeploys and boots against a tested copy of the pre-migration
+  backup. Do not test a restore by overwriting the only backup.
 
-## Rollback
+## Developer-candidate rollback
 
-1. Stop the current image.
-2. Restore the database file from the pre-release backup if a migration ran.
-3. Start the previous image.
-4. Verify `/healthz` and one component load.
-Record the drill result in the release notes of each version.
+1. Stop the failed Railway deployment and confirm that no process holds the database.
+2. Preserve the failed database for diagnosis. Never overwrite the only verified backup.
+3. Reattach the retained prior volume, or restore a copy of the locked verified backup to a
+   replacement Railway volume. If the deployment replaced an older image and applied a migration,
+   restore the pre-migration database and the prior image together. Never start the prior image on
+   the migrated database and call it a rollback.
+4. Start the recorded rollback image by its immutable digest. Verify `/healthz`,
+   `PRAGMA integrity_check`, the expected `user_version`, and one authenticated component load.
+
+If the new Railway project has no prior image or pre-migration database, record that fact. In that
+case, deleting the candidate project is an environment rollback, not cross-version database
+rollback proof.
+
+## Explicit gaps after RC.11
+
+- No deploy or smoke test uses `CLOCKIFY_PARENT_ORIGIN=https://app.clockify.me`.
+- No production Clockify workspace proves installation, signed component rendering, webhook
+  delivery, or recreation for this commit.
+- No Marketplace review or installation has occurred.
+- Therefore RC.11 does not authorize the stable `v1.0.0` tag.
 
 ## What a release is NOT
 
 - A planning-repo push (the state created by the blueprint pass) is not a product release and is
   never tagged as one.
+- A developer Railway deployment is not a production deploy.
+- A passing diagnostic `npm run test:live` run is not strict live-release proof.

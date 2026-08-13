@@ -24,14 +24,13 @@ Transitive: `jose` (via the addon SDK). Never imported directly by app code.
 | `vitest` | Unit/contract/integration runner (matches sibling projects). |
 | `esbuild` | UI bundle (vanilla TS → one IIFE). |
 | `@types/node`, `@types/better-sqlite3` | Types. |
-| `happy-dom` | DOM environment for the PASS-03 E2E suite under vitest, scoped to `tests/e2e/` only (a per-file `// @vitest-environment happy-dom` docblock; every other suite stays on the node environment). The suite boots the real esbuild bundle and drives list → detail → resolution → confirm → success; the SDK bridge is built for an injected window (`createClockifyBridge({window, parentOrigin})`), so no real browser is needed to exercise it. Real-browser concerns — CSP, `frame-ancestors`, iframe embedding, and a real console — stay in LV-01 against a live deployment and PASS-04's XSS proof. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity ever falls short. |
+| `happy-dom` | DOM environment for the E2E suite under vitest, scoped to `tests/e2e/` only. Most tests boot the UI source modules; one test also boots the built esbuild bundle. The SDK bridge uses an injected window (`createClockifyBridge({window, parentOrigin})`). Real-browser concerns — CSP, `frame-ancestors`, authenticated iframe embedding, and sidebar rendering — require the LV-01B operator receipt. Added by a recorded decision at PASS-03 (see `implementation/reports/PASS-03.md`); `jsdom` is the sanctioned substitute if happy-dom's spec fidelity falls short. |
 
 ## Explicitly rejected
 
-Playwright / any real-browser test runner (the only capabilities it adds over a DOM environment —
-real CSP, real `frame-ancestors`, real iframe embedding, a real console — are release-gated by
-LV-01 and covered by PASS-04's XSS proof, so it buys duplicate coverage at the cost of a second
-test runner and a CI browser download) ·
+Playwright / any committed real-browser test runner (authenticated Clockify iframe evidence is
+captured as the candidate-bound LV-01B operator receipt, so a second package and CI browser
+download are not justified for the current release contract) ·
 Express/Hono/Fastify (the SDK node adapter suffices) · ORM/query builders (four query modules) ·
 zod/io-ts (hand-rolled guard, pinned by fixtures) · React/Vue/Svelte (vanilla TS suffices for four
 views) · Redis (ADR-005) · any job queue (ADR-010) · any logging framework (JSON lines to stdout) ·

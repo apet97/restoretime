@@ -1,6 +1,8 @@
 # 16 — Definition of done
 
-The product is done when every current-candidate statement is true and verified.
+The product is done when every current-candidate statement is true and verified. Checked evidence
+below is historical unless the item names the exact current candidate. Worktree changes after
+`v1.0.0-rc.10` require new local gates, strict live receipts, and cleanup evidence.
 
 PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
 uses `@apet97/clockify-addon-sdk` 1.3.0 and `clockify-sdk-ts-115` 5.1.0. Older local and
@@ -51,7 +53,7 @@ below either describes a current static fact or identifies itself as historical 
 
 ## Quality bars
 
-- [x] Current 1.3.0/5.1.0 candidate passes `npm run typecheck`, `lint`, `test`, `build`, and E2E.
+- [x] Historical `v1.0.0-rc.10` candidate passed `npm run typecheck`, `lint`, `test`, `build`, and E2E.
       Verified 2026-08-11 with Node 22.23.1: typecheck, lint, and build passed; 37 files and 381
       non-E2E tests passed; 8 files and 42 E2E tests passed; `git diff --check` passed. Root and
       install-capture production dependency audits reported zero vulnerabilities. `gitleaks
@@ -73,14 +75,14 @@ below either describes a current static fact or identifies itself as historical 
       forbidden-term matches across the app surfaces and paste-ready Marketplace text).
 - [x] No raw webhook payload, token, or description appears in any log line (verified by the
       PASS-04 log-audit test that captures logs across the full suite run;
-      `tests/integration/log-audit.test.ts` passed for the current candidate).
+      `tests/integration/log-audit.test.ts` passed for `v1.0.0-rc.10`).
 - [x] ADRs still match the code. The current recovery and race tests defend ADR-007's no-blind-
       retry rule. The state hardening needed no migration. ADR-010 now records attempt-aware lazy
       lease recovery while keeping the accepted no-worker decision.
 
 ## Release gates
 
-- [x] Current 1.3.0/5.1.0 candidate passes live suite LV-01…LV-10 against a real installed add-on on
+- [x] Historical `v1.0.0-rc.10` passed the earlier live suite against a real installed add-on on
       the sacrificial developer workspace. Verified 2026-08-11: dev smoke passed 3/3; the full live
       suite passed 11/11 with no skip or block; the running service recorded 11 matching webhook
       receipt and persistence metrics with no error line; and the real Clockify iframe rendered the
@@ -141,8 +143,16 @@ below either describes a current static fact or identifies itself as historical 
       docs/15 defines `v1.0.0` as the Marketplace-submission release; the box above still shows
       production unverified, so calling this `v1.0.0` would assert it. The tag notes state exactly
       what was and was not proved.
-- [x] Current 1.3.0/5.1.0 release candidate tagged as `v1.0.0-rc.10`. The tag resolves to PR 22's
+- [x] Historical 1.3.0/5.1.0 release candidate tagged as `v1.0.0-rc.10`. The tag resolves to PR 22's
       merge commit `1917dfed5960750499eaecc5740bf718bf267b44`. PR CI and post-merge main CI passed.
       GitHub published the release as a prerelease. Its notes state the developer-only proof,
       cleanup result, and open production and Marketplace limits. See `evidence/live-release-run.md`
       "Live run 16".
+
+## Current worktree gates
+
+- [ ] The current worktree passes Node 22 typecheck, lint, offline tests, and `npm run test:e2e`.
+- [ ] The exact current candidate has valid LV-01B and LV-02B receipts. LV-02B names the source ID
+      printed by the separate LV-02A trigger. `npm run test:live:release` passes with zero skips.
+- [ ] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
+- [ ] A verified pre-migration backup and an isolated rollback drill exist for this candidate.

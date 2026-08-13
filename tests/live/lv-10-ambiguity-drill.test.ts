@@ -26,16 +26,20 @@ import * as entries from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
 import * as plans from "../../src/store/plans.js";
 import { runReconcile } from "../../src/clockify/recreate.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
   requiredCustomFieldValues,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
   teardownLiveHarness,
   type LiveEnv,
@@ -103,7 +107,14 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(tokenCheckA.blocked).toBe(true);
       return;
     }
+    const hostCheckA = checkLiveDeployedHost();
+    if (hostCheckA.blocked) {
+      console.log(`LV-10(a) ${hostCheckA.reason}`);
+      expect(hostCheckA.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheckA.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
     let createdEntryId: string | undefined;
 
@@ -150,6 +161,12 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
           const planRow = plans.getById(harness.server.db, attempt.planId);
           expect(planRow).toBeDefined();
           if (planRow) {
+            const reconcileRunId = beginReconcileFixture(harness.server.db, {
+              recoverableEntryId: recoverableId,
+              workspaceId: env.workspaceId,
+              expectedAttemptId: attempt.id,
+              checkedAt: new Date().toISOString(),
+            });
             const reconcileResult = await runReconcile({
               db: harness.server.db,
               client: restClient,
@@ -159,6 +176,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
               plannedRequest: planRow.plannedRequest,
               baseline: attempt.baseline ?? [],
               expectedAttemptId: attempt.id,
+              reconcileRunId,
               recreatedBy: owner.id,
               now: new Date(),
             });
@@ -188,7 +206,11 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       throw err;
     } finally {
       delete process.env.RT_CHAOS_FETCH;
-      if (createdEntryId) await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: createdEntryId }).catch(() => undefined);
+      await runLiveCleanup(
+        createdEntryId
+          ? [{ label: `LV-10(a) entry ${createdEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: createdEntryId! }) }]
+          : [],
+      );
     }
   }, 60_000);
 
@@ -205,7 +227,14 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(tokenCheckB.blocked).toBe(true);
       return;
     }
+    const hostCheckB = checkLiveDeployedHost();
+    if (hostCheckB.blocked) {
+      console.log(`LV-10(b) ${hostCheckB.reason}`);
+      expect(hostCheckB.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheckB.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     try {

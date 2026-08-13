@@ -1,5 +1,7 @@
-// LV-01 (docs/13): "Addon installs on the sacrificial workspace; component loads with verified
-// claims; frame-ancestors correct and the sidebar icon (iconPath) renders."
+// LV-01 is split into two honest claims (docs/13). LV-01A automates target identity, deployed-host
+// assets, and the unauthenticated component boundary. LV-01B consumes an operator receipt for the
+// Clockify-signed iframe render, sidebar icon, loaded deleted-entry list, CSP, and browser-error
+// checks that this process cannot create itself.
 //
 // This row needs a REAL Clockify-issued installation and a REAL Clockify-signed component session
 // — neither can be produced by this suite's test-signed local harness (see tests/live/support.ts
@@ -13,20 +15,26 @@
 // prerequisites"), the icon and UI bundle are served, and the `/component` route actually enforces
 // the verified-claims boundary (401 without a token) rather than being open or crashing. What it
 // CANNOT prove without a human (or Clockify-side) browser session holding a real signed component
-// token: that a genuine load renders with the correct `frame-ancestors` header and icon — that is
-// the "production smoke" step docs/15 describes separately, and this test says so rather than
-// silently standing in for it.
+// token: that a genuine developer load renders the working list with the correct icon, CSP, and
+// browser-error state. The LV-01B operator receipt proves that RC.11 boundary. A later production
+// check remains a separate gap.
 import { describe, expect, it } from "vitest";
-import { checkLiveDeployedHost, checkLiveEnv } from "./support.js";
+import {
+  assertLiveTargetIdentity,
+  checkLiveDeployedHost,
+  checkLiveEnv,
+  checkLiveReceipt,
+} from "./support.js";
 
-describe("LV-01 install + component boundary (docs/13)", () => {
-  it("manifest, icon, static bundle are served; the component route enforces verified claims", async () => {
+describe("LV-01 deployed component evidence (docs/13)", () => {
+  it("LV-01A: target identity, manifest, icon, bundle, and unauthenticated component boundary", async () => {
     const envCheck = checkLiveEnv();
     if (envCheck.blocked) {
       console.log(`LV-01 ${envCheck.reason}`);
       expect(envCheck.blocked).toBe(true);
       return;
     }
+    const identity = await assertLiveTargetIdentity(envCheck.env);
     const hostCheck = checkLiveDeployedHost();
     if (hostCheck.blocked) {
       console.log(`LV-01 ${hostCheck.reason}`);
@@ -48,6 +56,7 @@ describe("LV-01 install + component boundary (docs/13)", () => {
       iconPath?: string;
       scopes?: string[];
     };
+    expect(manifest.key).toBe(envCheck.env.addonKey);
     expect(manifest.iconPath).toBe("/icon.svg");
     expect(manifest.baseUrl).toBe(base);
     const requiredScopes = [
@@ -79,6 +88,32 @@ describe("LV-01 install + component boundary (docs/13)", () => {
     // "Live run 7"), which is what caught the missing `connect-src` this suite could not see.
     const component = await fetch(`${base}/component`);
     expect(component.status).toBe(401);
-    console.log("LV-01: manifest/icon/bundle served and /component boundary enforced. A fully authenticated component load is NOT verified here — that needs a browser session (done separately on the developer environment, evidence 'Live run 7').");
+    console.log(`LV-01A: verified developer target ${identity.workspaceName} (${envCheck.env.workspaceId}), manifest identity, assets, and the unauthenticated /component boundary.`);
   }, 30_000);
+
+  it("LV-01B: operator receipt confirms the authenticated working iframe and clean browser checks", () => {
+    const envCheck = checkLiveEnv();
+    if (envCheck.blocked) {
+      console.log(`LV-01B ${envCheck.reason}`);
+      expect(envCheck.blocked).toBe(true);
+      return;
+    }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-01B ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
+    const receipt = checkLiveReceipt({ row: "LV-01B", env: envCheck.env, addonBaseUrl: hostCheck.addonBaseUrl });
+    if (receipt.blocked) {
+      console.log(`LV-01B ${receipt.reason}`);
+      expect(receipt.blocked).toBe(true);
+      return;
+    }
+    expect(receipt.receipt.authenticatedComponentRendered).toBe(true);
+    expect(receipt.receipt.deletedEntryListLoaded).toBe(true);
+    expect(receipt.receipt.contentSecurityPolicyVerified).toBe(true);
+    expect(receipt.receipt.appConsoleErrorCount).toBe(0);
+    expect(receipt.receipt.cspErrorCount).toBe(0);
+  });
 });

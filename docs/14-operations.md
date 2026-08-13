@@ -9,7 +9,7 @@ Proportional to a single-process addon. No observability platform.
 
 ## Logging
 
-- Structured JSON lines to stdout: `{ts, level, msg, ...fields}`.
+- Structured JSON lines to stdout: `{time, level, msg, ...fields}`.
 - Allowed fields: route, status, workspace id, entry ids, lifecycle states, error status/code,
   durations, attempt/plan ids.
 - Never logged: webhook bodies, entry descriptions, custom-field values, tokens, auth headers
@@ -42,8 +42,18 @@ documented migration path in the release notes.
 - Environment: the seven variables from the docs/05 §Configuration table. The deploy target is operator choice (a VM, a
   container, or a PaaS all satisfy the shape); the release workflow (docs/15) builds one container
   image as the reference artifact.
-- Database file on a persistent, encrypted volume. Backup = stop-gap copy with WAL checkpoint
-  (`PRAGMA wal_checkpoint(TRUNCATE)` then copy) — daily is proportionate.
+- Database file on a persistent, encrypted volume. The image runs as UID/GID 1000. A mounted
+  volume replaces the image's `/data` ownership, so verify that the mounted directory is writable
+  by 1000:1000 before the first boot. Run exactly one application replica against a SQLite file.
+- For a file-copy backup, quiesce requests, stop the Node process, and confirm that no writer
+  remains. Open the file with SQLite, run `PRAGMA wal_checkpoint(TRUNCATE)`, close that connection,
+  and then copy the database. Confirm that no `-wal` or `-shm` sidecar remains. If the process must
+  stay live, use SQLite's online backup API instead. Do not copy one file from a live WAL database
+  and assume that it is complete.
+- Verify each release backup on a separate path: open it read-only, require
+  `PRAGMA integrity_check` to return `ok`, record `PRAGMA user_version`, and boot the compatible
+  image recorded with that backup against a disposable copy. Keep the original backup
+  unchanged. Test an older image only with its matching pre-migration database copy.
 - Rollback: previous container image + database file from before the migration. Migrations are
   forward-only; a rollback that crosses a migration restores the older file from backup.
 
@@ -70,5 +80,8 @@ production SLA — there is no real Clockify network latency in either.
   installation row (new INSTALLED payload) and clears the flag.
 - Clockify outage: preflight fails with "Clockify could not be reached"; webhook ingestion returns
   5xx so deliveries retry (W10); no operator action.
-- Disk growth: the database holds only deleted-entry records; growth is proportional to deletion
-  volume. Review retention (docs/08) before adding any expiry job.
+- Disk growth: the database holds normalized deleted entries, plans linked to attempts, and
+  recreation attempts. A preflight deletes older unattempted STALE or CONSUMED plans for that
+  deleted entry. Growth therefore follows deletion and recreation volume, not every preflight
+  forever.
+  Review retention (docs/08) before adding an expiry job.

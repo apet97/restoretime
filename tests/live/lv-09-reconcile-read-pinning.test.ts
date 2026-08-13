@@ -3,7 +3,8 @@
 // round-trip (start/end epoch, description bytes, tagIds set); running entry visible with
 // `end:null` in the unfiltered list. The windowed query is never used (R10)."
 //
-// Three independent claims, proved against the real Clockify environment `CK_LIVE_API_BASE` names (production by default; the developer environment when overridden):
+// Three independent claims, proved against the explicit developer environment named by
+// `CK_LIVE_TARGET=developer` and `CK_LIVE_API_BASE`:
 // 1. A fresh create is immediately visible through the exact filtered `listForUser` shape
 //    `src/clockify/recreate.ts` uses (description filter, no window).
 // 2. `fingerprintMatches` (the pure function the app's own reconcile uses) round-trips correctly
@@ -20,15 +21,18 @@ import { fingerprintFromPlanned, fingerprintMatches } from "../../src/clockify/r
 import type { PlannedRequest } from "../../src/domain/entry.js";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
   requiredCustomFieldValues,
   recordingPassthroughFetch,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
   teardownLiveHarness,
   type LiveEnv,
@@ -57,7 +61,14 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-09 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     let probeEntryId: string | undefined;
@@ -187,9 +198,11 @@ describe("LV-09 reconcile-read pinning (docs/13)", () => {
       throw err;
     } finally {
       vi.unstubAllGlobals();
-      if (probeEntryId) await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: probeEntryId }).catch(() => undefined);
-      if (runningEntryId) await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: runningEntryId }).catch(() => undefined);
-      if (recreatedEntryId) await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
+      await runLiveCleanup([
+        ...(probeEntryId ? [{ label: `LV-09 entry ${probeEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: probeEntryId! }) }] : []),
+        ...(runningEntryId ? [{ label: `LV-09 entry ${runningEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: runningEntryId! }) }] : []),
+        ...(recreatedEntryId ? [{ label: `LV-09 entry ${recreatedEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! }) }] : []),
+      ]);
     }
   }, 60_000);
 });

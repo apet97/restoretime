@@ -67,7 +67,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-12 | Lease expiry: an expired claim with no attempt is reclaimable. An expired claim with a started attempt becomes `AMBIGUOUS`, because the create request can have reached Clockify. A stored `FAILED` attempt becomes `FAILED`. A stored `SUCCESS` attempt with a new entry ID becomes `RECREATED`. Fenced writes reject stale tokens. `tests/integration/lease-fencing-drill.test.ts` crashes the real recreate handler after the attempt starts but before the create call through the test-only `RT_TEST_CRASH_MID_ATTEMPT` flag. The flag is rejected unless `NODE_ENV==="test"`. `tests/integration/ambiguous-write-recovery.test.ts` covers stale workers, stored outcomes, and atomic rollback. The route uses the real claim code; the store tests supply the expired time directly. |
 | IT-13 | Create returns 201 but the verification `get` fails after read-retries → still RECREATED, diff falls back to the 201 body, "verification read unavailable" recorded (fact 11) |
 | IT-14 | Page bound reached: the stub transport returns full pages past `maxPages: 10`; `PaginatedList.collect()` reports `truncated: true` → preflight fails with "workspace too large to verify; try again", and an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound. Never a partial baseline (docs/03 note 5, docs/07 §8) |
-| IT-15 | Log audit (docs/12 "Sensitive log leakage", docs/14 "Logging"; `tests/integration/log-audit.test.ts`). Captures every `process.stdout`/`stderr` line while a scripted run drives every logging call site (install, webhook, list, detail, preflight — including a preflight failure whose Clockify error body is adversarially crafted to contain a sentinel — recreate FAILED, uninstall), seeded with distinctive sentinel values (description, custom-field value, installation auth token, webhook token); asserts none appear in any captured line. Verified real: temporarily reverting the `safeErrorSummary` fix at the api-route error site made the sentinel appear in the failure diff |
+| IT-15 | Log audit (docs/12 "Sensitive log leakage", docs/14 "Logging"; `tests/integration/log-audit.test.ts`). Captures `process.stdout`/`stderr` during a scripted flow through install, webhook, list, detail, preflight, recreate failure, and uninstall. Sentinel descriptions, custom-field values, installation tokens, and webhook tokens must not appear. This defends the exercised log paths; it is not a static proof of every possible log call. Reverting the `safeErrorSummary` fix made the sentinel appear. |
 | IT-16 | Revalidation drill (docs/07 §7, ADR-006; `tests/integration/revalidation-drill.test.ts`). A dependency (the source project) is removed between plan and confirm → the plan is marked STALE, a fresh preflight is returned, AND a call-counting fetch stub proves zero `POST .../time-entries` calls were ever issued — not just that the response says STALE |
 | IT-17 | Performance sanity + N+1 fix (pass file §Scope item 9; `tests/integration/performance.test.ts`). Seeds 5000 `recoverable_entries` rows (50 actionable across 5 distinct projects, 4950 filler). A counting fetch stub proves `GET /api/entries` issues exactly one project/task lookup set per distinct project (never per row — the PASS-02 N+1 in `fetchEntryWorkspaceState`, fixed by `src/clockify/preflight-data.ts`'s per-request `ProjectTaskCache`); p95 over 15 sequential calls is **recorded** and checked only against a catastrophe ceiling (`LOCAL_P95_CATASTROPHE_MS`), because a wall-clock budget measures spare CPU rather than the code — the load-independent guard is the call-count assertion (non-SLA — see docs/14 "Performance") |
 | IT-18 | Metrics emission (docs/14 "Metrics"; `tests/integration/metrics.test.ts`). One scripted flow touches every documented emission point (webhook received/rejected/duplicate, recoverable_created, preflight_blockers/action_required, recreate_attempt/success/failed/ambiguous, ambiguous_adopted/not_created, authz_denied); asserts the SET of distinct `metric:*` names emitted equals `METRIC_NAMES` exactly — catches an extra undocumented counter as well as a missing one |
@@ -107,7 +107,8 @@ should surface then, not at release. They are **additive**: they add no release 
 | DS-03 | `users.list` + `projects.list` + `customFields.listForWorkspace` + `timeEntries.createForUser` + `timeEntries.get` + `timeEntries.delete` round-trip with the exact request shapes docs/03 §2–§3 mandate, **including the `customFields` arm** for every active required field. Probe descriptions are prefixed `RT-PROBE-` and every created entry is deleted | R11 request shapes as the app builds them |
 
 Gate: DS-01…DS-03 pass, or the PASS-02 report records "blocked" with the exact missing variable.
-`LV-01…LV-10` and the docs/16 release gates are unchanged.
+That developer-smoke repair did not change the then-current live evidence. Later release-harness
+changes are specified below and need new candidate-bound proof.
 
 **First run with credentials: 2026-08-09.** Until then every DS row had only ever reported
 "blocked", so the suite had never executed. All three pass now, and running it found one thing: the
@@ -122,38 +123,47 @@ and named no field — useless in the one suite whose purpose is real response b
 is confined to `tests/dev-smoke/`; `src/` still reaches Clockify errors only through
 `safeErrorSummary` (docs/12, IT-15).
 
-## Live suite (sacrificial workspace, release gate) — `tests/live/`
+## Live suite (sacrificial workspace) — `tests/live/`
 
-Runs only with env credentials (`CK_LIVE_API_KEY`, `CK_LIVE_WS`) and only in the release workflow.
-Small and deterministic; not the whole exploratory campaign.
+The suite accepts only `CK_LIVE_TARGET=developer` and
+`CK_LIVE_API_BASE=https://developer.clockify.me/api`. There is no production default. It verifies
+the exact API-key user ID and active membership, and the exact workspace, add-on ID, add-on key,
+installation API URL, deployed HTTPS origin, and candidate identity. In strict mode, it also
+decodes the installation-token JWT payload without logging it. The `iss`, `sub`, `type`,
+`workspaceId`, and `addonId` claims must match the release target. A present `exp` claim must be a
+finite future timestamp. The REST reads remain the credential-validity proof.
+
+`npm run test:live` is diagnostic. A missing prerequisite prints `BLOCKED` and can still leave the
+command green. It is not release proof. `npm run test:live:release` is fail-closed: every missing
+credential, host, workspace shape, candidate receipt, or cleanup result fails the command. A valid
+strict run has zero skipped tests. The cleanup process runs even when a scenario fails. It pages
+all current and deactivated workspace users and every returned time-entry page, deletes every entry whose description starts
+`RT-PROBE-`, and fails unless a second bounded all-user scan finds zero. Release teardown also
+scans active and inactive tags and custom fields, deletes every artifact whose name starts
+`RT-PROBE-`, and fails unless a second bounded scan finds zero.
 
 LV-03…LV-10 boot the app's own `createServer()` in-process with a **test-signed platform key**
 (`@apet97/clockify-addon-sdk/testing`, the same helper every offline integration test already uses
 — `generateTestKeys`/`signTestToken`) so the JWT-verification boundary (installation, component
 auth) is exercised through the real SDK verification code path without needing Clockify's private
-signing key. The one thing that is NOT faked in those rows is the Clockify REST boundary: the
-installation row's `authToken` is set to `CK_LIVE_API_KEY` and `apiUrl` to the real production
-Clockify API host, so every `timeEntries`/`users`/`projects`/… call the app makes goes out over the
-real network to the real sacrificial workspace — this is what proves R11 (API-key/addon-token REST
-equivalence) and R10 (`listForUser` field coverage) live. **This substitution is legitimate, not a
-weaker local substitute**: it is the identical test-key pattern PASS-01…04's own offline suite
-established for the platform-JWT boundary (which those passes already prove correct); the only
-thing this pass adds is a real network on the other side.
+signing key. The Clockify REST boundary is not faked. The installation row uses the real
+installation add-on token from `CK_LIVE_ADDON_TOKEN` and the API URL from `CK_LIVE_API_BASE`.
+Every app request goes to the real sacrificial workspace with `X-Addon-Token`. The API key is used
+only by the direct probe client from `buildLiveRestClient`.
 
-LV-01 and LV-02 are different in kind: they are about the *deployed artifact* and *Clockify-issued*
-signatures — a component "loading with verified claims" and a webhook "arriving at the deployed
-addon" cannot be produced by a test-signed key, only by a real Clockify installation talking to a
-real, publicly reachable host. They require one more variable, `CK_LIVE_ADDON_BASE_URL` (the public
-base URL of a RestoreTime instance already deployed and already installed on the sacrificial
-workspace) and report **blocked** by name when it is absent, exactly like the other two variables —
-the local in-process harness is never substituted for them.
+LV-01 and LV-02 are different. They include deployed-artifact and Clockify-issued evidence that a
+test-signed key cannot produce. Each row therefore has an automated A claim and an operator B
+receipt. The B receipt must name the exact target, workspace, add-on ID, add-on key, deployed URL,
+and `CK_LIVE_CANDIDATE_ID`. Old receipts do not prove a new candidate.
 
 | ID | Scenario |
 |---|---|
-| LV-01 | Addon installs on the sacrificial workspace; component loads with verified claims; `frame-ancestors` correct and the sidebar icon (`iconPath`) renders. Requires `CK_LIVE_ADDON_BASE_URL` (a real deployed+installed instance) — not achievable via a test-signed local harness |
-| LV-02 | Delete an entry → webhook arrives at the deployed addon → row appears (addon-mode delivery already proved on the developer environment 2026-08-08 — evidence/install-capture-2026-08-08.md; re-confirm on production). Requires `CK_LIVE_ADDON_BASE_URL` for the same reason as LV-01 |
+| LV-01A | Automated: verify the developer workspace identity, deployed `/healthz`, manifest identity, icon and bundle, and the unauthenticated `/component` boundary. |
+| LV-01B | Receipt: the authenticated developer iframe rendered for this candidate, the sidebar icon rendered, the deleted-entry list loaded, the response used `frame-ancestors https://developer.clockify.me`, and the app console and CSP error counts were both zero. |
+| LV-02A | Trigger-only command: create and delete one probe and print its exact `sourceEntryId`. This file is excluded from diagnostic and release collection. |
+| LV-02B | Receipt: Railway webhook logs correlate the deployed candidate to the exact `CK_LIVE_LV02_SOURCE_ID` printed by LV-02A, and direct inspection of remote SQLite finds the persisted source row with that ID. The strict run creates no second trigger. |
 | LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
-| LV-04 | Admin recreates another user's entry (createForUser addon-token success path — confirms the operator-stated API-key/addon-token equivalence, R11) (the same scenario passed on the developer environment 2026-08-08 with the addon token — users.list, projects.list, createForUser for another user → 201, get, delete; re-confirm on production) |
+| LV-04 | Admin recreates another user's entry (createForUser add-on-token success path — confirms the operator-stated API-key/add-on-token equivalence, R11). The same scenario passed on the developer environment on 2026-08-08 with the add-on token: users.list, projects.list, createForUser for another user → 201, get, delete. A production recheck is a future production-only gap; it is not an RC.11 gate. |
 | LV-05 | Missing project → ACTION_REQUIRED → substitute → success; archived-tag rejection surfaced correctly (behavior proved by probe A4, R18 — confirmed here on the addon-token path) |
 | LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4). No `tests/live/` file exists for this row |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
@@ -163,27 +173,52 @@ the local in-process harness is never substituted for them.
 
 ### Assembling the environment
 
-Eight variables across the two suites all describe one installation, and two of them cannot be typed
-from memory: the addon token exists only inside the encrypted installation record, and a
-cloudflared quick tunnel's hostname changes on every start. `scripts/live-env.sh` assembles the set
-and runs a command with it:
+Copy `.env.live.example` to the gitignored `.env.live`. Fill the exact developer target, workspace,
+add-on ID, add-on key, full candidate commit, and Railway project, environment, service,
+deployment, and deployment-instance IDs. Keep receipt JSON outside the repository.
+`scripts/live-env.sh` invokes `railway ssh` with the four exact Railway selectors. It does not use
+the linked project, a service name, the newest deployment, `var/live.sqlite`, or `var/key.hex`.
 
 ```bash
-scripts/live-env.sh https://<tunnel>.trycloudflare.com npm run test:live
-scripts/live-env.sh https://<tunnel>.trycloudflare.com npm run test:dev-smoke
+scripts/live-env.sh https://<exact-railway-origin> npm run test:live:trigger
+# Copy the printed source ID to CK_LIVE_LV02_SOURCE_ID. Capture LV-01B and LV-02B receipts.
+scripts/live-env.sh https://<exact-railway-origin> npm run test:live:release
 ```
 
-- Stable credentials live in `.env.live` (gitignored; `.env.live.example` is the committed
-  template). `CK_LIVE_API_KEY` must be a **developer-environment** key — a production key
-  authenticates against `api.clockify.me` and is rejected `401` by the developer environment, and
-  the live suite creates and deletes real time entries, so a dev-only key is what makes pointing it
-  at production impossible rather than merely discouraged.
-- `CK_LIVE_ADDON_TOKEN` / `CK_DEV_ADDON_TOKEN` are decrypted from the newest installation by
-  `scripts/read-installation.mjs`, through the same codec `createServer` writes with — a token that
-  script cannot read is one the server could not have used either. It is piped through command
-  substitution, so it never lands on disk.
-- Preconditions: `npm run build`, an installed add-on on the workspace, and `var/key.hex`. Lose
-  `var/key.hex` and every captured installation token is undecryptable.
+- Required common values: `CK_LIVE_TARGET`, `CK_LIVE_API_KEY`, `CK_LIVE_API_USER_ID`, `CK_LIVE_WS`,
+  `CK_LIVE_API_BASE`, `CK_LIVE_ADDON_ID`, `CK_LIVE_ADDON_KEY`, and
+  `CK_LIVE_ADDON_BASE_URL`.
+- Strict-release values: `CK_LIVE_CANDIDATE_ID`, `CK_LIVE_LV01B_RECEIPT`,
+  `CK_LIVE_LV02_SOURCE_ID`, `CK_LIVE_LV02B_RECEIPT`, `CK_RAILWAY_PROJECT_ID`,
+  `CK_RAILWAY_ENVIRONMENT_ID`, `CK_RAILWAY_SERVICE_ID`, `CK_RAILWAY_DEPLOYMENT_ID`, and
+  `CK_RAILWAY_DEPLOYMENT_INSTANCE_ID`.
+- Both receipts use `schemaVersion: 1` and common fields `row`, `target`, `workspaceId`, `addonId`,
+  `addonKey`, `addonBaseUrl`, `candidateId`, `observedAt`, and a nonempty `evidence` reference.
+  LV-01B adds `authenticatedComponentRendered: true`, `sidebarIconRendered: true`,
+  `deletedEntryListLoaded: true`, `contentSecurityPolicyVerified: true`,
+  `frameAncestorsOrigin: "https://developer.clockify.me"`,
+  `appConsoleErrorCount: 0`, and `cspErrorCount: 0`. LV-02B adds `sourceEntryId`,
+  `railwayWebhookLogCorrelated: true`, and `remoteSqliteRowPresent: true`.
+- The remote process verifies Railway's project, environment, service, and deployment variables.
+  It also verifies `RESTORETIME_CANDIDATE_ID`, a present `RAILWAY_GIT_COMMIT_SHA`, the public
+  origin, `/data` volume path, add-on key, and the exact active workspace/add-on row. It decrypts
+  that row inside the deployed container.
+- The local process generates a one-use public key. The remote process returns only an
+  RSA-OAEP-256 and AES-256-GCM encrypted envelope bound to all target IDs. The local process
+  decrypts it in memory and starts the command with `CK_LIVE_ADDON_TOKEN`, `CK_DEV_ADDON_TOKEN`,
+  `CK_DEV_WORKSPACE_ID`, and `CK_DEV_ADDON_ID`. It never prints or writes the plaintext token or
+  an envelope file. `tests/live/railway-live-handoff.test.ts` proves the happy path, exact Railway
+  selectors, candidate rejection, token-output boundary, and no-transfer-file rule.
+- Strict mode rejects `CK_LIVE_INSTALLATION_SOURCE=local-database`. The local
+  `scripts/read-installation.mjs` path remains a diagnostic helper. A local row cannot prove the
+  new Railway candidate.
+- `CK_LIVE_ADDON_BASE_URL` must be one HTTPS origin. It cannot contain a path, query, fragment, or
+  credentials.
+- The strict runner holds child output in memory first. It replaces any exact live-secret value
+  before it writes output and fails the release if a child emitted a secret.
+- Preconditions: an installed add-on on the exact Railway deployment, Railway CLI login, and an
+  SSH key that Railway accepts. The deployment must set `RESTORETIME_CANDIDATE_ID` to the same full
+  commit as `CK_LIVE_CANDIDATE_ID`.
 
 ## E2E (component flow) — `tests/e2e/`
 
@@ -191,11 +226,12 @@ PASS-03 scope: load the iframe shell against a local server with SDK test-signin
 (`@apet97/clockify-addon-sdk/testing`), drive list → detail → preflight → confirm with a mocked
 Clockify API, assert rendered states (ready, warnings, blocked, success, unknown-result).
 
-Runner: **vitest with the `happy-dom` environment**, scoped to `tests/e2e/`. This suite exercises
-the real esbuild bundle and the SDK bridge (which takes an injected `window`), and it is the only
-place a DOM environment is used. It deliberately does **not** attempt real-browser verification:
-CSP, `frame-ancestors`, and iframe embedding belong to LV-01 against a live deployment. Keep it a
-small number of suites.
+Runner: **vitest with the `happy-dom` environment**, scoped to `tests/e2e/`. `npm run test:e2e`
+builds once and then runs the suite. The suite runs the UI
+source modules with the SDK bridge and an injected `window`. One test in
+`tests/e2e/component-flow.test.ts` also boots the built `dist/static/app.js` bundle. This is the
+only place a DOM environment is used. It does not attempt real-browser verification. CSP,
+`frame-ancestors`, and iframe embedding belong to LV-01 against a live deployment.
 
 `tests/e2e/component-flow.test.ts`'s "admin list filters by name" case (docs/10 §2) additionally
 counts Clockify calls: two further list renders after the first must issue **zero** extra
@@ -214,7 +250,9 @@ element is ever created from stored Clockify text.
 ```bash
 npm run test            # unit + contract + integration (no network)
 npm run test:dev-smoke  # DS-01…DS-03 — env-gated, additive, never a release gate
-npm run test:live       # LV suite — env-gated, release workflow only
-npm run test:e2e        # component flow
+npm run test:live       # diagnostic; BLOCKED is allowed and is not release proof
+npm run test:live:trigger # LV-02A only; prints the exact source ID for the receipt
+npm run test:live:release # strict candidate gate plus all-user cleanup verification
+npm run test:e2e        # builds once, then runs component flow
 npm run typecheck && npm run lint
 ```

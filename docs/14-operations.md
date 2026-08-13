@@ -46,7 +46,9 @@ documented migration path in the release notes.
   volume replaces the image's `/data` ownership, so verify that the mounted directory is writable
   by 1000:1000 before the first boot. Run exactly one application instance against a SQLite file.
   On Railway, do not configure replicas for a service that has a volume. Require exactly one
-  running deployment instance instead.
+  running deployment instance instead. Set `RAILWAY_RUN_UID=1000` for the final service. A
+  Railway SSH command runs in a root diagnostic shell, so do not use that shell's UID as the
+  application proof. Read the UID of PID 1 (`node dist/server.js`) from `/proc`.
 - For a file-copy backup, quiesce requests, stop the Node process, and confirm that no writer
   remains. Open the file with SQLite, run `PRAGMA wal_checkpoint(TRUNCATE)`, close that connection,
   and then copy the database. Confirm that no `-wal` or `-shm` sidecar remains. If the process must

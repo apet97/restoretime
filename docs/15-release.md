@@ -66,10 +66,11 @@ RC.11 run as proof for either boundary.
    `RESTORETIME_CANDIDATE_ID=<full-merged-commit>`. Set it before `railway up` so it belongs to the
    candidate deployment. The application does not read this value during normal operation. The
    strict handoff uses it to reject a different deployment. If the new mount is not writable by
-   UID/GID 1000, use a one-time
-   root start-command override only to assign `/data` to UID/GID 1000. Remove that override before
-   candidate proof. Then prove that the final application process runs as UID 1000 and can create,
-   write, and read the database under `/data`.
+   UID/GID 1000, use a one-time `RAILWAY_RUN_UID=0` override only to assign `/data` to UID/GID
+   1000. Replace it with `RAILWAY_RUN_UID=1000` before candidate proof. A Railway SSH diagnostic
+   command runs as root. Do not use the SSH shell UID as proof. Read the UID of PID 1 from `/proc`
+   and require `node dist/server.js` to run as UID/GID 1000. As UID 1000, prove that the process can
+   create, write, and read the database under `/data`.
 5. Verify `/healthz`, `GET /manifest`, `GET /icon.svg`, `GET /static/app.js`, and the unauthenticated
    `/component` boundary on the deployed digest. Install this exact candidate in the sacrificial
    developer workspace.

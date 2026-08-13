@@ -135,6 +135,7 @@ No secrets beyond the encryption key. Installation tokens arrive at runtime and 
 encrypted.
 
 The RC.11 Railway deployment also sets `RESTORETIME_CANDIDATE_ID` to the full 40-character merged
-Git commit. This value is non-secret release metadata. `loadConfig()` does not read it. The
-candidate-bound live handoff reads it only through `railway ssh` and rejects a deployment whose
-value does not match `CK_LIVE_CANDIDATE_ID` (docs/13 and docs/15).
+Git commit and sets `RAILWAY_RUN_UID=1000`. These values are non-secret platform metadata.
+`loadConfig()` does not read them. The candidate-bound live handoff reads the candidate ID only
+through `railway ssh` and rejects a deployment whose value does not match
+`CK_LIVE_CANDIDATE_ID` (docs/13 and docs/15).

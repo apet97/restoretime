@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Ctx } from "../../src/ui/state.js";
+import { MutationTransportError } from "../../src/ui/api.js";
 import type { BulkPreflightRow, DeletedTimeEntry } from "../../src/ui/types.js";
 import { renderBulkReview } from "../../src/ui/views/bulk.js";
 
@@ -33,10 +34,11 @@ function stubCtx(): Ctx {
   document.body.appendChild(root);
   return {
     root,
-    api: { get: vi.fn(), post: vi.fn() } as unknown as Ctx["api"],
+    api: { get: vi.fn(), post: vi.fn(), mutate: vi.fn() } as unknown as Ctx["api"],
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
 }
@@ -46,6 +48,35 @@ beforeEach(() => {
 });
 
 describe("bulk review state changes", () => {
+  it("sends one request when the user clicks Recreate twice", () => {
+    const ctx = stubCtx();
+    (ctx.api.mutate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => undefined));
+    const rows: BulkPreflightRow[] = [{
+      entryId: "re-1",
+      status: "ready",
+      source: source(),
+      plan: {
+        id: "plan-1",
+        plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: source().start, end: source().end },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: [],
+        blockers: [],
+        actionRequired: [],
+        fidelity: "FULL",
+      } as unknown as NonNullable<BulkPreflightRow["plan"]>,
+    }];
+
+    renderBulkReview(ctx, rows);
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry");
+    expect(recreate).toBeDefined();
+    recreate?.click();
+    recreate?.click();
+
+    expect(recreate?.disabled).toBe(true);
+    expect(ctx.api.mutate).toHaveBeenCalledTimes(1);
+  });
+
   it("explains a selected entry that is no longer actionable and lets the user open it", () => {
     const ctx = stubCtx();
     const rows: BulkPreflightRow[] = [{ entryId: "re-1", status: "not-actionable", source: source() }];
@@ -59,5 +90,69 @@ describe("bulk review state changes", () => {
     expect(open).toBeDefined();
     open?.click();
     expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" });
+  });
+
+  it("locks the snapshotted selection and shows an identified unknown result after transport loss", async () => {
+    const ctx = stubCtx();
+    (ctx.api.mutate as ReturnType<typeof vi.fn>).mockRejectedValue(new MutationTransportError());
+    const row: BulkPreflightRow = {
+      entryId: "re-1",
+      status: "ready",
+      source: source(),
+      plan: {
+        id: "plan-1",
+        plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: source().start, end: source().end },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: [],
+        blockers: [],
+        actionRequired: [],
+        fidelity: "FULL",
+      } as unknown as NonNullable<BulkPreflightRow["plan"]>,
+    };
+    renderBulkReview(ctx, [row]);
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry")?.click();
+    const checkbox = ctx.root.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(checkbox?.disabled).toBe(true);
+    expect(Array.from(ctx.root.querySelectorAll("button")).every((button) => button.disabled)).toBe(true);
+    await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({
+      kind: "bulk-results",
+      rows: [{ entryId: "re-1", planId: "plan-1", outcome: "AMBIGUOUS" }],
+      reviewRows: [row],
+    }));
+  });
+
+  it("treats a JSON object without bulk results as unknown for the snapshot", async () => {
+    const ctx = stubCtx();
+    (ctx.api.mutate as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    const row: BulkPreflightRow = {
+      entryId: "re-1",
+      status: "ready",
+      source: source(),
+      plan: {
+        id: "plan-1",
+        plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: source().start, end: source().end },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: [],
+        blockers: [],
+        actionRequired: [],
+        fidelity: "FULL",
+      } as unknown as NonNullable<BulkPreflightRow["plan"]>,
+    };
+    renderBulkReview(ctx, [row]);
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry")?.click();
+
+    await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({
+      kind: "bulk-results",
+      rows: [{ entryId: "re-1", planId: "plan-1", outcome: "AMBIGUOUS" }],
+      reviewRows: [row],
+    }));
+  });
+
+  it("does not offer Open for an entry that does not exist", () => {
+    const ctx = stubCtx();
+    renderBulkReview(ctx, [{ entryId: "missing", status: "not-found" }]);
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Open");
   });
 });

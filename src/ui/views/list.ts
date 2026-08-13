@@ -6,7 +6,7 @@
 import { el, mount } from "../dom.js";
 import { formatDetected, formatEntryHeader, statusLabel } from "../format.js";
 import type { Ctx } from "../state.js";
-import { renderApiError, runAction, withLoading } from "./shared.js";
+import { renderApiError, runAction, runBackgroundRequest, withLoading } from "./shared.js";
 import type { BulkPreflightRow, ListResponse, ListRow } from "../types.js";
 
 interface ListFilterState {
@@ -87,11 +87,12 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   // reflow — the selection count is local UI state, not something that needs a fresh server read).
   let reviewButton: HTMLButtonElement | undefined;
   let reviewNote: HTMLElement | undefined;
+  let reviewBusy = false;
   function syncReviewButton(): void {
     if (!reviewButton) return;
     const count = filters.selected.size;
     reviewButton.textContent = `Review selected (${count})`;
-    reviewButton.toggleAttribute("disabled", count === 0 || count > 50);
+    reviewButton.toggleAttribute("disabled", reviewBusy || count === 0 || count > 50);
     if (reviewNote) reviewNote.hidden = count <= 50;
   }
 
@@ -111,11 +112,21 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   if (ctx.isAdminRole && filters.bulkMode) {
     reviewButton = el("button", { type: "button" }, "Review selected (0)");
     reviewButton.addEventListener("click", () => {
+      const ids = [...filters.selected];
+      if (ids.length === 0 || ids.length > 50) return;
+      reviewBusy = true;
+      syncReviewButton();
+      for (const control of Array.from(ctx.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"))) {
+        control.disabled = true;
+      }
       void runAction(
         ctx,
-        () => ctx.api.post("/api/entries/bulk-preflight", { ids: [...filters.selected] }) as Promise<{ results: readonly BulkPreflightRow[] }>,
+        () => ctx.api.post("/api/entries/bulk-preflight", { ids }) as Promise<{ results: readonly BulkPreflightRow[] }>,
         (res) => ctx.navigate({ kind: "bulk-review", rows: res.results }),
-        (err) => renderApiError(ctx.root, err, () => load(ctx, filters)),
+        (err) => {
+          reviewBusy = false;
+          renderApiError(ctx.root, err, () => load(ctx, filters));
+        },
       );
     });
     reviewNote = el("p", { role: "alert" }, "Select at most 50 entries.");
@@ -147,6 +158,9 @@ function loadSuggestions(ctx: Ctx, kind: "users" | "projects"): Promise<Suggesti
   if (cached !== undefined) return cached;
   const pending = ctx.api.get("/api/options", { kind }).then((res) => (res as { items: SuggestionItems }).items);
   byKind.set(kind, pending);
+  void pending.catch(() => {
+    if (byKind.get(kind) === pending) byKind.delete(kind);
+  });
   return pending;
 }
 
@@ -156,11 +170,13 @@ function loadSuggestions(ctx: Ctx, kind: "users" | "projects"): Promise<Suggesti
  * for. A failed fetch therefore leaves an empty list and says nothing (docs/10 §2), and never
  * blocks the rows from rendering. */
 function fillSuggestions(ctx: Ctx, list: HTMLDataListElement, kind: "users" | "projects"): void {
-  void loadSuggestions(ctx, kind)
-    .then((items) => {
+  void runBackgroundRequest(
+    ctx,
+    () => loadSuggestions(ctx, kind),
+    (items) => {
       for (const item of items) if (item.name) list.appendChild(el("option", { value: item.name }));
-    })
-    .catch(() => suggestionCaches.get(ctx.api)?.delete(kind));
+    },
+  );
 }
 
 function renderDismissedControl(ctx: Ctx, filters: ListFilterState): HTMLElement {
@@ -267,7 +283,7 @@ function renderRow(
 
   const lines = [
     el("div", {}, openButton),
-    el("div", {}, source.description || "(no description)"),
+    el("div", { class: "rt-desc" }, source.description || "(no description)"),
     ...(projectLine ? [el("div", {}, projectLine)] : []),
     el("div", {}, `Tags: ${tagNames || "none"}`, "  ", `Detected: ${detected}`),
     el("div", {}, `Status: ${status}`),
@@ -280,7 +296,8 @@ function renderRow(
   }
 
   if (ctx.isAdminRole && filters.bulkMode && actionable && !disabledInstallation) {
-    const checkbox = el("input", { type: "checkbox" });
+    const identity = `${source.ownerName}, ${header}, ${source.description || "no description"}`;
+    const checkbox = el("input", { type: "checkbox", "aria-label": `Select ${identity}` });
     checkbox.checked = filters.selected.has(row.id);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) filters.selected.add(row.id);

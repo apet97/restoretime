@@ -16,7 +16,7 @@
   --rt-border: #dfe5ec;
   --rt-text: #1a2531;
   --rt-muted: #5c6b7a;
-  --rt-accent: #03a9f4;
+  --rt-accent: #0277bd;
   --rt-accent-text: #ffffff;
   --rt-danger: #c62828;
   --rt-warn: #a1620a;
@@ -195,7 +195,7 @@ li > div {
 }
 
 /* The description line carries the entry's identity — keep it at body colour, not muted. */
-li > div:nth-of-type(2) {
+.rt-desc {
   color: var(--rt-text);
   font-size: 14px;
 }
@@ -206,6 +206,14 @@ table {
   border-collapse: collapse;
   width: 100%;
   margin: 12px 0;
+}
+
+.rt-table-scroll {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  color: var(--rt-text);
 }
 
 caption {
@@ -220,6 +228,7 @@ td {
   padding: 6px 9px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 thead th {

@@ -14,6 +14,7 @@ function stubCtx(detail: DetailResponse): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
 }
@@ -34,7 +35,7 @@ describe("ambiguous result refresh", () => {
     } as unknown as DetailResponse;
     const ctx = stubCtx(detail);
 
-    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS", baseline: [] });
+    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS" });
 
     await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" }));
     expect(ctx.root.textContent).not.toContain("We do not know whether Clockify created this entry.");
@@ -47,7 +48,6 @@ describe("ambiguous result refresh", () => {
       attempts: [{
         outcome: "AMBIGUOUS",
         finishedAt: null,
-        baseline: [],
         reconcile: { checks: 3, checkedAt: "2026-08-07T12:00:00Z", candidateIds: [], truncated: false },
       }],
       lineage: { parent: null, child: null },
@@ -57,7 +57,7 @@ describe("ambiguous result refresh", () => {
     const ctx = stubCtx(detail);
     (ctx.api.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
 
-    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS", baseline: [] });
+    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS" });
 
     const button = await vi.waitFor(() => {
       const found = Array.from(ctx.root.querySelectorAll("button")).find((item) => item.textContent === "It was not created");

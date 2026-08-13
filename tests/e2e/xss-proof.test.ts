@@ -26,7 +26,8 @@ import {
 import type { ClockifyBrowserWindow } from "@apet97/clockify-addon-sdk/ui";
 import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
-import { boot } from "../../src/ui/app.js";
+import { boot as bootApp, type BootOptions } from "../../src/ui/app.js";
+import type { TokenAuthorityHandle } from "../../src/ui/bridge.js";
 import { renderBulkReview, renderBulkResults } from "../../src/ui/views/bulk.js";
 import { renderResult } from "../../src/ui/views/result.js";
 import type { Ctx } from "../../src/ui/state.js";
@@ -51,6 +52,30 @@ const XSS_CF_VALUE_ACTUAL = '<svg onload="window.__xss_cf_actual=1">';
 
 let dir: string;
 let keys: ClockifyTestKeys;
+let bootHandles: TokenAuthorityHandle[] = [];
+let unexpectedResourceErrors: string[] = [];
+
+function recordResourceError(event: Event): void {
+  const target = event.target;
+  if (target instanceof HTMLLinkElement) unexpectedResourceErrors.push(target.href);
+  else if (target instanceof HTMLScriptElement || target instanceof HTMLImageElement || target instanceof HTMLIFrameElement) {
+    unexpectedResourceErrors.push(target.src);
+  }
+}
+
+function disableExternalResourceLoading(): void {
+  const settings = (window as unknown as {
+    happyDOM: { settings: { disableCSSFileLoading: boolean; disableJavaScriptFileLoading: boolean; disableIframePageLoading: boolean } };
+  }).happyDOM.settings;
+  settings.disableCSSFileLoading = true;
+  settings.disableJavaScriptFileLoading = true;
+  settings.disableIframePageLoading = true;
+}
+
+function boot(options: BootOptions): void {
+  const handle = bootApp(options);
+  if (handle) bootHandles.push(handle);
+}
 
 function testConfig(): AppConfig {
   return {
@@ -68,11 +93,18 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "restoretime-xss-"));
   keys = await generateTestKeys();
   document.body.innerHTML = "";
+  unexpectedResourceErrors = [];
+  disableExternalResourceLoading();
+  window.addEventListener("error", recordResourceError, true);
 });
 
 afterEach(() => {
+  window.removeEventListener("error", recordResourceError, true);
+  for (const handle of bootHandles) handle.dispose();
+  bootHandles = [];
   rmSync(dir, { recursive: true, force: true });
   vi.unstubAllGlobals();
+  expect(unexpectedResourceErrors).toEqual([]);
 });
 
 async function bootServer(): Promise<AppServer> {
@@ -177,7 +209,10 @@ async function mountShell(server: AppServer, token: string): Promise<void> {
   expect(response.status).toBe(200);
   const html = String(response.body);
   const inner = /<html>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
-  document.documentElement.innerHTML = inner.replace(/<script[^>]*><\/script>/, "");
+  document.documentElement.innerHTML = inner
+    .replace(/<script[^>]*><\/script>/, "")
+    .replace(/<link[^>]*rel="stylesheet"[^>]*>/, "");
+  expect(document.querySelector('link[rel="stylesheet"], script[src], iframe[src], img[src]')).toBeNull();
 }
 
 function appRoot(): HTMLElement {
@@ -328,7 +363,14 @@ describe("XSS proof: hostile fixture through every rendered view", () => {
     const select = findSelect();
     select.value = "proj-2";
     select.dispatchEvent(new Event("change"));
-    await waitFor(() => !text().includes("Project no longer exists") && text().includes("Continue to confirm"));
+    await waitFor(() => document.querySelector<HTMLSelectElement>('select[aria-label="Replacement task"]') !== null);
+
+    // The selected project exposes the source task as unavailable. Resolve it before the tag.
+    const taskSelect = document.querySelector<HTMLSelectElement>('select[aria-label="Replacement task"]');
+    if (!taskSelect) throw new Error("no replacement task select found");
+    taskSelect.value = "__none__";
+    taskSelect.dispatchEvent(new Event("change"));
+    await waitFor(() => document.querySelector('fieldset input[type="checkbox"]') !== null);
 
     // The fixture's tag is also gone from the current workspace (P-TAG-GONE): confirm its removal
     // so the plan clears its own separate ACTION_REQUIRED item — a second, independent view of the
@@ -387,10 +429,11 @@ function stubCtx(): Ctx {
   document.body.appendChild(root);
   return {
     root,
-    api: { get: vi.fn(), post: vi.fn() } as unknown as Ctx["api"],
+    api: { get: vi.fn(), post: vi.fn(), mutate: vi.fn() } as unknown as Ctx["api"],
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
 }
@@ -447,7 +490,7 @@ describe("XSS proof: bulk views and the FAILED/AMBIGUOUS result views (direct re
       canMarkNotCreated: false,
     });
     const plan = { fidelity: "FULL", warnings: [], blockers: [], actionRequired: [] } as unknown as RecreationPlan;
-    renderResult(ctx, "re-1", plan, { outcome: "AMBIGUOUS", baseline: [] });
+    renderResult(ctx, "re-1", plan, { outcome: "AMBIGUOUS" });
     await waitFor(() => (ctx.root.textContent ?? "").includes(XSS_CANDIDATE_ID));
     assertNoInjectedElements();
   });

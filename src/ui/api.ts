@@ -19,9 +19,19 @@ export class ApiError extends Error {
  * session is gone. */
 export class SessionExpiredError extends Error {}
 
+/** A state-changing request left the browser, but no complete HTTP response came back. The server
+ * might have applied it. Callers must inspect current state; they must never repeat the mutation
+ * from this error alone. */
+export class MutationTransportError extends Error {
+  constructor() {
+    super("The mutation outcome is unknown.");
+  }
+}
+
 export interface ApiClient {
   get(path: string, query?: Record<string, string>): Promise<unknown>;
   post(path: string, body?: unknown): Promise<unknown>;
+  mutate(path: string, body?: unknown): Promise<unknown>;
 }
 
 async function readBody(res: Response): Promise<unknown> {
@@ -43,18 +53,34 @@ export function createApiClient(auth: TokenAuthority, fetchImpl: typeof fetch = 
     });
   }
 
-  async function call(path: string, init: RequestInit): Promise<unknown> {
-    let res = await send(path, init, auth.getToken());
-    if (res.status === 401) {
-      const refreshed = await auth.refresh();
-      if (refreshed === undefined) throw new SessionExpiredError();
-      res = await send(path, init, refreshed);
-      if (res.status === 401) throw new SessionExpiredError();
+  async function call(path: string, init: RequestInit, mutation = false): Promise<unknown> {
+    try {
+      let res = await send(path, init, auth.getToken());
+      if (res.status === 401) {
+        const refreshed = await auth.refresh();
+        if (refreshed === undefined) throw new SessionExpiredError();
+        res = await send(path, init, refreshed);
+        if (res.status === 401) throw new SessionExpiredError();
+      }
+      const body = await readBody(res);
+      if (mutation && (typeof body !== "object" || body === null || Array.isArray(body))) {
+        throw new MutationTransportError();
+      }
+      if (!res.ok) throw new ApiError(res.status, body);
+      return body;
+    } catch (err) {
+      if (mutation && !(err instanceof ApiError) && !(err instanceof SessionExpiredError)) {
+        throw new MutationTransportError();
+      }
+      throw err;
     }
-    const body = await readBody(res);
-    if (!res.ok) throw new ApiError(res.status, body);
-    return body;
   }
+
+  const postInit = (body: unknown): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? null : JSON.stringify(body),
+  });
 
   return {
     get(path, query) {
@@ -62,11 +88,10 @@ export function createApiClient(auth: TokenAuthority, fetchImpl: typeof fetch = 
       return call(`${path}${qs}`, { method: "GET" });
     },
     post(path, body) {
-      return call(path, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: body === undefined ? null : JSON.stringify(body),
-      });
+      return call(path, postInit(body));
+    },
+    mutate(path, body) {
+      return call(path, postInit(body), true);
     },
   };
 }

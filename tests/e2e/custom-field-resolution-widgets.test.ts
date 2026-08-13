@@ -45,6 +45,7 @@ function stubCtx() {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
   return { ctx, get };
@@ -78,7 +79,7 @@ beforeEach(() => {
 describe("custom-field resolution widgets", () => {
   it("uses current options for a required single dropdown and submits one string", async () => {
     const { ctx } = stubCtx();
-    const choices: MutableChoices = {};
+    const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-single", value: "High" }] };
     const message = "Priority is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-single", message)], null, source());
     const node = itemNode(rendered, message);
@@ -86,21 +87,25 @@ describe("custom-field resolution widgets", () => {
 
     expect(select.multiple).toBe(false);
     expect(Array.from(select.options).map((option) => option.value)).toEqual(["", "Low", "High"]);
-    select.value = "High";
+    expect(select.value).toBe("High");
+    expect(select.getAttribute("aria-label")).toBe("Priority");
+    select.value = "Low";
     clickButton(node, "Save value");
 
-    expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-single", value: "High" }]);
+    expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-single", value: "Low" }]);
   });
 
   it("uses current options for a required multiple dropdown and submits a string array", async () => {
     const { ctx } = stubCtx();
-    const choices: MutableChoices = {};
+    const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-multiple", value: ["South"] }] };
     const message = "Regions is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-multiple", message)], null, source());
     const node = itemNode(rendered, message);
     const select = await waitForSelect(node);
 
     expect(select.multiple).toBe(true);
+    expect(Array.from(select.selectedOptions).map((option) => option.value)).toEqual(["South"]);
+    expect(select.getAttribute("aria-label")).toBe("Regions");
     select.options[0]!.selected = true;
     select.options[1]!.selected = true;
     clickButton(node, "Save values");
@@ -110,7 +115,7 @@ describe("custom-field resolution widgets", () => {
 
   it("submits a boolean for a required checkbox", async () => {
     const { ctx } = stubCtx();
-    const choices: MutableChoices = {};
+    const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-checkbox", value: false }] };
     const message = "Approved is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-checkbox", message)], null, source());
     const node = itemNode(rendered, message);
@@ -121,21 +126,25 @@ describe("custom-field resolution widgets", () => {
       ["true", "Checked"],
       ["false", "Not checked"],
     ]);
-    select.value = "false";
+    expect(select.value).toBe("false");
+    expect(select.getAttribute("aria-label")).toBe("Approved");
+    select.value = "true";
     clickButton(node, "Save value");
 
-    expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-checkbox", value: false }]);
+    expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-checkbox", value: true }]);
   });
 
   it("keeps explicit keep and drop actions for a stale multiple dropdown and accepts several replacement values", async () => {
     const { ctx } = stubCtx();
-    const choices: MutableChoices = {};
+    const choices: MutableChoices = { dropCustomFieldIds: ["cf-stale-multiple"] };
     const message = "Teams has a stale value.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-OPT", "cf-stale-multiple", message)], null, source());
     const node = itemNode(rendered, message);
     const select = await waitForSelect(node);
 
     expect(select.multiple).toBe(true);
+    expect(node.textContent).toContain("This value will not be sent.");
+    expect(select.getAttribute("aria-label")).toBe("Teams");
     expect(Array.from(node.querySelectorAll("button")).map((button) => button.textContent)).toEqual([
       "Use selected values",
       "Keep the original value",

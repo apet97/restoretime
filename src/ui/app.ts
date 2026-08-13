@@ -10,8 +10,9 @@ import {
   type ClockifyBrowserWindow,
 } from "@apet97/clockify-addon-sdk/ui";
 import { createApiClient } from "./api.js";
-import { setupBridge } from "./bridge.js";
+import { setupBridge, type TokenAuthorityHandle } from "./bridge.js";
 import { el, mount } from "./dom.js";
+import { normalizeLocale } from "./format.js";
 import type { Ctx, ViewState } from "./state.js";
 import { renderList } from "./views/list.js";
 import { renderDetail } from "./views/detail.js";
@@ -31,10 +32,10 @@ function dispatch(ctx: Ctx, state: ViewState): void {
       renderList(ctx);
       return;
     case "detail":
-      renderDetail(ctx, state.entryId, state.forceResolve ?? false);
+      renderDetail(ctx, state.entryId, state.forceResolve ?? false, state.draft);
       return;
     case "confirm":
-      renderConfirm(ctx, state.entryId, state.plan, state.source, state.disabled ?? false);
+      renderConfirm(ctx, state.entryId, state.plan, state.source, state.disabled ?? false, state.draft);
       return;
     case "result":
       renderResult(ctx, state.entryId, state.plan, state.result);
@@ -43,7 +44,7 @@ function dispatch(ctx: Ctx, state: ViewState): void {
       renderBulkReview(ctx, state.rows);
       return;
     case "bulk-results":
-      renderBulkResults(ctx, state.rows);
+      renderBulkResults(ctx, state.rows, state.reviewRows);
       return;
     case "session-expired":
       renderSessionExpired(ctx.root);
@@ -61,41 +62,48 @@ export interface BootOptions {
 
 /** The real entry point, exported so `tests/e2e/` can boot the shell against an injected window and
  * a stubbed `fetch` (docs/13 §E2E) instead of re-implementing the bundle. */
-export function boot(options: BootOptions): void {
+export function boot(options: BootOptions): TokenAuthorityHandle | undefined {
   const { window } = options;
   const body = window.document.body;
   const root = window.document.getElementById("app");
   const parentOrigin = body.dataset.parentOrigin;
   const token = readAuthToken(window.location);
 
-  if (!root) return; // the shell markup always has #app; nothing to mount into otherwise.
+  if (!root) return undefined; // the shell markup always has #app; nothing to mount into otherwise.
   if (!parentOrigin || !token) {
     mount(root, el("p", {}, "RestoreTime could not verify its parent frame."));
-    return;
+    return undefined;
   }
 
   const docRoot = window.document.documentElement;
+  const locale = normalizeLocale(body.dataset.language);
   applyClockifyTheme(body.dataset.theme, docRoot);
-  applyClockifyLanguage(body.dataset.language, docRoot);
+  applyClockifyLanguage(locale, docRoot);
 
   const { bridge, auth } = setupBridge(window, parentOrigin, token);
   const api = createApiClient(auth, options.fetchImpl ?? fetch);
-  const locale = (body.dataset.language ?? "en").replaceAll("_", "-");
 
+  let navigationVersion = 0;
   const ctx: Ctx = {
     root,
     api,
     bridge,
     locale,
     isAdminRole: isClockifyAdminRole(body.dataset.role ?? ""),
-    navigate: (state) => dispatch(ctx, state),
+    getNavigationVersion: () => navigationVersion,
+    navigate: (state) => {
+      navigationVersion += 1;
+      dispatch(ctx, state);
+    },
   };
 
   ctx.navigate({ kind: "list" });
+  return auth;
 }
 
 function main(): void {
-  boot({ window: window as unknown as BootOptions["window"] });
+  const auth = boot({ window: window as unknown as BootOptions["window"] });
+  if (auth) window.addEventListener("pagehide", () => auth.dispose(), { once: true });
 }
 
 main();

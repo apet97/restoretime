@@ -62,6 +62,9 @@ describe("GET /manifest", () => {
     expect(response.status).toBe(200);
     const result = validateClockifyManifest(response.body);
     expect(result.ok).toBe(true);
+    expect(JSON.stringify(response.body)).toContain(
+      "Keeps the details of deleted time entries. After you confirm, RestoreTime recreates each deleted entry as a new entry.",
+    );
   });
 });
 

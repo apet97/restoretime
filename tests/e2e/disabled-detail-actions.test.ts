@@ -15,6 +15,7 @@ function stubCtx(detail: DetailResponse): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
 }
@@ -47,7 +48,7 @@ describe("disabled detail actions", () => {
     } as unknown as DetailResponse;
     const ctx = stubCtx(detail);
 
-    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS", baseline: [] });
+    renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS" });
 
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("RestoreTime is disabled for this workspace."));
     expect(buttonLabels(ctx)).toEqual(["Check status", "Back to deleted entries"]);

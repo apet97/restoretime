@@ -6,13 +6,17 @@
 import { el, mount } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
 import type { Ctx } from "../state.js";
+import { MutationTransportError } from "../api.js";
 import { renderApiError, runAction } from "./shared.js";
+import { fidelityLabel } from "../format.js";
+import { renderFactsTable } from "./detail.js";
 import type { BulkPreflightRow, BulkRecreateRow } from "../types.js";
 
 function rowReason(row: BulkPreflightRow): string {
   if (row.message) return row.message;
   if (row.status === "blocked") return row.plan?.blockers[0]?.message ?? "Blocked.";
   if (row.status === "needs-input") return row.plan?.actionRequired[0]?.message ?? "Needs your input.";
+  if (row.status === "needs-review") return row.message ?? "Open this entry and review its changes.";
   if (row.status === "not-found") return "This entry could not be found.";
   if (row.status === "not-actionable") return "This entry changed after you selected it. Open the entry to see its current status.";
   return "";
@@ -21,6 +25,7 @@ function rowReason(row: BulkPreflightRow): string {
 const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
   ready: "Ready",
   "needs-input": "Needs your input",
+  "needs-review": "Needs individual review",
   blocked: "Blocked",
   "not-found": "Not found",
   "not-actionable": "State changed",
@@ -29,6 +34,8 @@ const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
 
 export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): void {
   const selected = new Set(rows.filter((r) => r.status === "ready" && r.plan).map((r) => r.entryId));
+  let busy = false;
+  const checkboxes: HTMLInputElement[] = [];
 
   const recreateButton = el("button", { type: "button", class: "rt-primary" }, "");
   const readyPlanIds = () => rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
@@ -38,7 +45,8 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
   const syncRecreateButton = () => {
     const count = readyPlanIds().length;
     recreateButton.textContent = `Recreate ${count} ${count === 1 ? "entry" : "entries"}`;
-    recreateButton.toggleAttribute("disabled", count === 0);
+    recreateButton.toggleAttribute("disabled", busy || count === 0);
+    for (const checkbox of checkboxes) checkbox.disabled = busy;
   };
 
   const listItems = rows.map((row) => {
@@ -55,16 +63,26 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
       ...(reason ? [el("div", {}, reason)] : []),
     ];
     if (row.status === "ready" && row.plan) {
+      line.push(el("div", {}, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
+      line.push(el("div", {}, `Fidelity: ${fidelityLabel(row.plan.fidelity)}`));
+      if (row.source) line.push(renderFactsTable(row.source, row.plan, ctx.locale));
+      if (row.plan.warnings.length > 0) {
+        line.push(el("ul", {}, ...row.plan.warnings.map((warning) => el("li", {}, warning.message))));
+      }
       // Named, so a screen reader announces which entry is being toggled rather than "checkbox".
-      const checkbox = el("input", { type: "checkbox", "aria-label": `Recreate ${label}` });
+      const identity = `${row.source?.ownerName ?? "Unknown owner"}, ${label}, ${description || "no description"}`;
+      const checkbox = el("input", { type: "checkbox", "aria-label": `Recreate ${identity}` });
       checkbox.checked = true;
+      checkboxes.push(checkbox);
       checkbox.addEventListener("change", () => {
+        if (busy) return;
         if (checkbox.checked) selected.add(row.entryId);
         else selected.delete(row.entryId);
         syncRecreateButton();
       });
       return el("li", {}, checkbox, ...line);
     }
+    if (row.status === "not-found") return el("li", {}, ...line);
     const openButton = el("button", { type: "button" }, "Open");
     openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.entryId }));
     return el("li", {}, ...line, " ", openButton);
@@ -72,13 +90,32 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
 
   syncRecreateButton();
   recreateButton.addEventListener("click", () => {
-    const planIds = readyPlanIds();
+    const snapshot = rows.filter((row) => row.status === "ready" && row.plan && selected.has(row.entryId));
+    const planIds = snapshot.map((row) => row.plan!.id);
     if (planIds.length === 0) return;
+    busy = true;
+    syncRecreateButton();
+    backButton.disabled = true;
     void runAction(
       ctx,
-      () => ctx.api.post("/api/entries/bulk-recreate", { planIds }) as Promise<{ results: readonly BulkRecreateRow[] }>,
-      (res) => ctx.navigate({ kind: "bulk-results", rows: res.results }),
-      (err) => renderApiError(ctx.root, err, () => renderBulkReview(ctx, rows)),
+      () => ctx.api.mutate("/api/entries/bulk-recreate", { planIds }),
+      (res) => {
+        if (!hasBulkResults(res)) {
+          const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
+          ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
+          return;
+        }
+        ctx.navigate({ kind: "bulk-results", rows: res.results, reviewRows: snapshot });
+      },
+      (err) => {
+        if (err instanceof MutationTransportError) {
+          const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
+          ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
+          return;
+        }
+        busy = false;
+        renderApiError(ctx.root, err, () => renderBulkReview(ctx, rows));
+      },
     );
   });
 
@@ -88,10 +125,14 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
   mount(
     ctx.root,
     el("h2", {}, "Review selected entries"),
-    el("p", {}, "Entries needing input are excluded. Open each one to resolve it, then try again."),
+    el("p", {}, "Entries needing input or individual review are excluded. Open each one to resolve it, then try again."),
     el("ul", {}, ...listItems),
     el("div", {}, recreateButton, backButton),
   );
+}
+
+function hasBulkResults(value: unknown): value is { readonly results: readonly BulkRecreateRow[] } {
+  return typeof value === "object" && value !== null && "results" in value && Array.isArray((value as { results?: unknown }).results);
 }
 
 const OUTCOME_LABEL: Record<string, string> = {
@@ -108,21 +149,25 @@ function rowMessage(row: BulkRecreateRow): string {
   // The raw Clockify id said nothing to the person reading it — the "Open" button beside this row
   // is what actually reaches the new entry.
   if (row.outcome === "RECREATED") return "The new entry is in Clockify.";
-  return "Clockify's answer did not arrive. Open this entry to check.";
+  return "The result did not reach this page. Do not recreate this entry again. Open it and check its status.";
 }
 
-export function renderBulkResults(ctx: Ctx, rows: readonly BulkRecreateRow[]): void {
+export function renderBulkResults(ctx: Ctx, rows: readonly BulkRecreateRow[], reviewRows: readonly BulkPreflightRow[] = []): void {
   const listItems = rows.map((row) => {
     const label = el("strong", {}, OUTCOME_LABEL[row.outcome] ?? row.outcome);
+    const reviewed = reviewRows.find((candidate) => candidate.plan?.id === row.planId || candidate.entryId === row.entryId);
+    const identity = reviewed?.source
+      ? `${reviewed.source.ownerName} — ${formatEntryHeader(reviewed.source.start, reviewed.source.end, ctx.locale)} — ${reviewed.source.description || "(no description)"}`
+      : "The selected entry";
     // A row can describe a plan that no longer resolves to an entry (its plan was pruned), in
     // which case there is nothing to open — offering the button would navigate to `id=undefined`.
     if (row.entryId === null || row.entryId === undefined) {
-      return el("li", {}, label, ` — ${rowMessage(row)}`);
+      return el("li", {}, label, ` — ${identity}. ${rowMessage(row)}`);
     }
     const entryId = row.entryId;
     const openButton = el("button", { type: "button" }, "Open");
     openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId }));
-    return el("li", {}, label, ` — ${rowMessage(row)} `, openButton);
+    return el("li", {}, label, ` — ${identity}. ${rowMessage(row)} `, openButton);
   });
 
   const backButton = el("button", { type: "button" }, "Back to deleted entries");

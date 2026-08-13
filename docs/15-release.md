@@ -56,9 +56,11 @@ RC.11 run as proof for either boundary.
 4. Create a new Railway project named `restoretime`. In it, create an environment named
    `restoretime` and a service named `restoretime`. This is not the production project. Deploy the
    repository `Dockerfile` from the exact merged commit with `railway up`, and record the resulting
-   immutable image digest. Configure exactly one replica and one persistent encrypted volume
-   mounted at `/data`; Railway volume attachment causes deployment downtime, so plan this as a
-   single-writer maintenance operation. Set `DATABASE_PATH` under `/data` and set all variables
+   immutable image digest. Keep the volume-backed service at its default singleton. Do not
+   configure Railway replicas because a service that has a volume cannot use them. Require exactly
+   one running deployment instance and one persistent encrypted volume mounted at `/data`.
+   Railway volume attachment causes deployment downtime, so plan this as a single-writer
+   maintenance operation. Set `DATABASE_PATH` under `/data` and set all variables
    from docs/05. Set `CLOCKIFY_PARENT_ORIGIN=https://developer.clockify.me`, set `PUBLIC_BASE_URL`
    to this Railway deployment, and set the non-secret release metadata
    `RESTORETIME_CANDIDATE_ID=<full-merged-commit>`. Set it before `railway up` so it belongs to the
@@ -90,7 +92,10 @@ RC.11 run as proof for either boundary.
    across all current and deactivated workspace users and zero `RT-PROBE-` tags or custom fields.
    The diagnostic `npm run test:live` command is not a release gate.
 8. In the same `restoretime` Railway project and environment, quiesce the writer and create a
-   Railway volume backup by the procedure in docs/14. Lock that backup against further writes.
+   Railway volume backup by the procedure in docs/14. Lock that backup against expiration. The
+   lock does not stop database writes and does not replace the operator deletion rule. Keep the
+   writer quiesced until the backup is complete. Do not delete the backup or wipe its source
+   volume.
    Record the image digest, database checksum, `PRAGMA integrity_check`, `PRAGMA user_version`, and
    backup location. Keep the original backup and prior volume unchanged. Restore a copy to an
    isolated replacement volume in the same project and environment, boot the recorded candidate

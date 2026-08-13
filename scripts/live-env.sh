@@ -36,6 +36,11 @@ set -a
 . "$repo/.env.live"
 set +a
 
+if [ "${NODE_ENV:-}" = "test" ] || compgen -e RT_TEST_ >/dev/null; then
+  echo "release gate blocked — test environment overrides are not accepted" >&2
+  exit 1
+fi
+
 required=(
   CK_LIVE_TARGET CK_LIVE_API_KEY CK_LIVE_API_USER_ID CK_LIVE_WS CK_LIVE_ADDON_ID
   CK_LIVE_ADDON_KEY CK_LIVE_API_BASE CK_LIVE_CANDIDATE_ID CK_RAILWAY_PROJECT_ID

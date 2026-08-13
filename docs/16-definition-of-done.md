@@ -155,4 +155,7 @@ below either describes a current static fact or identifies itself as historical 
 - [ ] The exact current candidate has valid LV-01B and LV-02B receipts. LV-02B names the source ID
       printed by the separate LV-02A trigger. `npm run test:live:release` passes with zero skips.
 - [ ] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
-- [ ] A verified pre-migration backup and an isolated rollback drill exist for this candidate.
+- [ ] The current candidate has a local version-2 migration and rollback drill. The drill stops
+      the candidate, restores a copy of the preserved version-2 backup, starts the recorded prior
+      image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`. Its deployed
+      version-3 database also has a locked backup and isolated restore proof.

@@ -10,6 +10,7 @@ import {
   randomBytes,
   webcrypto,
 } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const OUTPUT_PREFIX = "RESTORETIME_RAILWAY_HANDOFF_V1:";
@@ -51,6 +52,9 @@ try {
   exact("RESTORETIME_CANDIDATE_ID", request.candidateId);
   exact("ADDON_KEY", request.addonKey);
   if (process.env.RAILWAY_GIT_COMMIT_SHA && process.env.RAILWAY_GIT_COMMIT_SHA !== request.candidateId) reject();
+  const fingerprintPath = "/app/.restoretime-source-fingerprint";
+  const deployedFingerprint = readFileSync(fingerprintPath, "utf8").trim();
+  if (!/^[0-9a-f]{64}$/.test(deployedFingerprint) || deployedFingerprint !== request.sourceFingerprint) reject();
   if (!process.env.RAILWAY_REPLICA_ID) reject();
   if (normalizedOrigin(process.env.PUBLIC_BASE_URL) !== request.addonBaseUrl) reject();
 
@@ -94,6 +98,7 @@ try {
     deploymentInstanceId: request.deploymentInstanceId,
     replicaId: process.env.RAILWAY_REPLICA_ID,
     candidateId: request.candidateId,
+    sourceFingerprint: deployedFingerprint,
     workspaceId: row.workspace_id,
     addonId: row.addon_id,
     addonKey: request.addonKey,

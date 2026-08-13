@@ -158,4 +158,5 @@ below either describes a current static fact or identifies itself as historical 
 - [ ] The current candidate has a local version-2 migration and rollback drill. The drill stops
       the candidate, restores a copy of the preserved version-2 backup, starts the recorded prior
       image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`. Its deployed
-      version-3 database also has a locked backup and isolated restore proof.
+      version-3 database also has a backup locked against expiration and deletion, plus isolated
+      restore proof.

@@ -44,7 +44,9 @@ documented migration path in the release notes.
   image as the reference artifact.
 - Database file on a persistent, encrypted volume. The image runs as UID/GID 1000. A mounted
   volume replaces the image's `/data` ownership, so verify that the mounted directory is writable
-  by 1000:1000 before the first boot. Run exactly one application replica against a SQLite file.
+  by 1000:1000 before the first boot. Run exactly one application instance against a SQLite file.
+  On Railway, do not configure replicas for a service that has a volume. Require exactly one
+  running deployment instance instead.
 - For a file-copy backup, quiesce requests, stop the Node process, and confirm that no writer
   remains. Open the file with SQLite, run `PRAGMA wal_checkpoint(TRUNCATE)`, close that connection,
   and then copy the database. Confirm that no `-wal` or `-shm` sidecar remains. If the process must

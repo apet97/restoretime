@@ -4,7 +4,8 @@
 - Context: Two designs looked like they needed a daemon: AMBIGUOUS reconciliation polling, and
   RECREATING lease sweeping.
 - Decision: Neither exists as a process. Reconcile runs once inline when the ambiguity occurs,
-  then lazily — at most once per 30 s when someone views the entry, and on an explicit "Check now".
+  then lazily when someone views the entry or selects "Check now". Both paths use the same durable
+  30-second throttle, so concurrent requests cannot start overlapping reconcile reads.
   Lease recovery runs when someone opens the detail view or when a new claim checks an expired
   `RECREATING` row. A new claim replaces an expired token only when no durable attempt exists. If
   an attempt exists, recovery projects its stored final outcome or changes the row to `AMBIGUOUS`;

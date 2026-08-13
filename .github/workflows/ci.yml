@@ -33,9 +33,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
-      - run: npm run build
-      # After build: the E2E suite's last test boots the real dist/static/app.js, so the artifact
-      # has to exist. Everything before it runs against source.
+      # `test:e2e` builds exactly once before the suite. Its shipped-bundle test then boots the
+      # resulting dist/static/app.js instead of an ignored artifact left by an older local build.
       - run: npm run test:e2e
 
       # Gate 6 (docs/15): secret scan of the diff. A GitHub Action, not an npm dependency — the

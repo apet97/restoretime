@@ -112,15 +112,15 @@ Plus plan-specific warnings, each in the form "what changed — why — what the
 contain":
 
 ```text
-Custom field "Cost code" — this field no longer exists in the workspace. The deleted entry had
-"AZ-104". The new entry cannot carry this value.
+The custom field "Cost code" no longer exists. The deleted entry had "AZ-104". This value is not
+sent.
 ```
 
 ## 4. Resolution widgets (ACTION_REQUIRED)
 
 | Case | Widget |
 |---|---|
-| Project gone / required | Select: current projects (name + client). Extra option "No project" only when the workspace does not require projects |
+| Project gone / required | Select: current projects by name, with the archived flag when applicable. Extra option "No project" only when the workspace does not require projects |
 | Task gone | Select: current tasks of the effective project, plus "No task" when tasks are optional |
 | Tag gone | Checkbox per missing tag: "Remove tag ‹name›". Multi-select of current tags to add, when wanted |
 | Description required | Text input with the original description prefilled only if it was non-empty; otherwise empty |
@@ -189,6 +189,7 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
 4. **Recreate N entries** confirms once. Each entry is claimed and executed independently. Results
    list per entry: Recreated / Failed (reason) / Unknown result. There is no cross-entry
    transaction; each row shows its own outcome.
+   The request executes entries sequentially to stay within Clockify's request rate.
 
 ## 8. General UI rules
 
@@ -210,8 +211,8 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
 - Token refresh **(proactive half verified live, evidence "Live run 12")**: the dispatch fires at
   25 minutes and the session keeps working past the original token's expiry — a call 106 s after
   expiry still succeeded. The **reactive** half (a 401 mid-call triggering one retry, and the
-  session-expired notice when that retry also 401s) stays unit-covered only: the proactive refresh
-  keeps it from being reached, and nothing in the platform can invalidate a token mid-session.
+  session-expired notice when refresh fails) is covered by token-authority unit tests and a
+  `happy-dom` action-path test. The proactive refresh keeps this path uncommon in live use.
 - Token refresh: the token lives in memory only. `bridge.subscribe("refreshAddonToken", body => ...)` receives the refreshed token as a window message whose title is `refreshAddonToken` and whose body is the token string. The shell dispatches `bridge.refreshAddonToken()` proactively every 25 minutes (tokens live 30 minutes). On API 401 the shell dispatches a refresh, waits up to 5 seconds for the message, retries the call once with the new token, and on timeout shows a session-expired notice ("Reload the component").
 - Disabled addon (STATUS_CHANGED INACTIVE): a notice "RestoreTime is disabled for this workspace"
   replaces actions; lists stay readable. Note what this is actually for: Clockify removes a disabled

@@ -22,6 +22,7 @@ import { createServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import * as entries from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
+import * as plans from "../../src/store/plans.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
 
 const ADDON_KEY = "restoretime-test";
@@ -253,6 +254,71 @@ describe("scripted walkthrough: webhook -> list -> preflight -> confirm -> RECRE
   });
 });
 
+describe("saved resolution presentation", () => {
+  it("keeps exact editable controls when Try again starts from a consumed plan", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+    const entry = entries.ingestDeletedEntry(server.db, {
+      id: "re-editable",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "source-editable",
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: {
+        workspaceId: WORKSPACE_ID,
+        entryId: "source-editable",
+        ownerId: OWNER_ID,
+        ownerName: "User One",
+        description: "hello",
+        billable: true,
+        start: "2026-08-08T10:00:00Z",
+        end: "2026-08-08T11:00:00Z",
+        wasRunning: false,
+        type: "REGULAR",
+        timeZone: "UTC",
+        projectId: "project-gone",
+        projectName: "Old project",
+        clientName: null,
+        taskId: null,
+        taskName: null,
+        tags: [],
+        customFieldValues: [],
+      },
+    }).entry;
+    vi.stubGlobal("fetch", baseStub());
+    const token = await componentToken();
+    const preflight = (choices: Record<string, unknown>) => server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id, choices },
+    });
+
+    const unresolved = await preflight({});
+    expect(unresolved.status).toBe(200);
+    expect((unresolved.body as { plan: { actionRequired: Array<{ ruleId: string }> } }).plan.actionRequired)
+      .toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
+
+    const resolved = await preflight({ projectId: null });
+    const resolvedPlan = (resolved.body as {
+      plan: { id: string; actionRequired: unknown[]; presentation: { editable: Array<{ ruleId: string }> } };
+    }).plan;
+    expect(resolvedPlan.actionRequired).toHaveLength(0);
+    expect(resolvedPlan.presentation.editable).toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
+    server.db.prepare("UPDATE recreation_plans SET status='CONSUMED' WHERE id=?").run(resolvedPlan.id);
+
+    const retried = await preflight({ projectId: null });
+    const retriedPlan = (retried.body as {
+      plan: { presentation: { editable: Array<{ ruleId: string }> } };
+    }).plan;
+    expect(retriedPlan.presentation.editable).toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
+  });
+});
+
 describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () => {
   it("drives the ambiguity protocol through the API surface", async () => {
     const server = await boot();
@@ -323,12 +389,23 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       body: { entryId, planId },
     });
     expect(recreateResponse.status).toBe(200);
-    expect((recreateResponse.body as { result: { outcome: string } }).result.outcome).toBe("AMBIGUOUS");
+    const ambiguousResult = (recreateResponse.body as { result: { outcome: string } }).result;
+    expect(ambiguousResult.outcome).toBe("AMBIGUOUS");
+    expect(ambiguousResult).not.toHaveProperty("baseline");
     // ADR-007 / docs/07 §8: "Reconcile immediately once, then lazily." The create's response was
     // lost, so the first check runs inside the recreate call — before the user does anything. It
     // finds nothing yet (the committed entry is not visible to this stub), so the row stays
     // AMBIGUOUS, which is the truthful state.
     expect((recreateResponse.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("AMBIGUOUS");
+
+    const throttledReconcile = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/reconcile",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId },
+    });
+    expect(throttledReconcile.status).toBe(429);
+    expect(throttledReconcile.body).toEqual({ error: "reconcile was checked recently; try again shortly" });
 
     // The Clockify entry actually committed — now findable. Re-stub, then prove the lazy
     // reconcile (ADR-010: a detail view on an AMBIGUOUS row triggers one reconcile pass) adopts
@@ -376,7 +453,7 @@ describe("scripted walkthrough: AMBIGUOUS -> reconcile adopts -> RECREATED", () 
       actual: true,
     });
 
-    // The explicit "Check now" route is throttled once a reconcile just ran (30 s window).
+    // A recreated entry no longer accepts a reconcile request, independent of the throttle.
     const reconcileResponse = await server.addon.handle({
       method: "POST",
       path: "/api/entries/reconcile",
@@ -497,6 +574,276 @@ describe("policy negatives through the API surface", () => {
     expect(preflight.status).toBe(400);
     expect(recreate.status).toBe(400);
     expect(clockifyReads).toBe(0);
+  });
+
+  it("pre-scans a mixed active and stale bulk request before any row or Clockify state changes", async () => {
+    const server = await boot();
+    const token = await componentToken();
+    const makeEntry = (id: string) => entries.ingestDeletedEntry(server.db, {
+      id,
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: `source-${id}`,
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: {
+        workspaceId: WORKSPACE_ID,
+        entryId: `source-${id}`,
+        ownerId: OWNER_ID,
+        ownerName: "User One",
+        description: id,
+        billable: false,
+        start: "2026-08-08T10:00:00Z",
+        end: "2026-08-08T11:00:00Z",
+        wasRunning: false,
+        type: "REGULAR",
+        timeZone: "UTC",
+        projectId: null,
+        projectName: null,
+        clientName: null,
+        taskId: null,
+        taskName: null,
+        tags: [],
+        customFieldValues: [],
+      },
+    }).entry;
+    const makePlan = (id: string, entryId: string) => plans.createActive(server.db, {
+      id,
+      recoverableEntryId: entryId,
+      createdBy: OWNER_ID,
+      createdAt: "2026-08-08T09:00:01Z",
+      sourceHash: "hash",
+      choices: {},
+      resolution: [],
+      plannedRequest: {
+        workspaceId: WORKSPACE_ID,
+        userId: OWNER_ID,
+        start: "2026-08-08T10:00:00Z",
+        end: "2026-08-08T11:00:00Z",
+      },
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+      warnings: [],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    const activeEntry = makeEntry("bulk-active-entry");
+    const staleEntry = makeEntry("bulk-stale-entry");
+    const activePlan = makePlan("bulk-active-plan", activeEntry.id);
+    const stalePlan = makePlan("bulk-stale-plan", staleEntry.id);
+    const currentPlan = makePlan("bulk-current-plan", staleEntry.id);
+    let clockifyCalls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyCalls += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { planIds: [activePlan.id, stalePlan.id] },
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      stale: true,
+      currentPlans: [{
+        requestedPlanId: stalePlan.id,
+        entryId: staleEntry.id,
+        plan: { id: currentPlan.id, status: "ACTIVE" },
+      }],
+    });
+    expect(clockifyCalls).toBe(0);
+    expect(entries.getById(server.db, WORKSPACE_ID, activeEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(plans.getById(server.db, activePlan.id)?.status).toBe("ACTIVE");
+    expect(server.db.prepare("SELECT COUNT(*) AS n FROM recreation_attempts").get()).toEqual({ n: 0 });
+
+    const missing = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { planIds: [activePlan.id, "missing-plan"] },
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({ error: "not found" });
+    expect(entries.getById(server.db, WORKSPACE_ID, activeEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(plans.getById(server.db, activePlan.id)?.status).toBe("ACTIVE");
+    expect(clockifyCalls).toBe(0);
+
+    server.db.prepare("UPDATE recreation_plans SET presentation_json=NULL WHERE id=?").run(activePlan.id);
+    const legacy = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { planIds: [activePlan.id] },
+    });
+    expect(legacy.status).toBe(409);
+    expect(legacy.body).toMatchObject({
+      stale: true,
+      currentPlans: [{ requestedPlanId: activePlan.id, entryId: activeEntry.id, plan: null }],
+    });
+    expect(plans.getById(server.db, activePlan.id)?.status).toBe("ACTIVE");
+    expect(clockifyCalls).toBe(0);
+  });
+
+  it("rejects partial, adjusted, and materially warned bulk plans before Clockify access", async () => {
+    const server = await boot();
+    const token = await componentToken();
+    const configurations = [
+      { id: "partial", fidelity: "PARTIAL" as const, warnings: [] },
+      { id: "adjusted", fidelity: "ADJUSTED" as const, warnings: [] },
+      {
+        id: "material-warning",
+        fidelity: "FULL" as const,
+        warnings: [{ ruleId: "P-PROJ-ARCH", code: "ARCHIVED_PROJECT", message: "The project is archived." }],
+      },
+    ];
+    const planIds = configurations.map((configuration) => {
+      const entry = entries.ingestDeletedEntry(server.db, {
+        id: `bulk-${configuration.id}`,
+        workspaceId: WORKSPACE_ID,
+        sourceEntryId: `source-${configuration.id}`,
+        ownerId: OWNER_ID,
+        detectedAt: "2026-08-08T09:00:00Z",
+        source: {
+          workspaceId: WORKSPACE_ID,
+          entryId: `source-${configuration.id}`,
+          ownerId: OWNER_ID,
+          ownerName: "User One",
+          description: configuration.id,
+          billable: false,
+          start: "2026-08-08T10:00:00Z",
+          end: "2026-08-08T11:00:00Z",
+          wasRunning: false,
+          type: "REGULAR",
+          timeZone: "UTC",
+          projectId: null,
+          projectName: null,
+          clientName: null,
+          taskId: null,
+          taskName: null,
+          tags: [],
+          customFieldValues: [],
+        },
+      }).entry;
+      return plans.createActive(server.db, {
+        id: `plan-${configuration.id}`,
+        recoverableEntryId: entry.id,
+        createdBy: OWNER_ID,
+        createdAt: "2026-08-08T09:00:01Z",
+        sourceHash: "hash",
+        choices: {},
+        resolution: [],
+        plannedRequest: {
+          workspaceId: WORKSPACE_ID,
+          userId: OWNER_ID,
+          start: "2026-08-08T10:00:00Z",
+          end: "2026-08-08T11:00:00Z",
+        },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: configuration.warnings,
+        blockers: [],
+        actionRequired: [],
+        fidelity: configuration.fidelity,
+      }).id;
+    });
+    let clockifyCalls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyCalls += 1;
+      return jsonResponse({}, 500);
+    }) as typeof fetch);
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-recreate",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { planIds },
+    });
+    expect(response.status).toBe(200);
+    expect((response.body as { results: Array<{ outcome: string; message: string }> }).results).toEqual(
+      planIds.map((planId) => ({
+        planId,
+        entryId: `bulk-${planId.slice("plan-".length)}`,
+        outcome: "ERROR",
+        message: "this plan needs an individual review before recreation",
+      })),
+    );
+    expect(clockifyCalls).toBe(0);
+    expect(server.db.prepare("SELECT COUNT(*) AS n FROM recreation_attempts").get()).toEqual({ n: 0 });
+  });
+
+  it("classifies otherwise-ready partial and materially warned bulk preflights as needs-review", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
+      workspaceId: WORKSPACE_ID,
+      addonId: ADDON_ID,
+    });
+    await install(server, webhookToken);
+    const common = {
+      workspaceId: WORKSPACE_ID,
+      ownerId: OWNER_ID,
+      ownerName: "User One",
+      billable: false,
+      start: "2026-08-08T10:00:00Z",
+      end: "2026-08-08T11:00:00Z",
+      wasRunning: false,
+      type: "REGULAR",
+      timeZone: "UTC",
+      clientName: null,
+      taskId: null,
+      taskName: null,
+      tags: [],
+    } as const;
+    entries.ingestDeletedEntry(server.db, {
+      id: "bulk-partial-preflight",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "source-partial-preflight",
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: {
+        ...common,
+        entryId: "source-partial-preflight",
+        description: "partial",
+        projectId: null,
+        projectName: null,
+        customFieldValues: [{ customFieldId: "deleted-field", name: "Deleted field", value: "private" }],
+      },
+    });
+    entries.ingestDeletedEntry(server.db, {
+      id: "bulk-warning-preflight",
+      workspaceId: WORKSPACE_ID,
+      sourceEntryId: "source-warning-preflight",
+      ownerId: OWNER_ID,
+      detectedAt: "2026-08-08T09:01:00Z",
+      source: {
+        ...common,
+        entryId: "source-warning-preflight",
+        description: "warning",
+        projectId: "archived-project",
+        projectName: "Archived project",
+        customFieldValues: [],
+      },
+    });
+    vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (methodOf(input, init) === "GET" && path.endsWith("/projects/archived-project")) {
+        return jsonResponse({ id: "archived-project", name: "Archived project", archived: true });
+      }
+      return baseStub()(input, init);
+    }) as typeof fetch);
+
+    const token = await componentToken();
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { ids: ["bulk-partial-preflight", "bulk-warning-preflight"] },
+    });
+    expect(response.status).toBe(200);
+    expect((response.body as { results: Array<{ entryId: string; status: string; plan: { fidelity: string } }> }).results).toMatchObject([
+      { entryId: "bulk-partial-preflight", status: "needs-review", plan: { fidelity: "PARTIAL" } },
+      { entryId: "bulk-warning-preflight", status: "needs-review", plan: { fidelity: "FULL" } },
+    ]);
   });
 
   it("a regular viewer never sees another user's entry in the list", async () => {
@@ -1283,26 +1630,12 @@ describe("POST /api/entries/reconcile — a failed check answers N8, not a bare 
     expect(message).toContain("check again");
     expect(message).not.toContain("Nothing was created");
 
-    // The failed read concludes nothing, but its start time remains as a conservative in-flight
-    // fence. This prevents "not created" from racing the read. Existing check evidence is not
-    // incremented, and the row stays AMBIGUOUS.
+    // The failed read concludes nothing and restores the exact prior evidence. It does not
+    // consume the 30-second throttle window, so the user can retry immediately.
     const row = server.db.prepare("SELECT reconcile_json FROM recreation_attempts WHERE id='att-1'").get() as {
-      reconcile_json: string;
+      reconcile_json: string | null;
     };
-    const reconcile = JSON.parse(row.reconcile_json) as {
-      checkedAt: string;
-      checks: number;
-      matchCount: number;
-      candidateIds: string[];
-      truncated: boolean;
-    };
-    expect(reconcile).toMatchObject({
-      checks: 0,
-      matchCount: 0,
-      candidateIds: [],
-      truncated: false,
-    });
-    expect(Date.now() - new Date(reconcile.checkedAt).getTime()).toBeLessThan(30_000);
+    expect(row.reconcile_json).toBeNull();
     const entryRow = server.db.prepare("SELECT lifecycle_state FROM recoverable_entries WHERE id=?").get(entryId) as {
       lifecycle_state: string;
     };

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { openDatabase } from "../../src/store/db.js";
 
 describe("openDatabase migrations", () => {
@@ -12,15 +14,21 @@ describe("openDatabase migrations", () => {
     dir = undefined;
   });
 
-  it("a fresh in-memory database reaches user_version=2", () => {
+  it("a fresh in-memory database reaches user_version=3", () => {
     const db = openDatabase(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
     const tables = db
       .prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('installations', 'recoverable_entries', 'recreation_plans', 'recreation_attempts')",
       )
       .all();
     expect(tables).toHaveLength(4);
+    const presentation = db.prepare("PRAGMA table_info(recreation_plans)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    expect(presentation).toContainEqual(expect.objectContaining({ name: "presentation_json", notnull: 0 }));
+    db.close();
   });
 
   it("a second boot on the same database file is a no-op and keeps existing rows", () => {
@@ -28,7 +36,7 @@ describe("openDatabase migrations", () => {
     const dbPath = join(dir, "restoretime.sqlite");
 
     const first = openDatabase(dbPath);
-    expect(first.pragma("user_version", { simple: true })).toBe(2);
+    expect(first.pragma("user_version", { simple: true })).toBe(3);
     first
       .prepare(
         `INSERT INTO installations
@@ -39,11 +47,79 @@ describe("openDatabase migrations", () => {
     first.close();
 
     const second = openDatabase(dbPath);
-    expect(second.pragma("user_version", { simple: true })).toBe(2);
+    expect(second.pragma("user_version", { simple: true })).toBe(3);
     const row = second
       .prepare("SELECT * FROM installations WHERE workspace_id = ? AND addon_id = ?")
       .get("ws-1", "addon-1");
     expect(row).toBeDefined();
     second.close();
+  });
+
+  it("migrates a populated version 2 database without inventing presentation data", () => {
+    dir = mkdtempSync(join(tmpdir(), "restoretime-migrate-v2-"));
+    const dbPath = join(dir, "restoretime.sqlite");
+    const legacy = new Database(dbPath);
+    for (const version of ["0001_init.sql", "0002_recovery.sql"]) {
+      legacy.exec(readFileSync(join(process.cwd(), "src/store/migrations", version), "utf8"));
+    }
+    legacy.pragma("user_version = 2");
+    legacy.prepare(
+      `INSERT INTO recoverable_entries
+         (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
+       VALUES
+         ('entry-1', 'ws-1', 'source-1', 'user-1', '2026-08-08T09:00:00Z', '{}', 'RECREATED'),
+         ('entry-ambiguous', 'ws-1', 'source-ambiguous', 'user-1', '2026-08-08T09:01:00Z', '{}', 'AMBIGUOUS'),
+         ('entry-recreating', 'ws-1', 'source-recreating', 'user-1', '2026-08-08T09:02:00Z', '{}', 'RECREATING'),
+         ('entry-recreating-success', 'ws-1', 'source-recreating-success', 'user-1', '2026-08-08T09:03:00Z', '{}', 'RECREATING'),
+         ('entry-recreating-failed', 'ws-1', 'source-recreating-failed', 'user-1', '2026-08-08T09:04:00Z', '{}', 'RECREATING')`,
+    ).run();
+    legacy.prepare(
+      `INSERT INTO recreation_plans
+         (id, recoverable_entry_id, created_by, created_at, source_hash, choices_json,
+          resolution_json, planned_request_json, warnings_json, blockers_json,
+          action_required_json, fidelity, status)
+       VALUES
+         ('plan-1', 'entry-1', 'user-1', '2026-08-08T09:00:01Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED'),
+         ('plan-ambiguous', 'entry-ambiguous', 'user-1', '2026-08-08T09:01:01Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED'),
+         ('plan-recreating', 'entry-recreating', 'user-1', '2026-08-08T09:02:01Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED'),
+         ('plan-recreating-success', 'entry-recreating-success', 'user-1', '2026-08-08T09:03:01Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED'),
+         ('plan-recreating-failed', 'entry-recreating-failed', 'user-1', '2026-08-08T09:04:01Z', 'hash', '{}', '[]', '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED')`,
+    ).run();
+    legacy.prepare(
+      `INSERT INTO recreation_attempts
+         (id, plan_id, recoverable_entry_id, started_at, outcome, baseline_json, reconcile_json)
+       VALUES
+         ('attempt-resolved', 'plan-1', 'entry-1', '2026-08-08T09:00:02Z', 'SUCCESS', '["old-resolved"]', '{"checks":3}'),
+         ('attempt-ambiguous', 'plan-ambiguous', 'entry-ambiguous', '2026-08-08T09:01:02Z', 'AMBIGUOUS', '["keep-ambiguous"]', '{"checks":1}'),
+         ('attempt-recreating', 'plan-recreating', 'entry-recreating', '2026-08-08T09:02:02Z', NULL, '["keep-recreating"]', '{"checks":0}'),
+         ('attempt-recreating-success', 'plan-recreating-success', 'entry-recreating-success', '2026-08-08T09:03:02Z', 'SUCCESS', '["clear-success"]', '{"checks":2}'),
+         ('attempt-recreating-failed', 'plan-recreating-failed', 'entry-recreating-failed', '2026-08-08T09:04:02Z', 'FAILED', '["clear-failed"]', '{"checks":2}')`,
+    ).run();
+    legacy.close();
+
+    const migrated = openDatabase(dbPath);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(3);
+    expect(migrated.prepare(
+      "SELECT id, presentation_json FROM recreation_plans ORDER BY id",
+    ).all()).toEqual([
+      { id: "plan-1", presentation_json: null },
+      { id: "plan-ambiguous", presentation_json: null },
+      { id: "plan-recreating", presentation_json: null },
+      { id: "plan-recreating-failed", presentation_json: null },
+      { id: "plan-recreating-success", presentation_json: null },
+    ]);
+    expect(migrated.prepare(
+      "SELECT id FROM recoverable_entries WHERE id='entry-1'",
+    ).get()).toEqual({ id: "entry-1" });
+    expect(migrated.prepare(
+      "SELECT id, baseline_json, reconcile_json FROM recreation_attempts ORDER BY id",
+    ).all()).toEqual([
+      { id: "attempt-ambiguous", baseline_json: '["keep-ambiguous"]', reconcile_json: '{"checks":1}' },
+      { id: "attempt-recreating", baseline_json: '["keep-recreating"]', reconcile_json: '{"checks":0}' },
+      { id: "attempt-recreating-failed", baseline_json: null, reconcile_json: null },
+      { id: "attempt-recreating-success", baseline_json: null, reconcile_json: null },
+      { id: "attempt-resolved", baseline_json: null, reconcile_json: null },
+    ]);
+    migrated.close();
   });
 });

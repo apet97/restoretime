@@ -284,10 +284,10 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
   and `timeEntries.delete` all succeeded.
 - EVIDENCE: RC addon-token-matrix; operator statement; evidence/install-capture-2026-08-08.md.
 - CONFIDENCE: PROVED (developer environment, 2026-08-08); operator-stated equivalence additionally
-  confirmed — production re-confirmation remains LV-04.
+  confirmed. A production recheck is a future production-only gap. It is not an RC.11 gate.
 - CONSEQUENCE: The REST client sends exactly one auth mode: the installation `authToken` as
-  `X-Addon-Token`. LV-04 re-confirms on production, as confirmation of the equivalence on the real
-  addon path (admin recreating another user's entry).
+  `X-Addon-Token`. LV-04 confirms the real add-on path on the developer environment by recreating
+  another user's entry. Production confirmation remains separate future work.
 
 ### R12 — Workspace settings readable
 
@@ -342,8 +342,9 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
 - CONFIDENCE: PROVED. Note: body code `501` covers several project causes (required, archived —
   and archived projects actually accept creates, R6) → distinguish causes with preflight lookups,
   not codes.
-- CONSEQUENCE: 4xx → FAILED with the code-mapped reason (docs/07 §8, UT-M01). 5xx/transport →
-  AMBIGUOUS. Codes 4030 and 1003 map to specific user-facing explanations with the admin-bypass
+- CONSEQUENCE: 4xx → FAILED with the code-mapped reason (docs/07 §8, UT-M01). 5xx, transport
+  failures, and an unknown write classification such as an unexpected 3xx → AMBIGUOUS. Codes 4030
+  and 1003 map to specific user-facing explanations with the admin-bypass
   path (R16). A 4xx with no body code maps on status alone (UT-M01 code-absent case).
 
 ### R16 — Force-timer and locked-period enforcement, with admin bypass

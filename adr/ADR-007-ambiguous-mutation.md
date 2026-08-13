@@ -4,7 +4,8 @@
 - Context: Clockify creates have no idempotency key; identical creates always succeed with new IDs
   (R7). A create can commit while its response is lost. The per-user list has no created-at field
   (W14), and legitimate look-alike entries exist (R10).
-- Decision: On 5xx/timeout/reset the attempt becomes AMBIGUOUS. Before the create, the attempt
+- Decision: On 5xx, any 3xx or unrecognized HTTP response, timeout, reset, or other unknown write
+  classification, the attempt becomes AMBIGUOUS. Before the create, the attempt
   records a baseline snapshot of the owner's matching entries. Reconciliation compares a fresh list
   against the baseline (baseline-delta, fingerprint match). Exactly one delta → adopt (guarded by
   `UNIQUE(workspace_id, new_entry_id)`). Zero deltas after a bounded window (≥3 checks over ~10

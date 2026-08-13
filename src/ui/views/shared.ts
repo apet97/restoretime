@@ -2,7 +2,7 @@
 // session-expired takeover (docs/10 §8), and the warnings/differences block that both the detail
 // view and the confirm view show verbatim (docs/10 §3, §5 — "Warnings and differences").
 
-import { ApiError, SessionExpiredError } from "../api.js";
+import { ApiError, MutationTransportError, SessionExpiredError } from "../api.js";
 import { el, mount } from "../dom.js";
 import type { Ctx } from "../state.js";
 import type { DetailResponse, PlanBlocker, PlanWarning, RecreationPlan } from "../types.js";
@@ -25,17 +25,51 @@ export function renderSessionExpired(root: HTMLElement): void {
   );
 }
 
+const requestGenerations = new WeakMap<Ctx, number>();
+
+interface ViewGeneration {
+  readonly navigationVersion: number;
+  readonly requestGeneration: number;
+}
+
+function currentRequestGeneration(ctx: Ctx): number {
+  return requestGenerations.get(ctx) ?? 0;
+}
+
+function beginRequest(ctx: Ctx): ViewGeneration {
+  const generation = {
+    navigationVersion: ctx.getNavigationVersion(),
+    requestGeneration: currentRequestGeneration(ctx) + 1,
+  };
+  requestGenerations.set(ctx, generation.requestGeneration);
+  return generation;
+}
+
+function captureViewGeneration(ctx: Ctx): ViewGeneration {
+  return {
+    navigationVersion: ctx.getNavigationVersion(),
+    requestGeneration: currentRequestGeneration(ctx),
+  };
+}
+
+function isCurrentView(ctx: Ctx, generation: ViewGeneration): boolean {
+  return ctx.getNavigationVersion() === generation.navigationVersion && currentRequestGeneration(ctx) === generation.requestGeneration;
+}
+
 /** Runs an API call, mounts a loading placeholder first, and routes a session timeout to the
  * takeover view — every view's data-loading entry point goes through this so that behavior is
  * identical everywhere instead of re-implemented per view. */
 export async function withLoading<T>(ctx: Ctx, load: () => Promise<T>, onLoaded: (value: T) => void, loadingLabel?: string): Promise<void> {
+  const generation = beginRequest(ctx);
   renderLoading(ctx.root, loadingLabel);
   try {
     const value = await load();
+    if (!isCurrentView(ctx, generation)) return;
     onLoaded(value);
   } catch (err) {
+    if (!isCurrentView(ctx, generation)) return;
     if (err instanceof SessionExpiredError) {
-      renderSessionExpired(ctx.root);
+      ctx.navigate({ kind: "session-expired" });
       return;
     }
     renderApiError(ctx.root, err, () => void withLoading(ctx, load, onLoaded, loadingLabel));
@@ -47,12 +81,40 @@ export async function withLoading<T>(ctx: Ctx, load: () => Promise<T>, onLoaded:
  * error is handed to `onError` so the caller can decide where to show it (inline, or by re-showing
  * the current view with an error banner). */
 export async function runAction<T>(ctx: Ctx, action: () => Promise<T>, onSuccess: (value: T) => void, onError: (err: unknown) => void): Promise<void> {
+  const generation = beginRequest(ctx);
   try {
     const value = await action();
+    if (!isCurrentView(ctx, generation)) return;
     onSuccess(value);
   } catch (err) {
+    if (!isCurrentView(ctx, generation)) return;
     if (err instanceof SessionExpiredError) {
-      renderSessionExpired(ctx.root);
+      ctx.navigate({ kind: "session-expired" });
+      return;
+    }
+    onError(err);
+  }
+}
+
+/** Runs a view's optional background read without replacing the current DOM. The read observes the
+ * current foreground generation but does not start a new one, so sibling background reads can run
+ * together. A later load or navigation invalidates only that consumer, including a consumer of a
+ * promise cached by another render. */
+export async function runBackgroundRequest<T>(
+  ctx: Ctx,
+  load: () => Promise<T>,
+  onLoaded: (value: T) => void,
+  onError: (err: unknown) => void = () => undefined,
+): Promise<void> {
+  const generation = captureViewGeneration(ctx);
+  try {
+    const value = await load();
+    if (!isCurrentView(ctx, generation)) return;
+    onLoaded(value);
+  } catch (err) {
+    if (!isCurrentView(ctx, generation)) return;
+    if (err instanceof SessionExpiredError) {
+      ctx.navigate({ kind: "session-expired" });
       return;
     }
     onError(err);
@@ -62,7 +124,12 @@ export async function runAction<T>(ctx: Ctx, action: () => Promise<T>, onSuccess
 /** A failed API call outside the initial load (a button action). The caller supplies the safe next
  * action; retry remains the default label for read and preflight failures. */
 export function renderApiError(root: HTMLElement, err: unknown, action: () => void, actionLabel = "Try again"): void {
-  const message = err instanceof ApiError ? apiErrorMessage(err) : "RestoreTime could not complete that request.";
+  const message =
+    err instanceof MutationTransportError
+      ? "RestoreTime did not receive a response. The request might have reached RestoreTime. Check the current status before you try again."
+      : err instanceof ApiError
+        ? apiErrorMessage(err)
+        : "RestoreTime could not complete that request.";
   const actionButton = el("button", { type: "button", class: "rt-primary" }, actionLabel);
   actionButton.addEventListener("click", action);
   mount(root, el("section", {}, el("p", {}, message), actionButton));

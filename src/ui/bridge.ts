@@ -74,6 +74,9 @@ export function createTokenAuthority(bridge: ClockifyBridge, initialToken: strin
     dispose() {
       clearInterval(interval);
       unsubscribe();
+      const settle = waiters;
+      waiters = [];
+      for (const resolve of settle) resolve(undefined);
     },
   };
 }

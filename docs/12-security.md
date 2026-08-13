@@ -42,14 +42,22 @@
 
 ## Data protection
 
-- Persisted: the normalized source only (docs/06). Rates embedded in the webhook are discarded at
-  normalization (ADR-009).
+- Persisted: the normalized source and the recovery plans and attempts in docs/08. Plans hold the
+  exact planned create request, choices, current labels, preview values, and rule results. Attempts
+  can hold baseline IDs, candidate IDs, differences, and safe error fields. Raw webhook envelopes
+  and rate objects are discarded at normalization (ADR-009).
 - Logs: structured; fields limited to IDs, states, error codes, durations. Descriptions and
   custom-field values never logged.
-- Encryption at rest: installation tokens via the SDK codec. The database file holds potentially
-  sensitive entry descriptions; deployments place it on encrypted disks; backups copy the file and
-  inherit its sensitivity (docs/14).
-- Uninstall: full workspace purge (F17). Status INACTIVE keeps data (the addon can be re-enabled).
+- Encryption at rest: installation API tokens and webhook tokens use the SDK codec. The database
+  file also holds potentially sensitive entry descriptions, custom-field values, plans, and
+  attempts. Deployments place it on encrypted disks. Backups copy the file and inherit its
+  sensitivity (docs/14).
+- Uninstall: full workspace purge from the active database when the lifecycle call arrives (F17).
+  It does not rewrite existing backup files. Status INACTIVE keeps data because the add-on can be
+  re-enabled.
+- Retention: the next preflight for an entry deletes its older unattempted STALE or CONSUMED
+  plans. Plans linked to attempts remain for audit until uninstall. Baseline and candidate
+  evidence remains only while an attempt is ambiguous; a definitive outcome clears it.
 
 ## What is not defended (explicit)
 

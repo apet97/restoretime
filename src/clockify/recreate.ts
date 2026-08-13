@@ -152,7 +152,7 @@ export function diffPlannedVsActual(
 }
 
 export type CreateOutcome =
-  | { readonly kind: "RECREATED"; readonly newEntry: TimeEntry; readonly diffs: VerificationDiff[] }
+  | { readonly kind: "RECREATED"; readonly newEntry: TimeEntry }
   | { readonly kind: "FAILED"; readonly status: number | undefined; readonly code: string | undefined; readonly message: string }
   | { readonly kind: "AMBIGUOUS" };
 
@@ -163,8 +163,8 @@ export type CreateOutcome =
  * 3. SDK `unknown` or an unrecognized error -> report it and use AMBIGUOUS. The create may have
  *    committed.
  *
- * A 201 is definitive: `timeEntries.get` verifies it, but a failed verification read still
- * yields RECREATED — the diff falls back to the 201 body (fact 11, IT-13).
+ * A 201 is definitive. Verification is deliberately outside this function so the caller can
+ * commit SUCCESS before a later read can block or fail.
  */
 async function executeCreate(
   client: ClockifyClient,
@@ -187,14 +187,7 @@ async function executeCreate(
     return { kind: "AMBIGUOUS" };
   }
 
-  let actual: TimeEntry = created;
-  let verificationNote: string | undefined;
-  try {
-    actual = await client.timeEntries.get({ workspaceId: plannedRequest.workspaceId, timeEntryId: created.id });
-  } catch {
-    verificationNote = VERIFICATION_READ_UNAVAILABLE;
-  }
-  return { kind: "RECREATED", newEntry: actual, diffs: diffPlannedVsActual(plannedRequest, actual, verificationNote) };
+  return { kind: "RECREATED", newEntry: created };
 }
 
 // --- Reconcile (ambiguity protocol, §8) ---------------------------------------------------
@@ -275,6 +268,8 @@ export interface ReconcileInput {
   /** The attempt whose baseline and plan produced this read. Adoption must refuse the result if
    * another attempt becomes current while the external Clockify read is in flight. */
   readonly expectedAttemptId: string;
+  /** Fences adoption to the exact reconcile read that still owns this attempt. */
+  readonly reconcileRunId: string;
   /** The viewer performing the check — recorded as `recreated_by` on adoption. Distinct from
    * `userId`, which selects whose entry list is read: an admin can reconcile another user's
    * entry, and the audit must name the actor, not the owner. */
@@ -285,7 +280,7 @@ export interface ReconcileInput {
 
 export type ReconcileResult =
   | { readonly kind: "adopted"; readonly newEntryId: string }
-  | { readonly kind: "adopt-conflict" }
+  | { readonly kind: "adopt-conflict"; readonly candidateId: string }
   | { readonly kind: "none" }
   | { readonly kind: "many"; readonly candidateIds: string[] }
   | { readonly kind: "truncated" };
@@ -326,15 +321,16 @@ export async function runReconcile(input: ReconcileInput): Promise<ReconcileResu
       id: input.entryId,
       workspaceId: input.workspaceId,
       expectedAttemptId: input.expectedAttemptId,
+      expectedReconcileRunId: input.reconcileRunId,
       newEntryId: decision.id,
       recreatedAt: nowIso,
       recreatedBy: input.recreatedBy,
       diffs,
     });
-    if (!adopted) return { kind: "adopt-conflict" };
+    if (!adopted) return { kind: "adopt-conflict", candidateId: decision.id };
     return { kind: "adopted", newEntryId: decision.id };
   } catch (err) {
-    if (isUniqueConstraintError(err)) return { kind: "adopt-conflict" };
+    if (isUniqueConstraintError(err)) return { kind: "adopt-conflict", candidateId: decision.id };
     throw err;
   }
 }
@@ -350,7 +346,6 @@ export interface AttemptRecreationInput {
   readonly plannedRequest: PlannedRequest;
   readonly claimToken: string;
   readonly recreatedBy: string;
-  readonly now: Date;
   /** Called when the SDK write classifier returns `unknown`, or when a definite failure is not a
    * `ClockifyApiError`. docs/03 §3 requires a report and an AMBIGUOUS result. */
   readonly onUnexpectedError?: (error: unknown) => void;
@@ -362,7 +357,7 @@ export interface AttemptRecreationInput {
 export type AttemptRecreationResult =
   | { readonly outcome: "RECREATED"; readonly newEntryId: string; readonly diffs: VerificationDiff[] }
   | { readonly outcome: "FAILED"; readonly status: number | undefined; readonly code: string | undefined; readonly message: string }
-  | { readonly outcome: "AMBIGUOUS"; readonly baseline: readonly string[] };
+  | { readonly outcome: "AMBIGUOUS" };
 
 /**
  * Test-only crash injection (IT-12 lease/fencing drill, PASS-04). When set, `attemptRecreation`
@@ -397,7 +392,6 @@ function commitClaimedOutcome(
 }
 
 export async function attemptRecreation(input: AttemptRecreationInput): Promise<AttemptRecreationResult> {
-  const startedAt = input.now.toISOString();
   let baseline: string[];
   try {
     baseline = await fetchBaseline(
@@ -410,11 +404,14 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
     if (err instanceof BaselineTruncatedError) throw err;
     throw new PreWriteBaselineError(err);
   }
+  const attemptStartedAt = new Date();
+  const startedAt = attemptStartedAt.toISOString();
   const started = attempts.startForClaim(input.db, {
     id: input.claimToken,
     planId: input.planId,
     recoverableEntryId: input.entryId,
     startedAt,
+    leaseExpiresAt: entries.claimLeaseExpiry(attemptStartedAt),
     baseline,
   });
   if (!started) {
@@ -431,6 +428,11 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
   const finishedAt = new Date().toISOString();
 
   if (outcome.kind === "RECREATED") {
+    const provisionalDiffs = diffPlannedVsActual(
+      input.plannedRequest,
+      outcome.newEntry,
+      VERIFICATION_READ_UNAVAILABLE,
+    );
     commitClaimedOutcome(
       input.db,
       {
@@ -441,7 +443,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
         errorStatus: null,
         errorCode: null,
         errorMessage: null,
-        diffs: outcome.diffs,
+        diffs: provisionalDiffs,
       },
       () =>
         entries.setRecreated(input.db, {
@@ -453,7 +455,25 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
           recreatedBy: input.recreatedBy,
         }) !== undefined,
     );
-    return { outcome: "RECREATED", newEntryId: outcome.newEntry.id, diffs: outcome.diffs };
+
+    let diffs: VerificationDiff[];
+    try {
+      const actual = await input.client.timeEntries.get({
+        workspaceId: input.workspaceId,
+        timeEntryId: outcome.newEntry.id,
+      });
+      diffs = diffPlannedVsActual(input.plannedRequest, actual);
+    } catch {
+      diffs = diffPlannedVsActual(
+        input.plannedRequest,
+        outcome.newEntry,
+        VERIFICATION_READ_UNAVAILABLE,
+      );
+    }
+    if (!attempts.updateSuccessDiffs(input.db, input.claimToken, outcome.newEntry.id, diffs)) {
+      input.onUnexpectedError?.(new Error("successful recreation audit changed before verification completed"));
+    }
+    return { outcome: "RECREATED", newEntryId: outcome.newEntry.id, diffs };
   }
 
   if (outcome.kind === "FAILED") {
@@ -499,5 +519,5 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
         claimToken: input.claimToken,
       }) !== undefined,
   );
-  return { outcome: "AMBIGUOUS", baseline };
+  return { outcome: "AMBIGUOUS" };
 }

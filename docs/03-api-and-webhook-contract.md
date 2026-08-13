@@ -17,12 +17,13 @@ Everything the application relies on. Each item names the exact SDK method. Evid
   The SDK performs the RS256 JWT check and the constant-time token compare (W11).
 - Body: flat time-entry object. Full field-by-field contract: webhook campaign `payload-contract.md`.
   Normalization input rules:
-  - `id`, `workspaceId`, `userId`, `description`, `billable`, `projectId`, `type`, `isLocked`,
-    `currentlyRunning` — top level.
+  - `id`, `workspaceId`, `userId`, `description`, `billable`, `projectId`, `type`,
+    `currentlyRunning` — top level. `isLocked` can be present, but the normalizer does not store it.
   - `timeInterval.start` (required valid timestamp), `timeInterval.end` (valid timestamp, or null
     when running), `timeInterval.timeZone`. A stopped entry must have an end timestamp.
     `zonedStart`/`zonedEnd` (display only).
-  - `project.name`, `project.clientName`, `project.archived`; `task.id`, `task.name` (or `task:null`);
+  - `project.name`, `project.clientName`; `project.archived` can be present, but the normalizer does
+    not store it. `task.id`, `task.name` (or `task:null`);
     `tags[].id`, `tags[].name`; `user.name`.
   - `customFieldValues[]`: `{customFieldId, name, value}`; per-item `type` absent (W7).
   - Absent: `taskId`, `tagIds` (top level), `createdAt`, `updatedAt`, deletion time, actor (W13, W14).
@@ -216,10 +217,10 @@ Notes:
   and a silent change in a transitive dependency must not be able to reclassify a user-visible
   error.
 - Compare the normalized code against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`,
-  `"4005"`, `"3000"`). Message text is never parsed for classification (R6: messages are generic).
+  `"4005"`). Message text is never parsed for classification (R6: messages are generic).
 - Auth errors: 401 code `"4017"` (addon token invalid) → installation is marked broken; component
-  shows a reinstall notice. 401 code `"1000"` = both/no auth sent → client configuration bug;
-  crash-log, never reach in normal operation.
+  shows a reinstall notice. 401 code `"1000"` requires both or no authentication methods. The
+  SDK prevents that configuration (R11), so the app has no handling for it.
 - Code-absent 4xx maps on `statusCode` alone. **This mapping is for the create call only**
   (§3 outcome classification): 404 → "Clockify does not have this workspace or route"; any other
   code-less 4xx → the generic FAILED reason plus the status. Preflight reads keep their own 404

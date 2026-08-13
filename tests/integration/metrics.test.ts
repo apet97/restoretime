@@ -29,7 +29,7 @@ const OTHER_USER_ID = "user-2";
 
 let dir: string;
 let lines: string[];
-let stdoutSpy: ReturnType<typeof spyOnWrite>;
+let stdoutSpy: ReturnType<typeof spyOnWrite> | undefined;
 
 function spyOnWrite(stream: NodeJS.WriteStream, sink: string[]) {
   return vi.spyOn(stream, "write").mockImplementation((chunk: unknown) => {
@@ -113,7 +113,7 @@ function rowIdFor(server: AppServer, sourceEntryId: string): string {
 }
 
 afterEach(() => {
-  stdoutSpy.mockRestore();
+  stdoutSpy?.mockRestore();
   rmSync(dir, { recursive: true, force: true });
   vi.unstubAllGlobals();
 });
@@ -392,7 +392,8 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
       );
     insertAttemptFixture(server.db, { id: "att-notcreated", planId: planOk.id, recoverableEntryId: "re-notcreated", startedAt: "2026-08-08T09:01:00.000Z", baseline: [] });
     attempts.updateReconcile(server.db, "att-notcreated", {
-      checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      checkedAt: new Date().toISOString(),
+      firstEligibleCheckAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
       checks: 3,
       matchCount: 0,
       candidateIds: [],

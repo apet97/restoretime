@@ -23,7 +23,7 @@ export function statusLabel(row: Pick<ListRow, "lifecycleState" | "preflightSumm
       return "Dismissed";
     case "IDLE": {
       const summary = row.preflightSummary;
-      if (summary === null) return "Ready to recreate";
+      if (summary === null) return "Status unknown";
       if (summary.blockerCount > 0) return "Blocked";
       if (summary.actionRequiredCount > 0) return "Needs your input";
       return "Ready to recreate";
@@ -50,27 +50,44 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
+/** Returns one locale that every formatter can use. Invalid, empty, and unsupported claims use the
+ * same English fallback, so the date and time can never format in different zones. */
+export function normalizeLocale(raw: string | undefined): string {
+  const candidate = raw?.trim().replaceAll("_", "-") || "en";
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([candidate])[0] ?? "en";
+  } catch {
+    return "en";
+  }
+}
+
 /** "09:00" in the viewer's locale/timezone-naive wall-clock reading of the ISO instant (the source
  * stores UTC instants; docs/10 does not specify per-viewer timezone conversion for the row display,
  * so this reads the same clock fields the detail view's two columns compare). */
-export function formatTime(iso: string, locale: string): string {
+export function formatTime(iso: string, locale: string, includeSeconds = false): string {
   const d = new Date(iso);
   try {
-    return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+    return new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      ...(includeSeconds ? { second: "2-digit" } : {}),
+      hourCycle: "h23",
+    }).format(d);
   } catch {
-    return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+    const seconds = includeSeconds ? `:${pad2(d.getSeconds())}` : "";
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}${seconds}`;
   }
 }
 
 /** "2h 30m" / "45m" / "3h". Never shown for a still-running source (docs/10 shows no duration for
  * an entry that had no end at deletion). */
 export function formatDuration(startIso: string, endIso: string): string {
-  const totalMinutes = Math.max(0, Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000));
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  const totalSeconds = Math.max(0, Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 1_000));
+  const h = Math.floor(totalSeconds / 3_600);
+  const m = Math.floor((totalSeconds % 3_600) / 60);
+  const s = totalSeconds % 60;
+  const parts = [h > 0 ? `${h}h` : "", m > 0 ? `${m}m` : "", s > 0 || totalSeconds === 0 ? `${s}s` : ""].filter(Boolean);
+  return parts.join(" ");
 }
 
 /** docs/10 §1 row header, e.g. "7 Aug 2026 · 09:00–11:30 (2h 30m)", or "…09:00– (still running
@@ -86,13 +103,16 @@ export function formatEntryHeader(
   openEnded: "deleted" | "planned" = "deleted",
 ): string {
   const date = formatClockifyDate(new Date(start), locale);
-  const startTime = formatTime(start, locale);
+  const showSeconds = new Date(start).getSeconds() !== 0 || (end !== null && new Date(end).getSeconds() !== 0);
+  const startTime = formatTime(start, locale, showSeconds);
   if (end === null) {
     const suffix = openEnded === "deleted" ? "(still running when deleted)" : "(runs until you stop it)";
     return `${date} · ${startTime}– ${suffix}`;
   }
-  const endTime = formatTime(end, locale);
-  return `${date} · ${startTime}–${endTime} (${formatDuration(start, end)})`;
+  const endTime = formatTime(end, locale, showSeconds);
+  const endDate = formatClockifyDate(new Date(end), locale);
+  const endPoint = endDate === date ? endTime : `${endDate} · ${endTime}`;
+  return `${date} · ${startTime}–${endPoint} (${formatDuration(start, end)})`;
 }
 
 /** docs/10 §1 "Detected: 7 Aug 2026, 15:42". */

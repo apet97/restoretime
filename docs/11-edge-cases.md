@@ -28,7 +28,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Custom field with user-set value | Values written at create via the `customFields` key (R5, E1/E2); defaults auto-attach for untouched fields | P-CF-KEEP/P-CF-WRITE: value preserved; the wrong key (`customFieldValues`) is never sent | No warning when preserved | UT-P16 |
 | Custom field removed after deletion | Field absent from current definitions | P-CF-GONE: value not sent; fidelity PARTIAL | Differences line per field | UT-P12 |
 | Custom-field option removed | Server accepts any string verbatim — no option validation (R19) | P-CF-OPT: keep-with-warning / replace / drop | Three-choice widget | UT-P16, LV-08 |
-| New required custom field added after deletion | A value is mandatory at create when a CF is required (R22, operator-confirmed) | P-CF-REQ: source value → current default → user input, in that order | Typed input per field | UT-P16, LV-08 |
+| New required custom field added after deletion | A value is mandatory at create when a CF is required (R22, operator-confirmed) | P-CF-REQ: usable explicit user input wins; otherwise source value → current default | Typed input per field | UT-P16, LV-08 |
 | Duplicate recreation click (user + admin) | Creates have no dedup (R7) | Atomic claim; loser sees current state | Second clicker sees "Recreating…" | IT-03 |
 | Ambiguous create, entry committed | No idempotency key (R7, R10) | AMBIGUOUS; baseline-delta reconcile adopts the single match | "Unknown result" → auto-resolved | IT-04 |
 | Ambiguous create, nothing committed | Same | Bounded reconcile → user marks not created → IDLE | "It was not created" action | IT-04 |

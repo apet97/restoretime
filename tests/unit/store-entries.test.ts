@@ -5,6 +5,7 @@ import { openDatabase } from "../../src/store/db.js";
 import { ingestDeletedEntry, getById, adopt, list } from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 
@@ -157,6 +158,7 @@ describe("double-adoption guard", () => {
       sourceHash: "hash",
       choices: {},
       resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: {
         workspaceId,
         userId: "user-1",
@@ -190,16 +192,27 @@ describe("double-adoption guard", () => {
       recreatedBy: "user-1",
       diffs: [],
     };
+    const runA = beginReconcileFixture(db, {
+      recoverableEntryId: "re-a",
+      workspaceId: "ws-1",
+      expectedAttemptId: "attempt-re-a",
+    });
     expect(adopt(db, {
       id: "re-a",
       expectedAttemptId: "attempt-re-a",
+      expectedReconcileRunId: runA,
       ...input,
     })?.lifecycleState).toBe("RECREATED");
 
     // The route maps this throw to 409 and leaves the row AMBIGUOUS for the user to resolve.
     let thrown: unknown;
     try {
-      adopt(db, { id: "re-b", expectedAttemptId: "attempt-re-b", ...input });
+      const runB = beginReconcileFixture(db, {
+        recoverableEntryId: "re-b",
+        workspaceId: "ws-1",
+        expectedAttemptId: "attempt-re-b",
+      });
+      adopt(db, { id: "re-b", expectedAttemptId: "attempt-re-b", expectedReconcileRunId: runB, ...input });
     } catch (err) {
       thrown = err;
     }
@@ -217,11 +230,14 @@ describe("double-adoption guard", () => {
     ambiguousRow(db, "re-other", "entry-a", "ws-2");
 
     const common = { recreatedAt: "2026-08-08T10:00:00Z", recreatedBy: "user-1", diffs: [] };
+    const runA = beginReconcileFixture(db, { recoverableEntryId: "re-a", workspaceId: "ws-1", expectedAttemptId: "attempt-re-a" });
+    const runOther = beginReconcileFixture(db, { recoverableEntryId: "re-other", workspaceId: "ws-2", expectedAttemptId: "attempt-re-other" });
     expect(
       adopt(db, {
         id: "re-a",
         workspaceId: "ws-1",
         expectedAttemptId: "attempt-re-a",
+        expectedReconcileRunId: runA,
         newEntryId: "new-entry-x",
         ...common,
       })
@@ -232,6 +248,7 @@ describe("double-adoption guard", () => {
         id: "re-other",
         workspaceId: "ws-2",
         expectedAttemptId: "attempt-re-other",
+        expectedReconcileRunId: runOther,
         newEntryId: "new-entry-x",
         ...common,
       })

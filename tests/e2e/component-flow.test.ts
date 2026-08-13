@@ -27,7 +27,8 @@ import {
 import type { ClockifyBrowserWindow } from "@apet97/clockify-addon-sdk/ui";
 import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
-import { boot } from "../../src/ui/app.js";
+import { boot as bootApp, type BootOptions } from "../../src/ui/app.js";
+import type { TokenAuthorityHandle } from "../../src/ui/bridge.js";
 
 const ADDON_KEY = "restoretime-e2e";
 const WORKSPACE_ID = "ws-1";
@@ -37,6 +38,31 @@ const PARENT_ORIGIN = "https://app.clockify.me";
 
 let dir: string;
 let keys: ClockifyTestKeys;
+let bootHandles: TokenAuthorityHandle[] = [];
+let unexpectedResourceErrors: string[] = [];
+let pendingFetches = new Set<Promise<Response>>();
+
+function recordResourceError(event: Event): void {
+  const target = event.target;
+  if (target instanceof HTMLLinkElement) unexpectedResourceErrors.push(target.href);
+  else if (target instanceof HTMLScriptElement || target instanceof HTMLImageElement || target instanceof HTMLIFrameElement) {
+    unexpectedResourceErrors.push(target.src);
+  }
+}
+
+function disableExternalResourceLoading(): void {
+  const settings = (window as unknown as {
+    happyDOM: { settings: { disableCSSFileLoading: boolean; disableJavaScriptFileLoading: boolean; disableIframePageLoading: boolean } };
+  }).happyDOM.settings;
+  settings.disableCSSFileLoading = true;
+  settings.disableJavaScriptFileLoading = true;
+  settings.disableIframePageLoading = true;
+}
+
+function boot(options: BootOptions): void {
+  const handle = bootApp(options);
+  if (handle) bootHandles.push(handle);
+}
 
 function testConfig(): AppConfig {
   return {
@@ -54,11 +80,20 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "restoretime-e2e-"));
   keys = await generateTestKeys();
   document.body.innerHTML = "";
+  unexpectedResourceErrors = [];
+  pendingFetches = new Set();
+  disableExternalResourceLoading();
+  window.addEventListener("error", recordResourceError, true);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  window.removeEventListener("error", recordResourceError, true);
+  for (const handle of bootHandles) handle.dispose();
+  bootHandles = [];
+  while (pendingFetches.size > 0) await Promise.allSettled([...pendingFetches]);
   rmSync(dir, { recursive: true, force: true });
   vi.unstubAllGlobals();
+  expect(unexpectedResourceErrors).toEqual([]);
 });
 
 async function bootServer(): Promise<AppServer> {
@@ -124,6 +159,8 @@ function baseClockifyStub(): typeof fetch {
     if (method === "GET" && path.endsWith("/users")) return jsonResponse([{ id: OWNER_ID, email: "a@b.com", name: "Ana Markovic", status: "ACTIVE" }]);
     if (method === "GET" && path.endsWith("/tags")) return jsonResponse([]);
     if (method === "GET" && path.endsWith("/custom-fields")) return jsonResponse([]);
+    if (method === "GET" && path.endsWith("/projects")) return jsonResponse([]);
+    if (method === "GET" && path.endsWith("/tasks")) return jsonResponse([]);
     return jsonResponse({ message: "unstubbed", code: 0 }, 404);
   }) as typeof fetch;
 }
@@ -138,29 +175,37 @@ function baseClockifyStub(): typeof fetch {
  * a relative path (`/api/entries…`); the Clockify SDK only ever calls it with an absolute URL or a
  * `Request`. That distinction, not the path text, is what separates the two kinds of traffic. */
 function makeFetchImpl(server: AppServer, clockify: typeof fetch): typeof fetch {
-  return (async (input: string | URL | Request, init?: RequestInit) => {
-    const isAppCall = typeof input === "string" && input.startsWith("/api/");
-    if (isAppCall) {
-      const url = new URL(input, "http://localhost/");
-      const method = methodOf(input, init);
-      const rawHeaders = (init?.headers ?? {}) as Record<string, string>;
-      const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(rawHeaders)) headers[k.toLowerCase()] = v;
-      const rawBody = init?.body;
-      const body = typeof rawBody === "string" && rawBody.length > 0 ? (JSON.parse(rawBody) as unknown) : undefined;
-      const result = await server.addon.handle({
-        method,
-        path: url.pathname,
-        query: url.searchParams,
-        headers,
-        ...(body !== undefined ? { body } : {}),
-      });
-      return new Response(result.body === undefined ? undefined : JSON.stringify(result.body), {
-        status: result.status ?? 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    return clockify(input, init);
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const request = (async () => {
+      const isAppCall = typeof input === "string" && input.startsWith("/api/");
+      if (isAppCall) {
+        const url = new URL(input, "http://localhost/");
+        const method = methodOf(input, init);
+        const rawHeaders = (init?.headers ?? {}) as Record<string, string>;
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rawHeaders)) headers[k.toLowerCase()] = v;
+        const rawBody = init?.body;
+        const body = typeof rawBody === "string" && rawBody.length > 0 ? (JSON.parse(rawBody) as unknown) : undefined;
+        const result = await server.addon.handle({
+          method,
+          path: url.pathname,
+          query: url.searchParams,
+          headers,
+          ...(body !== undefined ? { body } : {}),
+        });
+        return new Response(result.body === undefined ? undefined : JSON.stringify(result.body), {
+          status: result.status ?? 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return clockify(input, init);
+    })();
+    pendingFetches.add(request);
+    void request.then(
+      () => pendingFetches.delete(request),
+      () => pendingFetches.delete(request),
+    );
+    return request;
   }) as typeof fetch;
 }
 
@@ -217,6 +262,7 @@ async function mountShell(server: AppServer, token: string): Promise<void> {
   document.documentElement.innerHTML = inner
     .replace(/<script[^>]*><\/script>/, "")
     .replace(/<link[^>]*rel="stylesheet"[^>]*>/, "");
+  expect(document.querySelector('link[rel="stylesheet"], script[src], iframe[src], img[src]')).toBeNull();
 }
 
 function text(): string {
@@ -334,7 +380,10 @@ describe("component E2E: list -> detail -> resolution -> confirm -> success", ()
     const select = findSelect();
     select.value = "proj-2";
     select.dispatchEvent(new Event("change"));
-    await waitFor(() => text().includes("Continue to confirm") && !text().includes("no longer exists"));
+    await waitFor(() => {
+      const button = Array.from(document.querySelectorAll("button")).find((candidate) => candidate.textContent === "Continue to confirm");
+      return button !== undefined && !button.hasAttribute("disabled");
+    });
 
     const continueButton2 = findButton("Continue to confirm");
     expect(continueButton2.hasAttribute("disabled")).toBe(false);
@@ -794,6 +843,7 @@ describe("the shipped bundle", () => {
       new Function(bundle)();
       await waitFor(() => text().includes("API investigation"));
     } finally {
+      window.dispatchEvent(new Event("pagehide"));
       window.history.replaceState({}, "", `/component${originalSearch}`);
     }
 
@@ -817,6 +867,7 @@ describe("the shipped bundle", () => {
       user: OWNER_ID,
       workspaceRole: "member",
       theme: "DARK",
+      language: "not_a_locale_@",
     });
     await mountShell(server, token);
     expect(document.body.dataset.theme).toBe("DARK");
@@ -827,6 +878,7 @@ describe("the shipped bundle", () => {
     await waitFor(() => text().includes("Deleted time entries"));
 
     expect(document.documentElement.dataset.clockifyTheme).toBe("dark");
+    expect(document.documentElement.lang).toBe("en");
   });
 });
 

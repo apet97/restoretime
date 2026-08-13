@@ -10,14 +10,18 @@ import { ClockifyApiError, type ClockifyApi } from "clockify-sdk-ts-115";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
   pickUsableProject,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
+  skipOrFailLiveScenario,
   teardownLiveHarness,
   type LiveEnv,
   type LiveHarness,
@@ -44,7 +48,14 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-08 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     let dropdownFieldId: string | undefined;
@@ -147,7 +158,7 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
         // (`status: "VISIBLE"`) answers 500 on this workspace, so the scenario cannot be staged
         // here at all. Recorded in evidence/live-release-run.md.
         const status = err instanceof ClockifyApiError ? err.statusCode : undefined;
-        ctx.skip(
+        skipOrFailLiveScenario(ctx,
           `LV-08 blocked — the sacrificial workspace could not be given an ACTIVE custom field (status ${String(status ?? "unknown")}). Created fields arrive INACTIVE and activation is rejected here, so P-CF-OPT/P-CF-REQ cannot be staged. Workspace/plan-shape gap, not a suite or product defect.`,
         );
         return;
@@ -242,9 +253,9 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
         const requiredValue = values.find((v) => v.customFieldId === requiredFieldId)?.value;
         expect(requiredValue).toBe(`${RT_PROBE_PREFIX}required-value`);
       } else {
-        console.log(
-          "LV-08 PARTIAL — P-CF-OPT proved live (stale dropdown option kept and written to the new entry). " +
-            "The P-CF-REQ half did not run: this workspace has no active field with `required: true` and no default value.",
+        skipOrFailLiveScenario(
+          ctx,
+          "LV-08 blocked — P-CF-REQ did not run because the workspace has no active required field without a default",
         );
       }
     } catch (err) {
@@ -258,15 +269,16 @@ describe("LV-08 custom-field lifecycle (docs/13)", () => {
       }
       throw err;
     } finally {
-      if (recreatedEntryId) {
-        await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
-      }
+      const cleanupSteps = recreatedEntryId
+        ? [{ label: `LV-08 entry ${recreatedEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! }) }]
+        : [];
       // Only ever delete fields THIS test created. When the workspace already provided the two
       // shapes, they belong to the operator and deleting them would destroy real configuration —
       // the opposite of "leave the workspace as you found it".
       for (const id of createdFieldIds) {
-        await restClient.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId: id }).catch(() => undefined);
+        cleanupSteps.push({ label: `LV-08 custom field ${id}`, run: () => restClient.customFields.deleteForWorkspace({ workspaceId: env.workspaceId, customFieldId: id }) });
       }
+      await runLiveCleanup(cleanupSteps);
     }
   }, 60_000);
 });

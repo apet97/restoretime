@@ -70,6 +70,7 @@ Constraints:
 | `resolution_json` | TEXT NOT NULL | per-dependency outcome |
 | `planned_request_json` | TEXT NOT NULL | exact createForUser body |
 | `warnings_json` / `blockers_json` / `action_required_json` | TEXT NOT NULL | |
+| `presentation_json` | TEXT NULL | Current labels and preview values for this plan. It must not duplicate source custom-field values. NULL identifies a plan created before migration 0003; it needs a fresh preflight before recreation. |
 | `fidelity` | TEXT NOT NULL | FULL/ADJUSTED/PARTIAL/IMPOSSIBLE |
 | `status` | TEXT NOT NULL | ACTIVE/STALE/CONSUMED |
 
@@ -97,24 +98,37 @@ Constraints:
    release of a claim that never issued a Clockify call (`releaseClaim`: a racing confirm consumed
    the plan first, or the baseline read hit the page bound) puts back the pre-claim state with no
    attempt row, because nothing was attempted.
-5. `source_json` never contains tokens, raw payloads, or rate objects.
+5. `source_json` never contains tokens, raw payload envelopes, or rate objects.
 
 ## Retention and deletion
 
 - Normalized deleted-entry rows remain after recreation or dismissal. Those actions update the
   lifecycle state; they do not delete `source_json`. There is no time-based expiry in v1. The rows
   remain until uninstall, so volume grows with deleted entries while the add-on stays installed.
+- `source_json` keeps `timeZone` and `clientName` as part of the deletion record. The current UI
+  does not render these two fields.
+- Each preflight creates a new plan and marks the prior ACTIVE plan STALE. Before it does this, it
+  deletes older STALE or CONSUMED plans for that deleted entry when they have no attempt. Plans
+  linked to attempts remain for audit until uninstall. This bounded cleanup is part of preflight;
+  there is no worker or sweeper (ADR-010).
 - Uninstall (`DELETED` lifecycle): hard-delete the installation row and all rows in the three
   domain tables for the workspace, in one transaction. (F17)
   The purge is delivery-dependent: it only runs when Clockify's `DELETED` call reaches this
   process. A workspace uninstalled while the host is unreachable stays removed on Clockify's side
   and keeps its rows here, and nothing reconciles the two afterwards — observed live (evidence
   "Live run 11"). v1 accepts this; a reconciliation pass is the fix if it ever matters.
+- The uninstall transaction affects the active database. It does not rewrite backup files that
+  already exist. Backup access and retention are deployment-operator responsibilities (docs/14).
 - Dismissal keeps a DISMISSED row (duplicate deliveries must not resurrect it, W10). Undismiss
   returns the entry to IDLE.
-- Sensitive content: entry descriptions and custom-field values can hold business data. They exist
-  only in `source_json`, never in logs. Backups inherit the database file; document the sensitivity
-  in operations (docs/14).
+- Sensitive content: descriptions and custom-field values can hold business data. The normalized
+  copy is in `source_json`. A plan can also copy values into `choices_json` and
+  `planned_request_json`; attempt baselines, reconciliation results, and diffs can identify live
+  entries. `presentation_json` stores current labels and preview values, but it must not duplicate
+  source custom-field values. A definitive attempt outcome clears its baseline and reconciliation
+  evidence. An ambiguous attempt keeps that evidence only until a definitive resolution clears
+  it. These values are never log fields. Backups inherit the sensitivity of the database file
+  (docs/14).
 
 ## Why SQLite (ADR-005 summary)
 

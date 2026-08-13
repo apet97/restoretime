@@ -1,7 +1,8 @@
 // LV-04 (docs/13): "Admin recreates another user's entry (createForUser addon-token success path —
 // confirms the operator-stated API-key/addon-token equivalence, R11) (the same scenario passed on
 // the developer environment 2026-08-08 with the addon token — users.list, projects.list,
-// createForUser for another user → 201, get, delete; re-confirm on production)."
+// createForUser for another user → 201, get, delete). A production recheck is separate future
+// work; it is not an RC.11 gate.
 //
 // The "admin" half of this scenario is an app-internal authorization decision (`domain/policy.ts`
 // `isAdmin`), driven entirely by the verified component JWT's `workspaceRole` claim — proved
@@ -9,23 +10,28 @@
 // test-signed claims (tests/live/support.ts module header), same as every other in-process LV row.
 // What is NOT already proved offline, and what this row exists to close, is the REST-level
 // question: does `createForUser` for a userId that is NOT the token owner actually succeed against
-// that real Clockify environment with `CK_LIVE_API_KEY` sent as the addon token (R11)? That requires two
-// genuinely distinct real workspace members.
+// that real Clockify environment with the installation's `CK_LIVE_ADDON_TOKEN` (R11)? That requires
+// two genuinely distinct real workspace members. `CK_LIVE_API_KEY` is only for the direct probe
+// client that seeds and cleans up the scenario.
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ClockifyApiError } from "clockify-sdk-ts-115";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   deletedEntryFromLiveTimeEntry,
   describeIfAuthRejected,
   pickUsableProject,
   requiredCustomFieldValues,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
+  skipOrFailLiveScenario,
   teardownLiveHarness,
   type LiveEnv,
   type LiveHarness,
@@ -39,7 +45,7 @@ afterEach(() => {
 });
 
 describe("LV-04 admin recreates another user's entry (docs/13)", () => {
-  it("createForUser targeting a different userId succeeds with CK_LIVE_API_KEY as the addon token (R11)", async (ctx) => {
+  it("createForUser targeting a different userId succeeds with CK_LIVE_ADDON_TOKEN (R11)", async (ctx) => {
     const check = checkLiveEnv();
     if (check.blocked) {
       console.log(`LV-04 ${check.reason}`);
@@ -52,7 +58,14 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-04 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     let recreatedEntryId: string | undefined;
@@ -63,7 +76,7 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
         // `ctx.skip` rather than `return`: a returned row is reported as PASSED, and this row is
         // the one that closes R11 — the pass file's stated load-bearing unknown. A credentialed
         // run on a one-member workspace must not print "passed" for a scenario that never ran.
-        ctx.skip(
+        skipOrFailLiveScenario(ctx,
           `LV-04 blocked — the sacrificial workspace has ${active.length} ACTIVE user(s); this scenario needs at least 2 distinct members (the acting admin and the entry's owner). This is a workspace-shape gap, not a missing credential.`,
         );
         return;
@@ -124,7 +137,7 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
 
       const newEntry = await restClient.timeEntries.get({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! });
       // R11's actual claim: the new entry belongs to OWNER, created via an admin-driven request
-      // authenticated as CK_LIVE_API_KEY — not the admin's own entry.
+      // authenticated with CK_LIVE_ADDON_TOKEN — not the admin's own entry.
       expect(newEntry.userId).toBe(owner.id);
 
       // A non-admin viewer attempting the same thing must be refused server-side (docs/09) — a
@@ -147,9 +160,11 @@ describe("LV-04 admin recreates another user's entry (docs/13)", () => {
       }
       throw err;
     } finally {
-      if (recreatedEntryId) {
-        await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
-      }
+      await runLiveCleanup(
+        recreatedEntryId
+          ? [{ label: `LV-04 entry ${recreatedEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! }) }]
+          : [],
+      );
     }
   }, 60_000);
 });

@@ -16,13 +16,16 @@ import { ClockifyApiError } from "clockify-sdk-ts-115";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
   requiredCustomFieldValues,
   RT_PROBE_PREFIX,
+  runLiveCleanup,
   seedRecoverableEntry,
   teardownLiveHarness,
   type LiveEnv,
@@ -50,7 +53,14 @@ describe("LV-05 missing project + archived tag (docs/13)", () => {
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-05 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     let archivedTagId: string | undefined;
@@ -149,12 +159,14 @@ describe("LV-05 missing project + archived tag (docs/13)", () => {
       }
       throw err;
     } finally {
-      if (recreatedEntryId) {
-        await restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId }).catch(() => undefined);
-      }
-      if (archivedTagId) {
-        await restClient.tags.delete({ workspaceId: env.workspaceId, tagId: archivedTagId }).catch(() => undefined);
-      }
+      await runLiveCleanup([
+        ...(recreatedEntryId
+          ? [{ label: `LV-05 entry ${recreatedEntryId}`, run: () => restClient.timeEntries.delete({ workspaceId: env.workspaceId, timeEntryId: recreatedEntryId! }) }]
+          : []),
+        ...(archivedTagId
+          ? [{ label: `LV-05 tag ${archivedTagId}`, run: () => restClient.tags.delete({ workspaceId: env.workspaceId, tagId: archivedTagId! }) }]
+          : []),
+      ]);
     }
   }, 60_000);
 });

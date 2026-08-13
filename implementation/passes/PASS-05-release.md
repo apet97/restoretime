@@ -1,5 +1,9 @@
 # PASS-05 — Release
 
+Historical plan: this file records the original PASS-05 production goal. Do not execute it as the
+RC.11 procedure. Production and Marketplace proof remain open. The current developer-only Railway,
+backup, strict-live, and `v1.0.0-rc.11` procedure is `docs/15-release.md`.
+
 ## Mission
 
 Take the hardened product to production on a sacrificial workspace, close the remaining

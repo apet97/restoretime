@@ -13,7 +13,7 @@ decision requires editing the ADR (status + date) — never silent drift.
 | ADR-006 | Recreation plans are immutable rows, revalidated before mutation | Recompute-at-execute; trusting the first preflight |
 | ADR-007 | Ambiguous creates: baseline-delta reconcile, bounded, user-resolved, never auto-retried | Blind retry; immediate FAILED; auto-deleting candidates |
 | ADR-008 | Two-rule policy from verified claims (admin, or owner==viewer) | Generic RBAC; client-supplied roles |
-| ADR-009 | Persist the normalized source only; raw payloads are discarded at the boundary | Raw payload retention for "debugging" |
+| ADR-009 | Discard raw payloads at the boundary; persist the normalized source and the derived recovery records in docs/08 | Raw payload retention for "debugging" |
 | ADR-010 | No background workers: reconcile is lazy (view/manual), lease expiry is claim-time | Sweeper daemon; cron; job queue |
 
 ## Standing rejections

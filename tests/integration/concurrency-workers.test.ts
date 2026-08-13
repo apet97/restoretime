@@ -140,6 +140,7 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
         sourceHash: "hash",
         choices: {},
         resolution: [],
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
         plannedRequest: {
           workspaceId: WORKSPACE_ID,
           userId: "user-1",
@@ -162,6 +163,7 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
         planId: "plan-started",
         recoverableEntryId: entry.id,
         startedAt: "2026-08-08T09:00:01Z",
+        leaseExpiresAt: "2026-08-08T09:01:01Z",
         baseline: [],
       })).toBe(true);
       db.close();

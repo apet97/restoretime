@@ -71,6 +71,29 @@ export interface PlanResolution {
   readonly detail?: string;
 }
 
+export type PlanPresentationOutcome = PlanResolution["outcome"];
+
+export interface PlanPresentationReference {
+  readonly id: string;
+  readonly name: string;
+  readonly outcome: PlanPresentationOutcome;
+}
+
+export interface PlanPresentationCustomField extends PlanPresentationReference {
+  /** Present only when the exact preview value is not already available in the authorized source. */
+  readonly plannedValue?: unknown;
+}
+
+/** Stable display metadata captured with the plan. Source values stay in `DeletedTimeEntry`. */
+export interface PlanPresentation {
+  readonly project: PlanPresentationReference | null;
+  readonly task: PlanPresentationReference | null;
+  readonly tags: readonly PlanPresentationReference[];
+  readonly customFields: readonly PlanPresentationCustomField[];
+  /** Controls that remain available after a resolved choice or a page reload. */
+  readonly editable: readonly ActionRequiredItem[];
+}
+
 export interface PlannedRequest {
   readonly workspaceId: string;
   readonly userId: string;
@@ -107,6 +130,8 @@ export interface PlanWarning {
   readonly ruleId: string;
   readonly code: string;
   readonly message: string;
+  /** Identifies the dependency without copying its source value into the warning. */
+  readonly refId?: string;
 }
 
 /** The output of one preflight run (docs/06 "RecreationPlan"). Immutable once persisted. */
@@ -121,6 +146,8 @@ export interface RecreationPlan {
   readonly choices: PreflightChoices;
   readonly resolution: readonly PlanResolution[];
   readonly plannedRequest: PlannedRequest;
+  /** Null only for rows created before persisted presentation metadata was introduced. */
+  readonly presentation: PlanPresentation | null;
   readonly warnings: readonly PlanWarning[];
   readonly blockers: readonly PlanBlocker[];
   readonly actionRequired: readonly ActionRequiredItem[];
@@ -133,6 +160,8 @@ export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 
 export interface ReconcileSummary {
   readonly checkedAt: string;
+  /** First complete bounded read counted in the current not-created evidence window. */
+  readonly firstEligibleCheckAt?: string;
   readonly checks: number;
   readonly matchCount: number;
   readonly candidateIds: readonly string[];

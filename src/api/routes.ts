@@ -17,7 +17,13 @@ import { canAct, canRead, isAdmin } from "../domain/policy.js";
 import { runPreflight } from "../domain/preflight.js";
 import { classifyFidelity } from "../domain/fidelity.js";
 import { isPlanUsable, outcomesDiffer, sourceHash as computeSourceHash } from "../domain/plan.js";
-import type { PreflightChoices, RecoverableEntry, RecreationPlan } from "../domain/entry.js";
+import type {
+  ActionRequiredItem,
+  PlanPresentation,
+  PreflightChoices,
+  RecoverableEntry,
+  RecreationPlan,
+} from "../domain/entry.js";
 import * as entries from "../store/entries.js";
 import * as plans from "../store/plans.js";
 import * as attempts from "../store/attempts.js";
@@ -160,6 +166,21 @@ function parsePreflightChoices(value: unknown): PreflightChoices | undefined {
   // Every property and nested value has been validated above. Do not normalize those values;
   // persisted plans must revalidate the same choices that the component sent.
   return value as PreflightChoices;
+}
+
+function presentationWithEditable(
+  current: PlanPresentation,
+  previous: PlanPresentation | null | undefined,
+): PlanPresentation {
+  const editable: ActionRequiredItem[] = [];
+  const seen = new Set<string>();
+  for (const item of [...current.editable, ...(previous?.editable ?? [])]) {
+    const key = `${item.ruleId}\u0000${item.refId ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    editable.push(item);
+  }
+  return { ...current, editable };
 }
 
 async function loadClient(deps: ApiRouteDeps, viewer: Viewer) {
@@ -371,7 +392,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   if (
     !disabled &&
     entry.lifecycleState === "AMBIGUOUS" &&
-    !markNotCreatedAllowed(latestAttempt)
+    !markNotCreatedAllowed(deps.db, latestAttempt)
   ) {
     const lastCheckedAt = latestAttempt?.reconcile?.checkedAt;
     const stale = lastCheckedAt === undefined || Date.now() - new Date(lastCheckedAt).getTime() > RECONCILE_THROTTLE_MS;
@@ -411,21 +432,48 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   return json(200, {
     entry: entryForViewer(deps, viewer, entry),
     plan,
-    attempts: attemptRows,
+    attempts: attemptRows.map((attempt) => attemptForBrowser(
+      attempt,
+      entry.lifecycleState === "AMBIGUOUS" &&
+        attempt.outcome === "AMBIGUOUS" &&
+        attempt.id === latestAttempt?.id &&
+        (attempt.reconcile?.candidateIds.length ?? 0) > 0,
+    )),
     lineage: { parent, child },
     disabled,
-    canMarkNotCreated: entry.lifecycleState === "AMBIGUOUS" && markNotCreatedAllowed(latestAttempt),
+    canMarkNotCreated: entry.lifecycleState === "AMBIGUOUS" && markNotCreatedAllowed(deps.db, latestAttempt),
   });
 }
 
-/** docs/07 §8: "a row whose latest reconcile is older than 10 minutes and has had >= 3 checks".
- * One definition, used by the gate in `handleMarkNotCreated` and by the flag the detail view
- * renders, so the button and the rule can never disagree. */
-function markNotCreatedAllowed(attempt: ReturnType<typeof attempts.latestForEntry>): boolean {
+function attemptForBrowser(
+  attempt: NonNullable<ReturnType<typeof attempts.latestForEntry>>,
+  includeCandidateIds: boolean,
+) {
+  const { baseline: _baseline, reconcile, ...audit } = attempt;
+  if (!reconcile) return { ...audit, reconcile: null };
+  const { candidateIds, firstEligibleCheckAt: _firstEligibleCheckAt, ...summary } = reconcile;
+  return {
+    ...audit,
+    reconcile: includeCandidateIds ? { ...summary, candidateIds } : summary,
+  };
+}
+
+/** Three complete zero-match reads must themselves span at least ten minutes. One definition is
+ * used by the mutation gate and the detail-view flag, so the button and the rule cannot disagree. */
+function markNotCreatedAllowed(
+  db: Database.Database,
+  attempt: ReturnType<typeof attempts.latestForEntry>,
+): boolean {
   const reconcile = attempt?.reconcile;
   if (!reconcile) return false;
+  if (attempts.reconcileInFlight(db, attempt.id)) return false;
+  if (reconcile.truncated || reconcile.matchCount !== 0 || reconcile.candidateIds.length !== 0) return false;
   if (reconcile.checks < MARK_NOT_CREATED_MIN_CHECKS) return false;
-  return Date.now() - new Date(reconcile.checkedAt).getTime() >= MARK_NOT_CREATED_WINDOW_MS;
+  if (reconcile.firstEligibleCheckAt === undefined) return false;
+  return (
+    new Date(reconcile.checkedAt).getTime() -
+    new Date(reconcile.firstEligibleCheckAt).getTime()
+  ) >= MARK_NOT_CREATED_WINDOW_MS;
 }
 
 // --- POST /api/entries/preflight ----------------------------------------------------------
@@ -463,6 +511,9 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
 
   let plan;
   try {
+    const activePlan = plans.getActiveForEntry(deps.db, entry.id);
+    const previousPlan = activePlan ?? plans.getLatestForEntryWithChoices(deps.db, entry.id, choices);
+    const previousPresentation = previousPlan?.presentation;
     plan = plans.createActive(deps.db, {
       id: randomUUID(),
       recoverableEntryId: entry.id,
@@ -472,6 +523,7 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
       choices,
       resolution: result.resolution,
       plannedRequest: result.plannedRequest,
+      presentation: presentationWithEditable(result.presentation, previousPresentation),
       warnings: result.warnings,
       blockers: result.blockers,
       actionRequired: result.actionRequired,
@@ -498,10 +550,9 @@ type ConfirmOutcome =
   | { readonly kind: "no-client" }
   | { readonly kind: "revalidate-truncated"; readonly message: string }
   | { readonly kind: "revalidate-error" }
-  | { readonly kind: "stale"; readonly plan: RecreationPlan }
+  | { readonly kind: "stale"; readonly plan: RecreationPlan | null }
   | { readonly kind: "already-claimed"; readonly entry: RecoverableEntry }
   | { readonly kind: "not-actionable"; readonly entry: RecoverableEntry }
-  | { readonly kind: "plan-consumed" }
   | { readonly kind: "baseline-truncated"; readonly message: string }
   | { readonly kind: "baseline-error" }
   | { readonly kind: "prewrite-changed"; readonly entry: RecoverableEntry }
@@ -518,7 +569,14 @@ async function confirmPlan(
   entry: RecoverableEntry,
   plan: RecreationPlan,
 ): Promise<ConfirmOutcome> {
-  if (plan.status === "CONSUMED") return { kind: "plan-consumed" };
+  if (plan.status !== "ACTIVE") {
+    return { kind: "stale", plan: plans.getActiveForEntry(deps.db, entry.id) ?? null };
+  }
+  if (plan.presentation === null) {
+    plans.markStale(deps.db, plan.id);
+    return { kind: "stale", plan: null };
+  }
+  const persistedPresentation = plan.presentation;
   if (entry.lifecycleState !== "IDLE" && entry.lifecycleState !== "FAILED") {
     return { kind: "not-actionable", entry };
   }
@@ -547,7 +605,14 @@ async function confirmPlan(
 
   const stale =
     !isPlanUsable(plan, currentHash) ||
-    outcomesDiffer(plan, { plannedRequest: fresh.plannedRequest, resolution: fresh.resolution, warnings: fresh.warnings, blockers: fresh.blockers, actionRequired: fresh.actionRequired });
+    outcomesDiffer({ ...plan, presentation: persistedPresentation }, {
+      plannedRequest: fresh.plannedRequest,
+      resolution: fresh.resolution,
+      presentation: fresh.presentation,
+      warnings: fresh.warnings,
+      blockers: fresh.blockers,
+      actionRequired: fresh.actionRequired,
+    });
 
   if (stale) {
     let freshPlan;
@@ -561,6 +626,7 @@ async function confirmPlan(
         choices: plan.choices,
         resolution: fresh.resolution,
         plannedRequest: fresh.plannedRequest,
+        presentation: presentationWithEditable(fresh.presentation, persistedPresentation),
         warnings: fresh.warnings,
         blockers: fresh.blockers,
         actionRequired: fresh.actionRequired,
@@ -583,8 +649,17 @@ async function confirmPlan(
   // states the claim predicate admits for a fresh claim).
   const priorState = entry.lifecycleState === "FAILED" ? "FAILED" : "IDLE";
   const claimToken = randomUUID();
-  const claimed = entries.claim(deps.db, { id: entry.id, workspaceId: viewer.workspaceId, claimToken, now: new Date() });
-  if (!claimed) {
+  const claimResult = entries.claimForActivePlan(deps.db, {
+    id: entry.id,
+    workspaceId: viewer.workspaceId,
+    planId: plan.id,
+    claimToken,
+    now: new Date(),
+  });
+  if (claimResult.kind === "plan-not-active") {
+    return { kind: "stale", plan: plans.getActiveForEntry(deps.db, entry.id) ?? null };
+  }
+  if (claimResult.kind === "unavailable") {
     const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
     return { kind: "already-claimed", entry: current ?? entry };
   }
@@ -595,14 +670,6 @@ async function confirmPlan(
       claimToken,
       previousState: priorState,
     });
-
-  const consumed = plans.consumeActive(deps.db, plan.id);
-  if (!consumed) {
-    // Another confirm won the plan first. Nothing was sent to Clockify, so put the pre-claim state
-    // back rather than inventing a FAILED with no attempt row (docs/08 invariant 4).
-    release();
-    return { kind: "plan-consumed" };
-  }
 
   let result;
   emitMetric(deps.logger, "recreate_attempt", { entryId: entry.id });
@@ -616,7 +683,6 @@ async function confirmPlan(
       plannedRequest: plan.plannedRequest,
       claimToken,
       recreatedBy: viewer.userId,
-      now: new Date(),
       onAddonTokenInvalid: markInstallationBrokenOnAddonTokenFailure(
         deps,
         viewer,
@@ -712,7 +778,7 @@ function confirmOutcomeToResponse(outcome: ConfirmOutcome): ReturnType<RequestHa
       // `plan` stay for the confirm view's forceResolve navigation.
       return json(409, {
         stale: true,
-        plan: outcome.plan,
+        ...(outcome.plan === null ? {} : { plan: outcome.plan }),
         error:
           "This plan is no longer current — something it depended on changed. Nothing was sent to Clockify. Open this entry again to review the fresh plan.",
       });
@@ -725,10 +791,6 @@ function confirmOutcomeToResponse(outcome: ConfirmOutcome): ReturnType<RequestHa
       return json(409, {
         error: "This entry cannot use this plan in its current state. Nothing was created by this click. Open the entry to see its current status.",
         entry: outcome.entry,
-      });
-    case "plan-consumed":
-      return json(409, {
-        error: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan.",
       });
     case "baseline-truncated":
       return errorJson(503, outcome.message);
@@ -765,6 +827,16 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
   const entry = loaded.entry;
 
   if (!plan || plan.recoverableEntryId !== entry.id) return errorJson(404, "plan not found");
+  if (plan.status !== "ACTIVE") {
+    return confirmOutcomeToResponse({
+      kind: "stale",
+      plan: plans.getActiveForEntry(deps.db, entry.id) ?? null,
+    });
+  }
+  if (plan.presentation === null) {
+    plans.markStale(deps.db, plan.id);
+    return confirmOutcomeToResponse({ kind: "stale", plan: null });
+  }
   if (plan.blockers.length > 0) return errorJson(422, "this plan has blockers and cannot be confirmed");
   if (plan.actionRequired.length > 0) return errorJson(422, "this plan still needs choices");
 
@@ -775,6 +847,16 @@ async function handleRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unknown)
 // --- POST /api/entries/bulk-preflight / bulk-recreate (docs/10 §7, admin-only) -------------
 
 const BULK_MAX = 50;
+
+function eligibleForBulkRecreation(plan: RecreationPlan): boolean {
+  return (
+    plan.fidelity === "FULL" &&
+    plan.presentation !== null &&
+    plan.blockers.length === 0 &&
+    plan.actionRequired.length === 0 &&
+    plan.warnings.every((warning) => warning.ruleId === "P-SYS")
+  );
+}
 
 function isStringArray(value: unknown): value is string[] {
   return (
@@ -840,12 +922,19 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
         choices: {},
         resolution: result.resolution,
         plannedRequest: result.plannedRequest,
+        presentation: result.presentation,
         warnings: result.warnings,
         blockers: result.blockers,
         actionRequired: result.actionRequired,
         fidelity: result.fidelity,
       });
-      const status = plan.blockers.length > 0 ? "blocked" : plan.actionRequired.length > 0 ? "needs-input" : "ready";
+      const status = plan.blockers.length > 0
+        ? "blocked"
+        : plan.actionRequired.length > 0
+          ? "needs-input"
+          : eligibleForBulkRecreation(plan)
+            ? "ready"
+            : "needs-review";
       // `source` is what lets the review view name each row. Without it a "ready" row rendered as
       // "Ready — " with nothing to review, which is the one thing that view exists to let an admin do.
       results.push({ entryId: id, status, plan, source: row.source });
@@ -900,8 +989,6 @@ function bulkResultItem(entryId: string, planId: string, outcome: ConfirmOutcome
       return { entryId, planId, outcome: "ERROR", message: "This entry is already being recreated by another attempt. Nothing new was created by this click." };
     case "not-actionable":
       return { entryId, planId, outcome: "ERROR", message: "This entry cannot use this plan in its current state. Nothing was created by this click." };
-    case "plan-consumed":
-      return { entryId, planId, outcome: "ERROR", message: "This plan was already used by another attempt. Nothing was created by this click. Open this entry again to get a current plan." };
     case "done":
       return { entryId, planId, ...outcome.result };
   }
@@ -917,18 +1004,49 @@ async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unkn
   if (!isStringArray(planIds)) return errorJson(400, "planIds must be a unique, non-empty array of plan ids");
   if (planIds.length > BULK_MAX) return errorJson(400, `at most ${BULK_MAX} plans per bulk request`);
 
-  const results: unknown[] = [];
-  for (const planId of planIds) {
+  const requested = planIds.map((planId) => {
     const plan = plans.getById(deps.db, planId);
     const entry = plan
       ? entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId)
       : undefined;
-    if (!plan || !entry) {
-      results.push({ planId, entryId: null, outcome: "ERROR", message: "not found" });
-      continue;
-    }
-    if (plan.blockers.length > 0 || plan.actionRequired.length > 0) {
-      results.push({ planId, entryId: entry.id, outcome: "ERROR", message: "this plan has blockers or still needs choices" });
+    return { planId, plan, entry };
+  });
+  if (requested.some(({ plan, entry }) => plan === undefined || entry === undefined)) {
+    return errorJson(404, "not found");
+  }
+  const stale = requested.filter(
+    (item): item is typeof item & { plan: RecreationPlan; entry: RecoverableEntry } =>
+      item.plan !== undefined &&
+      item.entry !== undefined &&
+      (item.plan.status !== "ACTIVE" || item.plan.presentation === null),
+  );
+  if (stale.length > 0) {
+    return json(409, {
+      stale: true,
+      currentPlans: stale.map(({ plan, entry }) => {
+        const current = plans.getActiveForEntry(deps.db, entry.id);
+        return {
+          requestedPlanId: plan.id,
+          entryId: entry.id,
+          plan: current?.presentation === null ? null : (current ?? null),
+        };
+      }),
+      error:
+        "One or more plans are no longer current. Nothing was sent to Clockify. Open those entries again to review fresh plans.",
+    });
+  }
+
+  const results: unknown[] = [];
+  for (const { planId, plan, entry } of requested) {
+    // The whole set was authorized and resolved before this loop, above.
+    if (!plan || !entry) throw new Error("bulk recreation request changed after pre-scan");
+    if (!eligibleForBulkRecreation(plan)) {
+      results.push({
+        planId,
+        entryId: entry.id,
+        outcome: "ERROR",
+        message: "this plan needs an individual review before recreation",
+      });
       continue;
     }
     const outcome = await confirmPlan(deps, viewer, entry, plan);
@@ -953,48 +1071,66 @@ async function runOneReconcile(
    * list is read: an admin can reconcile another user's entry, and the audit must name the actor. */
   actingUserId: string,
 ) {
-  if (!attempt) return;
-  if (!attempts.beginReconcile(deps.db, {
+  if (!attempt) return { kind: "changed" } as const;
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const begin = attempts.beginReconcile(deps.db, {
     recoverableEntryId: entry.id,
     workspaceId: entry.workspaceId,
     expectedAttemptId: attempt.id,
-    checkedAt: new Date().toISOString(),
-  })) {
-    // The entry or current attempt changed before the read began. Do not issue a Clockify read
-    // whose result could belong to an older ambiguity decision.
-    return { kind: "adopt-conflict" } as const;
-  }
-  const result = await runReconcile({
-    db: deps.db,
-    client,
-    entryId: entry.id,
-    workspaceId: entry.workspaceId,
-    userId: entry.ownerId,
-    plannedRequest: plan.plannedRequest,
-    baseline: attempt.baseline ?? [],
-    allowBillableOverride: allowsBillableOverride(plan),
-    expectedAttemptId: attempt.id,
-    recreatedBy: actingUserId,
-    now: new Date(),
-    onVerificationError: (err) => deps.onError?.(err, { route: "reconcile.verify" }),
+    checkedAt: startedAt,
+    runId,
+    throttleMs: RECONCILE_THROTTLE_MS,
   });
+  if (begin.kind !== "started") {
+    return begin;
+  }
 
-  const priorChecks = attempt.reconcile?.checks ?? 0;
-  const truncated = result.kind === "truncated";
-  const summary = {
-    checkedAt: new Date().toISOString(),
-    // A truncated read never saw the whole list, so it is not evidence of anything. Counting it
-    // would let three bound-hitting checks satisfy the mark-not-created gate and invite the user
-    // to declare "not created" about an entry that exists — the one outcome ADR-007 forbids.
-    checks: truncated ? priorChecks : priorChecks + 1,
-    matchCount: result.kind === "adopted" ? 1 : result.kind === "many" ? result.candidateIds.length : 0,
-    candidateIds: result.kind === "many" ? result.candidateIds : result.kind === "adopted" ? [result.newEntryId] : [],
-    truncated,
-  };
-  attempts.updateReconcile(deps.db, attempt.id, summary);
+  let result;
+  try {
+    result = await runReconcile({
+      db: deps.db,
+      client,
+      entryId: entry.id,
+      workspaceId: entry.workspaceId,
+      userId: entry.ownerId,
+      plannedRequest: plan.plannedRequest,
+      baseline: attempt.baseline ?? [],
+      allowBillableOverride: allowsBillableOverride(plan),
+      expectedAttemptId: attempt.id,
+      reconcileRunId: runId,
+      recreatedBy: actingUserId,
+      now: new Date(),
+      onVerificationError: (err) => deps.onError?.(err, { route: "reconcile.verify" }),
+    });
+  } catch (err) {
+    attempts.cancelReconcile(deps.db, attempt.id, runId);
+    throw err;
+  }
 
   if (result.kind === "adopted") {
     emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
+    return result;
+  }
+  const truncated = result.kind === "truncated";
+  const candidateIds = result.kind === "truncated"
+    ? (begin.prior?.candidateIds ?? [])
+    : result.kind === "many"
+    ? result.candidateIds
+    : result.kind === "adopt-conflict"
+      ? [result.candidateId]
+      : [];
+  const completed = attempts.completeReconcile(deps.db, {
+    id: attempt.id,
+    runId,
+    checkedAt: new Date().toISOString(),
+    countCheck: !truncated,
+    matchCount: result.kind === "truncated" ? (begin.prior?.matchCount ?? 0) : candidateIds.length,
+    candidateIds,
+    truncated,
+  });
+  if (!completed) {
+    return { kind: "changed" } as const;
   }
   return result;
 }
@@ -1007,10 +1143,6 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   if (entry.lifecycleState !== "AMBIGUOUS") return errorJson(409, "entry is not AMBIGUOUS");
 
   const latestAttempt = attempts.latestForEntry(deps.db, entry.id);
-  if (latestAttempt?.reconcile) {
-    const elapsed = Date.now() - new Date(latestAttempt.reconcile.checkedAt).getTime();
-    if (elapsed < RECONCILE_THROTTLE_MS) return errorJson(429, "reconcile was checked recently; try again shortly");
-  }
   const plan = latestAttempt ? plans.getById(deps.db, latestAttempt.planId) : undefined;
   if (!latestAttempt || !plan) return errorJson(404, "no attempt to reconcile");
 
@@ -1032,6 +1164,12 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
     deps.onError?.(err, { route: "reconcile" });
     return errorJson(502, AMBIGUOUS_CHECK_FAILURE_MESSAGE);
   }
+  if (result.kind === "throttled") {
+    return errorJson(429, "reconcile was checked recently; try again shortly");
+  }
+  if (result.kind === "changed") {
+    return errorJson(409, "the entry or recreation attempt changed; check the entry again");
+  }
   const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
   return json(200, { result, entry: current ?? entry });
 }
@@ -1049,7 +1187,7 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
   // reconcile read started first, its fresh timestamp closes this gate. If this transition wins
   // first, the reconcile refuses to send its read because the row is no longer AMBIGUOUS.
   const mark = deps.db.transaction(() => {
-    if (!markNotCreatedAllowed(attempts.latestForEntry(deps.db, entry.id))) {
+    if (!markNotCreatedAllowed(deps.db, attempts.latestForEntry(deps.db, entry.id))) {
       return { kind: "not-allowed" } as const;
     }
     const updated = entries.markNotCreated(deps.db, viewer.workspaceId, entry.id);
@@ -1094,67 +1232,76 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
   const clientResult = await loadClient(deps, viewer);
   if (!clientResult) return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
 
-  if (!attempts.beginReconcile(deps.db, {
+  const resolutionRunId = randomUUID();
+  const lock = attempts.beginReconcile(deps.db, {
     recoverableEntryId: entry.id,
     workspaceId: viewer.workspaceId,
     expectedAttemptId: latestAttempt.id,
     checkedAt: new Date().toISOString(),
-  })) {
+    runId: resolutionRunId,
+    throttleMs: RECONCILE_THROTTLE_MS,
+    ignorePreviousCheck: true,
+  });
+  if (lock.kind !== "started") {
     return errorJson(409, "the entry or recreation attempt changed; check the entry again");
   }
-
-  let candidate;
   try {
-    candidate = await clientResult.client.timeEntries.get({ workspaceId: viewer.workspaceId, timeEntryId: newEntryId });
-  } catch (err) {
-    if (isAddonTokenInvalid(err)) {
-      markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
-      return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
+    let candidate;
+    try {
+      candidate = await clientResult.client.timeEntries.get({ workspaceId: viewer.workspaceId, timeEntryId: newEntryId });
+    } catch (err) {
+      if (isAddonTokenInvalid(err)) {
+        markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+        return errorJson(503, AMBIGUOUS_NO_CLIENT_MESSAGE);
+      }
+      if (
+        err instanceof ClockifyApiError &&
+        err.statusCode !== undefined &&
+        err.statusCode >= 400 &&
+        err.statusCode < 500
+      ) {
+        return invalidAmbiguousCandidate(viewer, err.statusCode, "Clockify rejected that entry id");
+      }
+      deps.onError?.(err, { route: "resolve-ambiguous" });
+      return errorJson(502, AMBIGUOUS_CHECK_FAILURE_MESSAGE);
     }
-    if (
-      err instanceof ClockifyApiError &&
-      err.statusCode !== undefined &&
-      err.statusCode >= 400 &&
-      err.statusCode < 500
-    ) {
-      return invalidAmbiguousCandidate(viewer, err.statusCode, "Clockify rejected that entry id");
+    const fp = fingerprintFromPlanned(plan.plannedRequest);
+    if (!fingerprintMatches(fp, candidate, allowsBillableOverride(plan))) {
+      return invalidAmbiguousCandidate(viewer, 400, "that entry does not match this recreation's fingerprint");
     }
-    deps.onError?.(err, { route: "resolve-ambiguous" });
-    return errorJson(502, AMBIGUOUS_CHECK_FAILURE_MESSAGE);
-  }
-  const fp = fingerprintFromPlanned(plan.plannedRequest);
-  if (!fingerprintMatches(fp, candidate, allowsBillableOverride(plan))) {
-    return invalidAmbiguousCandidate(viewer, 400, "that entry does not match this recreation's fingerprint");
-  }
-  // The fingerprint compares values, not identity, so a look-alike entry that already existed
-  // matches it. Two extra checks keep an adoption meaning "this is the entry the create made":
-  // it must not be in the attempt's baseline (docs/07 §8 — "new" means "not in the baseline"),
-  // and it must belong to the entry's owner, since every recreation targets that owner (ADR-004).
-  if ((latestAttempt?.baseline ?? []).includes(newEntryId)) {
-    return invalidAmbiguousCandidate(viewer, 400, "that entry already existed before this recreation was attempted");
-  }
-  if (candidate.userId !== entry.source.ownerId) {
-    return invalidAmbiguousCandidate(viewer, 400, "that entry belongs to a different user");
-  }
+    // The fingerprint compares values, not identity, so a look-alike entry that already existed
+    // matches it. Two extra checks keep an adoption meaning "this is the entry the create made":
+    // it must not be in the attempt's baseline (docs/07 §8 — "new" means "not in the baseline"),
+    // and it must belong to the entry's owner, since every recreation targets that owner (ADR-004).
+    if ((latestAttempt?.baseline ?? []).includes(newEntryId)) {
+      return invalidAmbiguousCandidate(viewer, 400, "that entry already existed before this recreation was attempted");
+    }
+    if (candidate.userId !== entry.source.ownerId) {
+      return invalidAmbiguousCandidate(viewer, 400, "that entry belongs to a different user");
+    }
 
-  try {
-    const adopted = entries.adopt(deps.db, {
-      id: entry.id,
-      workspaceId: viewer.workspaceId,
-      expectedAttemptId: latestAttempt.id,
-      newEntryId,
-      recreatedAt: new Date().toISOString(),
-      recreatedBy: viewer.userId,
-      diffs: diffPlannedVsActual(plan.plannedRequest, candidate),
-    });
-    if (!adopted) return errorJson(409, "the entry or recreation attempt changed; check the entry again");
-    emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
-    return json(200, { entry: adopted });
-  } catch (err) {
-    if (typeof err === "object" && err !== null && "code" in err && String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")) {
-      return invalidAmbiguousCandidate(viewer, 409, "that Clockify entry is already linked to another recovered entry");
+    try {
+      const adopted = entries.adopt(deps.db, {
+        id: entry.id,
+        workspaceId: viewer.workspaceId,
+        expectedAttemptId: latestAttempt.id,
+        expectedReconcileRunId: resolutionRunId,
+        newEntryId,
+        recreatedAt: new Date().toISOString(),
+        recreatedBy: viewer.userId,
+        diffs: diffPlannedVsActual(plan.plannedRequest, candidate),
+      });
+      if (!adopted) return errorJson(409, "the entry or recreation attempt changed; check the entry again");
+      emitMetric(deps.logger, "ambiguous_adopted", { entryId: entry.id });
+      return json(200, { entry: adopted });
+    } catch (err) {
+      if (typeof err === "object" && err !== null && "code" in err && String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")) {
+        return invalidAmbiguousCandidate(viewer, 409, "that Clockify entry is already linked to another recovered entry");
+      }
+      throw err;
     }
-    throw err;
+  } finally {
+    attempts.cancelReconcile(deps.db, latestAttempt.id, resolutionRunId);
   }
 }
 

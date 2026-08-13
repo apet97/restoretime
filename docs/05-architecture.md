@@ -45,7 +45,7 @@ Clockify sidebar iframe   │  GET /component (verified JWT)     │
         │                                                      │
         ├── 201 ──► timeEntries.get ──► diff vs plan ──► RECREATED
         ├── 4xx ──► FAILED (mapped reason)                     │
-        └── 5xx/timeout ──► AMBIGUOUS ──► baseline-delta reconcile
+        └── uncertain/unknown result ──► AMBIGUOUS ──► baseline-delta reconcile
 ```
 
 ## Processes and modules
@@ -133,3 +133,8 @@ Environment variables (no config files):
 
 No secrets beyond the encryption key. Installation tokens arrive at runtime and are stored
 encrypted.
+
+The RC.11 Railway deployment also sets `RESTORETIME_CANDIDATE_ID` to the full 40-character merged
+Git commit. This value is non-secret release metadata. `loadConfig()` does not read it. The
+candidate-bound live handoff reads it only through `railway ssh` and rejects a deployment whose
+value does not match `CK_LIVE_CANDIDATE_ID` (docs/13 and docs/15).

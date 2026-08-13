@@ -5,7 +5,30 @@
 
 import type { ClockifyBridge } from "@apet97/clockify-addon-sdk/ui";
 import type { ApiClient } from "./api.js";
-import type { AttemptRecreationResult, BulkPreflightRow, BulkRecreateRow, DeletedTimeEntry, RecreationPlan } from "./types.js";
+import type {
+  ActionRequiredItem,
+  AttemptRecreationResult,
+  BulkPreflightRow,
+  BulkRecreateRow,
+  DeletedTimeEntry,
+  PreflightChoices,
+  RecreationPlan,
+} from "./types.js";
+
+/** Browser-only labels retained while a user edits a plan. Persisted and reopened plans use the
+ * server's `plan.presentation`; these labels only bridge the current selection round-trip. */
+export interface ChoiceLabels {
+  project?: { readonly id: string; readonly name: string } | null;
+  task?: { readonly id: string; readonly name: string } | null;
+  tags: Record<string, string>;
+  customFields: Record<string, string>;
+}
+
+export interface ResolutionDraft {
+  readonly choices: PreflightChoices;
+  readonly actionRequired: readonly ActionRequiredItem[];
+  readonly labels: ChoiceLabels;
+}
 
 export type ViewState =
   | { readonly kind: "list" }
@@ -16,8 +39,16 @@ export type ViewState =
        * form (docs/06 lifecycle table: FAILED's only forward exit is "new plan + claim"). Without
        * this, the result view's own "Try again" button would just redisplay the same failure. */
       readonly forceResolve?: boolean;
+      readonly draft?: ResolutionDraft;
     }
-  | { readonly kind: "confirm"; readonly entryId: string; readonly plan: RecreationPlan; readonly source: DeletedTimeEntry; readonly disabled?: boolean }
+  | {
+      readonly kind: "confirm";
+      readonly entryId: string;
+      readonly plan: RecreationPlan;
+      readonly source: DeletedTimeEntry;
+      readonly disabled?: boolean;
+      readonly draft?: ResolutionDraft;
+    }
   | {
       readonly kind: "result";
       readonly entryId: string;
@@ -25,7 +56,7 @@ export type ViewState =
       readonly result: AttemptRecreationResult;
     }
   | { readonly kind: "bulk-review"; readonly rows: readonly BulkPreflightRow[] }
-  | { readonly kind: "bulk-results"; readonly rows: readonly BulkRecreateRow[] }
+  | { readonly kind: "bulk-results"; readonly rows: readonly BulkRecreateRow[]; readonly reviewRows?: readonly BulkPreflightRow[] }
   | { readonly kind: "session-expired" };
 
 export interface Ctx {
@@ -35,5 +66,8 @@ export interface Ctx {
   /** Verified-claim display fields (docs/04 §Component verification) — never the token. */
   readonly locale: string;
   readonly isAdminRole: boolean;
+  /** Changes before each view transition. Async work uses this value to avoid replacing a newer
+   * view after the user navigates away. */
+  getNavigationVersion(): number;
   navigate(state: ViewState): void;
 }

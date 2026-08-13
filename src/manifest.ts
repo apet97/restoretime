@@ -1,7 +1,7 @@
 // ClockifyManifest builder: scalar fields + scopes, plus the webhook/component/lifecycle
 // descriptor builders (docs/04, docs/05). Built without entities first; server.ts registers each
 // entity with its verified wrapper — registration is what adds it to the served manifest
-// (Addon.registerWebhook/registerComponent/registerLifecycleEvent, fact 2).
+// (Addon.registerWebhook/registerComponent/registerLifecycleEvent, docs/04).
 
 import {
   ClockifyComponent,
@@ -35,7 +35,7 @@ export function buildManifest(config: ManifestConfig) {
     .baseUrl(config.publicBaseUrl)
     .requireFreePlan()
     .description(
-      "Recovers deleted time entries. Keeps a copy when you delete a time entry and recreates it as a new entry on your confirmation.",
+      "Keeps the details of deleted time entries. After you confirm, RestoreTime recreates each deleted entry as a new entry.",
     )
     .iconPath(ICON_PATH)
     .scopes([

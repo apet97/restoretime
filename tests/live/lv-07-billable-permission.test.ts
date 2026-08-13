@@ -18,9 +18,11 @@ import { ClockifyApiError } from "clockify-sdk-ts-115";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 import {
   apiCall,
+  assertLiveMutationTarget,
   bootLiveHarness,
   buildLiveRestClient,
   checkLiveAddonToken,
+  checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
   RT_PROBE_PREFIX,
@@ -51,7 +53,14 @@ describe("LV-07 billable-permission warning against the real workspace setting (
       expect(tokenCheck.blocked).toBe(true);
       return;
     }
+    const hostCheck = checkLiveDeployedHost();
+    if (hostCheck.blocked) {
+      console.log(`LV-07 ${hostCheck.reason}`);
+      expect(hostCheck.blocked).toBe(true);
+      return;
+    }
     const env: LiveEnv = check.env;
+    await assertLiveMutationTarget(env, hostCheck.addonBaseUrl);
     const restClient = buildLiveRestClient(env);
 
     try {

@@ -34,6 +34,7 @@ function plan(overrides: Partial<RecreationPlan> = {}): RecreationPlan {
     choices: {},
     resolution: [],
     plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: SOURCE.start },
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     warnings: [],
     blockers: [],
     actionRequired: [],
@@ -67,6 +68,13 @@ describe("UT-S02 revalidation detects changed dependency -> STALE", () => {
   const base = {
     plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: SOURCE.start, projectId: "proj-1" },
     resolution: [{ kind: "project" as const, refId: "proj-1", outcome: "kept" as const }],
+    presentation: {
+      project: { id: "proj-1", name: "Project One", outcome: "kept" as const },
+      task: null,
+      tags: [],
+      customFields: [],
+      editable: [],
+    },
     warnings: [],
     blockers: [],
     actionRequired: [],
@@ -95,5 +103,32 @@ describe("UT-S02 revalidation detects changed dependency -> STALE", () => {
       warnings: [{ ruleId: "P-PROJ-ARCH", code: "ARCHIVED_PROJECT", message: "archived now" }],
     };
     expect(outcomesDiffer(base, changed)).toBe(true);
+  });
+
+  it("a changed resolution -> stale", () => {
+    const changed = {
+      ...base,
+      resolution: [{ kind: "project" as const, refId: "proj-1", outcome: "dropped" as const }],
+    };
+    expect(outcomesDiffer(base, changed)).toBe(true);
+  });
+
+  it("a changed action requirement -> stale", () => {
+    const changed = {
+      ...base,
+      actionRequired: [{ ruleId: "P-PROJ-GONE", message: "Select a current project." }],
+    };
+    expect(outcomesDiffer(base, changed)).toBe(true);
+  });
+
+  it("persisted editable controls do not make unchanged values stale", () => {
+    const changed = {
+      ...base,
+      presentation: {
+        ...base.presentation,
+        editable: [{ ruleId: "P-PROJ-GONE", message: "Select a project." }],
+      },
+    };
+    expect(outcomesDiffer(base, changed)).toBe(false);
   });
 });

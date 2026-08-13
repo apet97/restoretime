@@ -37,6 +37,7 @@ function stubCtx(): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    getNavigationVersion: () => 0,
     navigate: vi.fn(),
   };
 }

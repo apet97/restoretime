@@ -8,6 +8,12 @@ import type { AttemptRecreationResult, DetailResponse, ReconcileResponse, Reconc
 import { fidelityLabel } from "../format.js";
 import { renderApiError, renderDifferences, renderLineage, runAction, withLoading } from "./shared.js";
 
+function lockInteractiveControls(root: HTMLElement): void {
+  for (const control of Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"))) {
+    control.disabled = true;
+  }
+}
+
 export function renderResult(
   ctx: Ctx,
   entryId: string,
@@ -149,17 +155,19 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
     if (lineageSection) nodes.push(lineageSection);
     const existsButton = el("button", { type: "button" }, "It exists — let me pick it");
     const notCreatedButton = el("button", { type: "button" }, "It was not created");
-    const idInput = el("input", { type: "text", placeholder: "Clockify time entry id" });
-    idInput.hidden = true;
+    const idInput = el("input", { type: "text" });
+    const idLabel = el("label", {}, "Clockify time entry ID", idInput);
+    idLabel.hidden = true;
     const confirmIdButton = el("button", { type: "button" }, "Use this entry");
     confirmIdButton.hidden = true;
     existsButton.addEventListener("click", () => {
-      idInput.hidden = false;
+      idLabel.hidden = false;
       confirmIdButton.hidden = false;
     });
     confirmIdButton.addEventListener("click", () => {
       const newEntryId = idInput.value.trim();
       if (!newEntryId) return;
+      lockInteractiveControls(ctx.root);
       void runAction(
         ctx,
         () => ctx.api.post("/api/entries/resolve-ambiguous", { entryId, newEntryId }),
@@ -168,6 +176,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
       );
     });
     notCreatedButton.addEventListener("click", () => {
+      lockInteractiveControls(ctx.root);
       void runAction(
         ctx,
         () => ctx.api.post("/api/entries/mark-not-created", { entryId }),
@@ -175,7 +184,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
         (err) => renderApiError(ctx.root, err, () => renderAmbiguous(ctx, entryId)),
       );
     });
-    nodes.push(el("div", {}, existsButton, notCreatedButton, idInput, confirmIdButton));
+    nodes.push(el("div", {}, existsButton, notCreatedButton, idLabel, confirmIdButton));
   } else {
     nodes.push(
       el("h2", {}, "We do not know whether Clockify created this entry."),
@@ -185,6 +194,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
     if (lineageSection) nodes.push(lineageSection);
     const checkNow = el("button", { type: "button" }, "Check now");
     checkNow.addEventListener("click", () => {
+      lockInteractiveControls(ctx.root);
       void runAction(
         ctx,
         () => ctx.api.post("/api/entries/reconcile", { entryId }) as Promise<ReconcileResponse>,
@@ -195,7 +205,8 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
     const lastChecked = reconcile ? el("span", {}, ` Last checked: ${formatClock(reconcile.checkedAt)}`) : null;
     nodes.push(el("div", {}, checkNow, ...(lastChecked ? [lastChecked] : [])));
 
-    if (reconcile && reconcile.candidateIds.length > 1) {
+    const candidateIds = reconcile?.candidateIds ?? [];
+    if (candidateIds.length > 1) {
       nodes.push(
         el(
           "section",
@@ -204,9 +215,10 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse): v
           el(
             "ul",
             {},
-            ...reconcile.candidateIds.map((id) => {
-              const adopt = el("button", { type: "button" }, `Adopt ${id}`);
+            ...candidateIds.map((id) => {
+              const adopt = el("button", { type: "button" }, `Use entry ${id}`);
               adopt.addEventListener("click", () => {
+                lockInteractiveControls(ctx.root);
                 void runAction(
                   ctx,
                   () => ctx.api.post("/api/entries/resolve-ambiguous", { entryId, newEntryId: id }),

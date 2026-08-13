@@ -18,6 +18,7 @@ import { buildClockifyClient } from "../../src/clockify/client.js";
 import { ChaosFetchInjectedError } from "../../src/clockify/chaos-fetch.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 
 const WORKSPACE_ID = "ws-1";
 const USER_ID = "user-1";
@@ -99,6 +100,7 @@ function seedPlan(db: ReturnType<typeof freshDb>, recoverableEntryId: string) {
     sourceHash: "hash",
     choices: {},
     resolution: [],
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     plannedRequest: PLANNED,
     warnings: [],
     blockers: [],
@@ -157,7 +159,6 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
       onUnexpectedError: (err) => {
         unexpectedError = err;
       },
@@ -180,6 +181,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = buildClockifyClient({ apiUrl: "https://developer.clockify.me/api", authToken: "tok" }, { fetch: reconcileFetch });
+    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-1" });
 
     const reconcileResult = await runReconcile({
       db,
@@ -190,6 +192,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "tok-1",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -231,7 +234,6 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
     });
 
     // Nothing was ever sent to Clockify.
@@ -245,6 +247,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = buildClockifyClient({ apiUrl: "https://developer.clockify.me/api", authToken: "tok" }, { fetch: emptyFetch });
+    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-1" });
 
     const reconcileResult = await runReconcile({
       db,
@@ -255,6 +258,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "tok-1",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -299,7 +303,6 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
         plannedRequest: PLANNED,
         claimToken: "tok-1",
         recreatedBy: USER_ID,
-        now: new Date("2026-08-08T09:02:00Z"),
       });
       expect(createCalls).toBe(1);
       expect(result.outcome).toBe("RECREATED");
@@ -335,7 +338,6 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
     });
     expect(result.outcome).toBe("RECREATED");
   });

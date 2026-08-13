@@ -13,7 +13,6 @@ import type {
   PlanWarning,
   PreflightChoices,
   RecoverableEntry,
-  RecreationAttempt,
   RecreationPlan,
 } from "../domain/entry.js";
 
@@ -28,9 +27,31 @@ export type {
   PlanWarning,
   PreflightChoices,
   RecoverableEntry,
-  RecreationAttempt,
   RecreationPlan,
 };
+
+/** Audit fields that the detail view is allowed to receive. Write-reconciliation baselines stay
+ * server-side; candidate ids are transient and are cleared after ambiguity is resolved. */
+export interface AttemptView {
+  readonly id: string;
+  readonly planId: string;
+  readonly recoverableEntryId: string;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+  readonly outcome: "SUCCESS" | "FAILED" | "AMBIGUOUS" | null;
+  readonly newEntryId: string | null;
+  readonly errorStatus: number | null;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly reconcile: {
+    readonly checkedAt: string;
+    readonly checks: number;
+    readonly matchCount: number;
+    readonly candidateIds?: readonly string[];
+    readonly truncated: boolean;
+  } | null;
+  readonly diffs: readonly VerificationDiff[] | null;
+}
 
 export interface PreflightSummary {
   readonly fidelity: Fidelity;
@@ -57,7 +78,7 @@ export interface ListResponse {
 export interface DetailResponse {
   readonly entry: RecoverableEntry;
   readonly plan: RecreationPlan | null;
-  readonly attempts: readonly RecreationAttempt[];
+  readonly attempts: readonly AttemptView[];
   readonly lineage: { readonly parent: RecoverableEntry | null; readonly child: RecoverableEntry | null };
   /** The addon is INACTIVE for this workspace (docs/10 §8). Server fact, never derived here. */
   readonly disabled: boolean;
@@ -73,7 +94,7 @@ export interface PreflightResponse {
 export type AttemptRecreationResult =
   | { readonly outcome: "RECREATED"; readonly newEntryId: string; readonly diffs: readonly VerificationDiff[] }
   | { readonly outcome: "FAILED"; readonly status: number | null; readonly code: string | null; readonly message: string }
-  | { readonly outcome: "AMBIGUOUS"; readonly baseline: readonly string[] };
+  | { readonly outcome: "AMBIGUOUS" };
 
 export interface VerificationDiff {
   readonly field: string;
@@ -114,7 +135,7 @@ export interface CustomFieldOption {
 
 export interface BulkPreflightRow {
   readonly entryId: string;
-  readonly status: "not-found" | "not-actionable" | "error" | "blocked" | "needs-input" | "ready";
+  readonly status: "not-found" | "not-actionable" | "error" | "blocked" | "needs-input" | "needs-review" | "ready";
   readonly message?: string;
   readonly plan?: RecreationPlan;
   /** Absent only for `not-found`, where there is no entry left to describe. */
@@ -129,7 +150,6 @@ export type BulkRecreateRow =
       readonly entryId: string;
       readonly planId: string;
       readonly outcome: "AMBIGUOUS";
-      readonly baseline?: readonly string[];
       /** Present when the attempt ended outside the normal result path. */
       readonly message?: string;
     };

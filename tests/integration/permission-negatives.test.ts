@@ -90,6 +90,7 @@ beforeEach(async () => {
     sourceHash: "hash",
     choices: {},
     resolution: [],
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     plannedRequest: { workspaceId: WORKSPACE_ID, userId: OWNER_ID, start: SOURCE.start, end: "2026-08-08T11:00:00Z", description: SOURCE.description, billable: SOURCE.billable },
     warnings: [],
     blockers: [],
@@ -364,15 +365,62 @@ describe("permission negatives sweep: forged/cross-workspace viewer -> 404 with 
     const res = await server.addon.handle(req("POST", "/api/entries/bulk-recreate", token, {
       planIds: [planIdByDemotedAdmin, unknownPlanId],
     }));
-    expect(res.status).toBe(200);
-    const body = res.body as {
-      results: { planId: string; entryId: string | null; outcome: string; message: string }[];
-    };
-    expect(body.results).toEqual([
-      { planId: planIdByDemotedAdmin, entryId: null, outcome: "ERROR", message: "not found" },
-      { planId: unknownPlanId, entryId: null, outcome: "ERROR", message: "not found" },
-    ]);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "not found" });
     expect(snapshotRow()).toEqual(before);
+  });
+
+  it("a valid local plan plus a stale foreign plan fails closed without revealing or executing either", async () => {
+    const localEntry = entries.ingestDeletedEntry(server.db, {
+      id: "local-bulk-entry",
+      workspaceId: OTHER_WORKSPACE_ID,
+      sourceEntryId: "local-bulk-source",
+      ownerId: "someone",
+      detectedAt: "2026-08-08T09:00:00Z",
+      source: {
+        ...SOURCE,
+        workspaceId: OTHER_WORKSPACE_ID,
+        entryId: "local-bulk-source",
+        ownerId: "someone",
+      },
+    }).entry;
+    const localPlan = plans.createActive(server.db, {
+      id: "local-bulk-plan",
+      recoverableEntryId: localEntry.id,
+      createdBy: "someone",
+      createdAt: "2026-08-08T09:00:01Z",
+      sourceHash: "hash",
+      choices: {},
+      resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+      plannedRequest: {
+        workspaceId: OTHER_WORKSPACE_ID,
+        userId: "someone",
+        start: SOURCE.start,
+        end: SOURCE.end!,
+      },
+      warnings: [],
+      blockers: [],
+      actionRequired: [],
+      fidelity: "FULL",
+    });
+    server.db.prepare("UPDATE recreation_plans SET status='STALE' WHERE id=?").run(planIdByDemotedAdmin);
+    let clockifyCalls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      clockifyCalls += 1;
+      return new Response(JSON.stringify({ message: "must not be called" }), { status: 500 });
+    }) as typeof fetch);
+    const token = await tokenFor({ workspaceId: OTHER_WORKSPACE_ID, user: "someone", role: "admin" });
+
+    const res = await server.addon.handle(req("POST", "/api/entries/bulk-recreate", token, {
+      planIds: [localPlan.id, planIdByDemotedAdmin],
+    }));
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "not found" });
+    expect(clockifyCalls).toBe(0);
+    expect(entries.getById(server.db, OTHER_WORKSPACE_ID, localEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(plans.getById(server.db, localPlan.id)?.status).toBe("ACTIVE");
+    expect(res.body).not.toHaveProperty("currentPlans");
   });
 });
 
@@ -418,6 +466,7 @@ describe("permission negatives sweep: forged/other user (neither owner nor admin
       sourceHash: "hash",
       choices: {},
       resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: {
         workspaceId: WORKSPACE_ID,
         userId: OTHER_MEMBER_ID,

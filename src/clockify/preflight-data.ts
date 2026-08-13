@@ -67,7 +67,7 @@ export async function fetchSharedWorkspaceData(client: ClockifyClient, workspace
 
   const settings = workspace.workspaceSettings;
   const currentTags = new Map<string, LookupResult>();
-  for (const tag of tags) currentTags.set(tag.id, { id: tag.id, archived: tag.archived });
+  for (const tag of tags) currentTags.set(tag.id, { id: tag.id, name: tag.name, archived: tag.archived });
   const userStatus = new Map<string, string>();
   for (const u of users) if (u.id !== undefined) userStatus.set(u.id, u.status);
 
@@ -166,7 +166,7 @@ function lookupProject(
   const promise = (async (): Promise<LookupResult | null> => {
     try {
       const project = await client.projects.get({ workspaceId, projectId });
-      return { id: project.id, archived: project.archived };
+      return { id: project.id, name: project.name, archived: project.archived };
     } catch (err) {
       if (isProjectGone(err)) return null;
       throw err;
@@ -199,7 +199,7 @@ async function lookupTask(
   if (taskId === null || projectId === null) return taskId === null ? undefined : null;
   const tasks = await listTasksForProject(client, workspaceId, projectId, cache);
   const task = tasks.find((t) => t.id === taskId);
-  return task ? { id: task.id, status: task.status } : null;
+  return task ? { id: task.id, name: task.name, status: task.status } : null;
 }
 
 /** Assembles the pure `WorkspaceState` for one entry from already-fetched shared data plus this
@@ -216,7 +216,9 @@ export async function fetchEntryWorkspaceState(
 ): Promise<WorkspaceState> {
   const { effectiveProjectId, effectiveTaskId } = resolveEffectiveIds(source, choices);
   const effectiveProject = await lookupProject(client, workspaceId, effectiveProjectId, cache);
-  const effectiveTask = await lookupTask(client, workspaceId, effectiveProjectId, effectiveTaskId, cache);
+  const effectiveTask = effectiveProject === null
+    ? null
+    : await lookupTask(client, workspaceId, effectiveProjectId, effectiveTaskId, cache);
 
   return {
     forceProjects: shared.forceProjects,

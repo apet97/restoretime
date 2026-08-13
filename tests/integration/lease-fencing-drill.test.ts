@@ -250,6 +250,7 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       sourceHash: "hash",
       choices: {},
       resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: planned,
       warnings: [],
       blockers: [],
@@ -287,7 +288,6 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
         plannedRequest: planned,
         claimToken: "tok-guard",
         recreatedBy: OWNER_ID,
-        now: new Date("2026-08-08T09:02:00Z"),
       });
       expect(result.outcome).toBe("RECREATED");
     } finally {

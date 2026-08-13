@@ -9,6 +9,7 @@ import { createClockifyClient } from "clockify-sdk-ts-115";
 import { openDatabase } from "../../src/store/db.js";
 import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import { attemptRecreation } from "../../src/clockify/recreate.js";
@@ -98,7 +99,6 @@ function runAttempt(
     plannedRequest: PLANNED,
     claimToken,
     recreatedBy: USER_ID,
-    now: new Date("2026-08-08T09:01:01Z"),
   });
 }
 
@@ -131,6 +131,7 @@ function seed(db: ReturnType<typeof freshDb>) {
     sourceHash: "hash",
     choices: {},
     resolution: [],
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     plannedRequest: PLANNED,
     warnings: [],
     blockers: [],
@@ -206,6 +207,7 @@ describe("expired recreation attempts", () => {
       planId: "plan-1",
       recoverableEntryId: entry.id,
       startedAt: "2026-08-08T09:02:02Z",
+      leaseExpiresAt: "2026-08-08T09:03:02Z",
       baseline: [],
     })).toBe(false);
     expect(attempts.startForClaim(db, {
@@ -213,6 +215,7 @@ describe("expired recreation attempts", () => {
       planId: "plan-1",
       recoverableEntryId: entry.id,
       startedAt: "2026-08-08T09:02:02Z",
+      leaseExpiresAt: "2026-08-08T09:03:02Z",
       baseline: [],
     })).toBe(true);
     db.close();
@@ -245,6 +248,7 @@ describe("expired recreation attempts", () => {
       planId: "plan-1",
       recoverableEntryId: entry.id,
       startedAt: "2026-08-08T09:02:02Z",
+      leaseExpiresAt: "2026-08-08T09:03:02Z",
       baseline: [],
     })).toBe(false);
     db.close();
@@ -277,6 +281,10 @@ describe("expired recreation attempts", () => {
       errorMessage: null,
       diffs: [],
     });
+    // Pre-RC11 rows could retain both fields even after the definitive attempt outcome.
+    db.prepare(
+      "UPDATE recreation_attempts SET baseline_json='[\"private-baseline\"]', reconcile_json='{\"checks\":3}' WHERE id=?",
+    ).run(claimToken);
 
     const retry = entries.claim(db, {
       id: entry.id,
@@ -293,7 +301,62 @@ describe("expired recreation attempts", () => {
       recreatedBy: USER_ID,
       claimToken: null,
     });
-    expect(attempts.getById(db, claimToken)?.outcome).toBe("SUCCESS");
+    expect(attempts.getById(db, claimToken)).toMatchObject({
+      outcome: "SUCCESS",
+      baseline: null,
+      reconcile: null,
+    });
+    db.close();
+  });
+
+  it("recovers a definitive stored failure to FAILED and permits a later fresh claim", () => {
+    const db = freshDb();
+    const entry = seed(db);
+    const failedToken = "definitively-failed-attempt";
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: failedToken,
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    insertAttemptFixture(db, {
+      id: failedToken,
+      planId: "plan-1",
+      recoverableEntryId: entry.id,
+      startedAt: "2026-08-08T09:01:01Z",
+      baseline: [],
+    });
+    attempts.finish(db, {
+      id: failedToken,
+      finishedAt: "2026-08-08T09:01:02Z",
+      outcome: "FAILED",
+      newEntryId: null,
+      errorStatus: 400,
+      errorCode: "501",
+      errorMessage: "Clockify rejected the request.",
+      diffs: null,
+    });
+    db.prepare(
+      "UPDATE recreation_attempts SET baseline_json='[\"private-failed\"]', reconcile_json='{\"checks\":3}' WHERE id=?",
+    ).run(failedToken);
+
+    const recoveryClaim = entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "recovery-check",
+      now: new Date("2026-08-08T09:02:01Z"),
+    });
+    expect(recoveryClaim).toBeUndefined();
+    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("FAILED");
+    expect(attempts.getById(db, failedToken)).toMatchObject({ baseline: null, reconcile: null });
+
+    const retry = entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "fresh-retry",
+      now: new Date("2026-08-08T09:02:02Z"),
+    });
+    expect(retry?.claimToken).toBe("fresh-retry");
     db.close();
   });
 
@@ -315,11 +378,17 @@ describe("expired recreation attempts", () => {
       baseline: [],
     });
     entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken });
+    const reconcileRunId = beginReconcileFixture(db, {
+      recoverableEntryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      expectedAttemptId: claimToken,
+    });
 
     const adopted = entries.adopt(db, {
       id: entry.id,
       workspaceId: WORKSPACE_ID,
       expectedAttemptId: claimToken,
+      expectedReconcileRunId: reconcileRunId,
       newEntryId: "adopted-entry",
       recreatedAt: "2026-08-08T09:03:00Z",
       recreatedBy: USER_ID,
@@ -331,6 +400,8 @@ describe("expired recreation attempts", () => {
       outcome: "SUCCESS",
       newEntryId: "adopted-entry",
       finishedAt: "2026-08-08T09:03:00Z",
+      baseline: null,
+      reconcile: null,
       diffs: [{ field: "description", planned: "old", actual: "new" }],
     });
     db.close();
@@ -360,13 +431,14 @@ describe("expired recreation attempts", () => {
 
     expect(createCalls).toBe(1);
     expect(attempts.getById(db, claimToken)).toMatchObject({ outcome: null, finishedAt: null });
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("RECREATING");
+    const afterFailure = entries.getById(db, WORKSPACE_ID, entry.id);
+    expect(afterFailure?.lifecycleState).toBe("RECREATING");
 
     const retry = entries.claim(db, {
       id: entry.id,
       workspaceId: WORKSPACE_ID,
       claimToken: "forbidden-retry",
-      now: new Date("2026-08-08T09:02:01Z"),
+      now: new Date(new Date(afterFailure!.claimExpiresAt!).getTime() + 1),
     });
     expect(retry).toBeUndefined();
     expect(attempts.getById(db, claimToken)?.outcome).toBe("AMBIGUOUS");

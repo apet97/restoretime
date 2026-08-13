@@ -40,7 +40,11 @@ function rowToEntry(row: EntryRow): RecoverableEntry {
   };
 }
 
-const CLAIM_LEASE_MS = 60_000;
+export const CLAIM_LEASE_MS = 60_000;
+
+export function claimLeaseExpiry(now: Date): string {
+  return new Date(now.getTime() + CLAIM_LEASE_MS).toISOString();
+}
 
 export interface IngestInput {
   readonly id: string;
@@ -256,7 +260,8 @@ function recoverExpiredAttempt(
   const expired = db
     .prepare<[string, string, string], Pick<EntryRow, "claim_token">>(
       `SELECT claim_token FROM recoverable_entries
-       WHERE id=? AND workspace_id=? AND lifecycle_state='RECREATING' AND claim_expires_at < ?`,
+       WHERE id=? AND workspace_id=? AND lifecycle_state='RECREATING'
+         AND julianday(claim_expires_at) <= julianday(?)`,
     )
     .get(input.id, input.workspaceId, now);
   if (!expired?.claim_token) return false;
@@ -292,7 +297,8 @@ function recoverExpiredAttempt(
            recreated_at=@recreatedAt, recreated_by=@recreatedBy,
            claim_token=NULL, claim_expires_at=NULL
        WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
-         AND claim_token=@expiredToken AND claim_expires_at < @now`,
+         AND claim_token=@expiredToken
+         AND julianday(claim_expires_at) <= julianday(@now)`,
     ).run({
       id: input.id,
       workspaceId: input.workspaceId,
@@ -305,6 +311,7 @@ function recoverExpiredAttempt(
     if (projected.changes !== 1) {
       throw new Error("expired successful recreation changed during recovery");
     }
+    attempts.clearTransientEvidenceForEntry(db, input.id);
     return true;
   }
 
@@ -315,7 +322,8 @@ function recoverExpiredAttempt(
     `UPDATE recoverable_entries
      SET lifecycle_state=@recoveredState, claim_token=NULL, claim_expires_at=NULL
      WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
-       AND claim_token=@expiredToken AND claim_expires_at < @now`,
+       AND claim_token=@expiredToken
+       AND julianday(claim_expires_at) <= julianday(@now)`,
   ).run({
     id: input.id,
     workspaceId: input.workspaceId,
@@ -324,6 +332,7 @@ function recoverExpiredAttempt(
     now,
   });
   if (recovered.changes !== 1) throw new Error("expired recreation claim changed during recovery");
+  if (attempt.outcome === "FAILED") attempts.clearTransientEvidenceForEntry(db, input.id);
   return true;
 }
 
@@ -333,9 +342,12 @@ function recoverExpiredAttempt(
  * An expired row needs one extra distinction. With no attempt row, the create cannot have started
  * and a new token can claim it. With an attempt row, the create may have been sent. That case is
  * recovered to AMBIGUOUS instead of authorizing a retry (ADR-007). */
-export function claim(db: Database.Database, input: ClaimInput): RecoverableEntry | undefined {
+function claimWhileLocked(
+  db: Database.Database,
+  input: ClaimInput,
+): RecoverableEntry | undefined {
   const now = input.now.toISOString();
-  const nowPlus60s = new Date(input.now.getTime() + CLAIM_LEASE_MS).toISOString();
+  const nowPlus60s = claimLeaseExpiry(input.now);
   // Prepare the compare-and-set once. The transaction below first resolves any expired claim
   // that has a durable attempt, then uses this statement for a fresh or safe no-attempt claim.
   const claimStatement = db.prepare<Record<string, unknown>, EntryRow>(
@@ -343,26 +355,60 @@ export function claim(db: Database.Database, input: ClaimInput): RecoverableEntr
        SET lifecycle_state='RECREATING', claim_token=:token, claim_expires_at=:now_plus_60s
        WHERE id=:id AND workspace_id=:ws
          AND (lifecycle_state IN ('IDLE','FAILED')
-              OR (lifecycle_state='RECREATING' AND claim_expires_at < :now))
+              OR (lifecycle_state='RECREATING'
+                  AND julianday(claim_expires_at) <= julianday(:now)))
        RETURNING *`,
     );
 
-  const recoverThenClaim = db.transaction((): RecoverableEntry | undefined => {
-    if (recoverExpiredAttempt(db, input, now)) return undefined;
+  if (recoverExpiredAttempt(db, input, now)) return undefined;
 
-    const row = claimStatement.get({
-      id: input.id,
-      ws: input.workspaceId,
-      token: input.claimToken,
-      now,
-      now_plus_60s: nowPlus60s,
-    });
-    return row ? rowToEntry(row) : undefined;
+  const row = claimStatement.get({
+    id: input.id,
+    ws: input.workspaceId,
+    token: input.claimToken,
+    now,
+    now_plus_60s: nowPlus60s,
   });
+  return row ? rowToEntry(row) : undefined;
+}
+
+export function claim(db: Database.Database, input: ClaimInput): RecoverableEntry | undefined {
+  const recoverThenClaim = db.transaction(() => claimWhileLocked(db, input));
 
   // The decision and its write must share one lock. Otherwise another connection could insert an
   // attempt between the recovery check and an unsafe lease reclaim.
   return recoverThenClaim.immediate();
+}
+
+export type ActivePlanClaimResult =
+  | { readonly kind: "claimed"; readonly entry: RecoverableEntry }
+  | { readonly kind: "plan-not-active" }
+  | { readonly kind: "unavailable" };
+
+/** Claims an entry and consumes its exact ACTIVE plan under one database write lock. */
+export function claimForActivePlan(
+  db: Database.Database,
+  input: ClaimInput & { readonly planId: string },
+): ActivePlanClaimResult {
+  const claimAndConsume = db.transaction((): ActivePlanClaimResult => {
+    const activePlan = db.prepare<[string, string], { id: string }>(
+      `SELECT id FROM recreation_plans
+       WHERE id=? AND recoverable_entry_id=? AND status='ACTIVE'`,
+    ).get(input.planId, input.id);
+    if (!activePlan) return { kind: "plan-not-active" };
+
+    const entry = claimWhileLocked(db, input);
+    if (!entry) return { kind: "unavailable" };
+
+    const consumed = db.prepare(
+      "UPDATE recreation_plans SET status='CONSUMED' WHERE id=? AND status='ACTIVE'",
+    ).run(input.planId);
+    if (consumed.changes !== 1) {
+      throw new Error("active recreation plan changed while its entry was claimed");
+    }
+    return { kind: "claimed", entry };
+  });
+  return claimAndConsume.immediate();
 }
 
 /** Makes an expired claim reachable from a read path without issuing a create or a retry.
@@ -382,7 +428,7 @@ export function recoverExpiredClaim(
         `UPDATE recoverable_entries
          SET lifecycle_state='IDLE', claim_token=NULL, claim_expires_at=NULL
          WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
-           AND claim_expires_at < @now
+           AND julianday(claim_expires_at) <= julianday(@now)
            AND NOT EXISTS (
              SELECT 1 FROM recreation_attempts
              WHERE id=recoverable_entries.claim_token AND recoverable_entry_id=recoverable_entries.id
@@ -417,7 +463,9 @@ export function setRecreated(
        RETURNING *`,
     )
     .get(input);
-  return row ? rowToEntry(row) : undefined;
+  if (!row) return undefined;
+  attempts.clearTransientEvidenceForEntry(db, input.id);
+  return rowToEntry(row);
 }
 
 /**
@@ -458,7 +506,9 @@ export function setFailed(db: Database.Database, input: FencedInput): Recoverabl
        RETURNING *`,
     )
     .get(input);
-  return row ? rowToEntry(row) : undefined;
+  if (!row) return undefined;
+  attempts.clearTransientEvidenceForEntry(db, input.id);
+  return rowToEntry(row);
 }
 
 /** RECREATING -> AMBIGUOUS, fenced (§8). */
@@ -486,6 +536,7 @@ export function adopt(
     id: string;
     workspaceId: string;
     expectedAttemptId: string;
+    expectedReconcileRunId: string;
     newEntryId: string;
     recreatedAt: string;
     recreatedBy: string;
@@ -493,6 +544,13 @@ export function adopt(
   },
 ): RecoverableEntry | undefined {
   const run = db.transaction((): RecoverableEntry | undefined => {
+    if (!attempts.reconcileRunOwnedBy(
+      db,
+      input.expectedAttemptId,
+      input.expectedReconcileRunId,
+    )) {
+      return undefined;
+    }
     const row = db.prepare<Record<string, unknown>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATED', new_entry_id=@newEntryId, recreated_at=@recreatedAt,
@@ -501,7 +559,7 @@ export function adopt(
          AND @expectedAttemptId = (
            SELECT id FROM recreation_attempts
            WHERE recoverable_entry_id=@id
-           ORDER BY started_at DESC, rowid DESC LIMIT 1
+           ORDER BY rowid DESC LIMIT 1
          )
        RETURNING *`,
     ).get(input);
@@ -522,6 +580,7 @@ export function adopt(
       diffs: input.diffs,
     });
     if (!finished) throw new Error("recreation attempt disappeared during adoption");
+    attempts.clearTransientEvidenceForEntry(db, input.id);
     return rowToEntry(row);
   });
   return run.immediate();
@@ -533,14 +592,19 @@ export function markNotCreated(
   workspaceId: string,
   id: string,
 ): RecoverableEntry | undefined {
-  const row = db
-    .prepare<[string, string], EntryRow>(
-      `UPDATE recoverable_entries SET lifecycle_state='IDLE'
-       WHERE id = ? AND workspace_id = ? AND lifecycle_state='AMBIGUOUS'
-       RETURNING *`,
-    )
-    .get(id, workspaceId);
-  return row ? rowToEntry(row) : undefined;
+  const mark = db.transaction((): RecoverableEntry | undefined => {
+    const row = db
+      .prepare<[string, string], EntryRow>(
+        `UPDATE recoverable_entries SET lifecycle_state='IDLE'
+         WHERE id = ? AND workspace_id = ? AND lifecycle_state='AMBIGUOUS'
+         RETURNING *`,
+      )
+      .get(id, workspaceId);
+    if (!row) return undefined;
+    attempts.clearTransientEvidenceForEntry(db, id);
+    return rowToEntry(row);
+  });
+  return mark.immediate();
 }
 
 /** IDLE/FAILED -> DISMISSED (docs/06 lifecycle table). */

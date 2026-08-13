@@ -22,6 +22,7 @@ import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
 
@@ -156,6 +157,7 @@ function seedEligibleAmbiguous(
     sourceHash: "hash",
     choices: {},
     resolution: [],
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     plannedRequest: planned,
     warnings: [],
     blockers: [],
@@ -182,6 +184,7 @@ function seedEligibleAmbiguous(
   });
   attempts.updateReconcile(server.db, input.attemptId, {
     checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    firstEligibleCheckAt: new Date(Date.now() - 22 * 60 * 1000).toISOString(),
     checks: 3,
     matchCount: 0,
     candidateIds: [],
@@ -240,21 +243,22 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       source: sourceFor("src-a", "soak-A-commit-lost"),
     }).entry;
     const plannedA = plannedFor("soak-A-commit-lost");
-    plans.createActive(db, { id: "plan-a", recoverableEntryId: entryA.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedA, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
+    plans.createActive(db, { id: "plan-a", recoverableEntryId: entryA.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedA, presentation: { project: null, task: null, tags: [], customFields: [], editable: [] }, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
     entries.claim(db, { id: entryA.id, workspaceId: WORKSPACE_ID, claimToken: "tok-a", now: new Date("2026-08-08T09:01:00Z") });
 
     const resultA = await attemptRecreation({
       db, client: timingOutCreateClient(candidateEntry("clockify-a", "soak-A-commit-lost")),
       entryId: entryA.id, workspaceId: WORKSPACE_ID, planId: "plan-a", plannedRequest: plannedA,
-      claimToken: "tok-a", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:02:00Z"),
+      claimToken: "tok-a", recreatedBy: OWNER_ID,
     });
     expect(resultA.outcome).toBe("AMBIGUOUS");
     expect(entries.getById(db, WORKSPACE_ID, entryA.id)?.lifecycleState).toBe("AMBIGUOUS");
 
+    const runA = beginReconcileFixture(db, { recoverableEntryId: entryA.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-a" });
     const reconcileA = await runReconcile({
       db, client: reconcileClientReturning([candidateEntry("clockify-a", "soak-A-commit-lost")]),
       entryId: entryA.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedA,
-      baseline: [], expectedAttemptId: "tok-a", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-a", reconcileRunId: runA, recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileA).toEqual({ kind: "adopted", newEntryId: "clockify-a" });
     expect(entries.getById(db, WORKSPACE_ID, entryA.id)?.lifecycleState).toBe("RECREATED");
@@ -274,15 +278,16 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       source: sourceFor("src-b", "soak-B-nothing-committed"),
     }).entry;
     const plannedB = plannedFor("soak-B-nothing-committed");
-    plans.createActive(db, { id: "plan-b", recoverableEntryId: entryB.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedB, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
+    plans.createActive(db, { id: "plan-b", recoverableEntryId: entryB.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedB, presentation: { project: null, task: null, tags: [], customFields: [], editable: [] }, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
     entries.claim(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b" });
     insertAttemptFixture(db, { id: "tok-b", planId: "plan-b", recoverableEntryId: entryB.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
 
+    const runB = beginReconcileFixture(db, { recoverableEntryId: entryB.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-b" });
     const reconcileB = await runReconcile({
       db, client: reconcileClientReturning([]), // nothing in Clockify matches — never committed
       entryId: entryB.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedB,
-      baseline: [], expectedAttemptId: "tok-b", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-b", reconcileRunId: runB, recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileB).toEqual({ kind: "none" });
     expect(entries.getById(db, WORKSPACE_ID, entryB.id)?.lifecycleState).toBe("AMBIGUOUS");
@@ -299,11 +304,12 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       source: sourceFor("src-c", "soak-C-double-candidate"),
     }).entry;
     const plannedC = plannedFor("soak-C-double-candidate");
-    plans.createActive(db, { id: "plan-c", recoverableEntryId: entryC.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedC, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
+    plans.createActive(db, { id: "plan-c", recoverableEntryId: entryC.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: plannedC, presentation: { project: null, task: null, tags: [], customFields: [], editable: [] }, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
     entries.claim(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c" });
     insertAttemptFixture(db, { id: "tok-c", planId: "plan-c", recoverableEntryId: entryC.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
 
+    const runC = beginReconcileFixture(db, { recoverableEntryId: entryC.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-c" });
     const reconcileC = await runReconcile({
       db,
       client: reconcileClientReturning([
@@ -311,7 +317,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
         candidateEntry("clockify-c2", "soak-C-double-candidate"),
       ]),
       entryId: entryC.id, workspaceId: WORKSPACE_ID, userId: OWNER_ID, plannedRequest: plannedC,
-      baseline: [], expectedAttemptId: "tok-c", recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
+      baseline: [], expectedAttemptId: "tok-c", reconcileRunId: runC, recreatedBy: OWNER_ID, now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileC).toEqual({ kind: "many", candidateIds: ["clockify-c1", "clockify-c2"] });
     expect(entries.getById(db, WORKSPACE_ID, entryC.id)?.lifecycleState).toBe("AMBIGUOUS");
@@ -326,7 +332,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       [entryD, "tok-d", "plan-d"],
       [entryE, "tok-e", "plan-e"],
     ] as const) {
-      plans.createActive(db, { id: planId, recoverableEntryId: entry.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: sharedPlanned, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
+      plans.createActive(db, { id: planId, recoverableEntryId: entry.id, createdBy: OWNER_ID, createdAt: "2026-08-08T09:00:30Z", sourceHash: "h", choices: {}, resolution: [], plannedRequest: sharedPlanned, presentation: { project: null, task: null, tags: [], customFields: [], editable: [] }, warnings: [], blockers: [], actionRequired: [], fidelity: "FULL" });
       entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token, now: new Date("2026-08-08T09:01:00Z") });
       entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token });
       insertAttemptFixture(db, { id: token, planId, recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
@@ -433,6 +439,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       sourceHash: "hash",
       choices: {},
       resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: planned,
       warnings: [{
         ruleId: "P-BILL",
@@ -443,13 +450,13 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       actionRequired: [],
       fidelity: "FULL",
     });
-    entries.claim(server.db, {
+    expect(entries.claimForActivePlan(server.db, {
       id: entry.id,
       workspaceId: WORKSPACE_ID,
+      planId: "plan-billable-override",
       claimToken: "attempt-billable-override",
       now: new Date("2026-08-08T09:01:00Z"),
-    });
-    plans.consumeActive(server.db, "plan-billable-override");
+    }).kind).toBe("claimed");
     insertAttemptFixture(server.db, {
       id: "attempt-billable-override",
       planId: "plan-billable-override",
@@ -540,7 +547,154 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     });
     expect(marked.status).toBe(200);
     expect((marked.body as { entry: { lifecycleState: string } }).entry.lifecycleState).toBe("IDLE");
+    expect(attempts.getById(server.db, "attempt-mark-eligible")).toMatchObject({
+      baseline: null,
+      reconcile: null,
+    });
     expect(clockifyReads).toBe(0);
+  });
+
+  it("rejects three rapid zero-match checks that do not span ten minutes", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-rapid-checks",
+      attemptId: "attempt-rapid-checks",
+      planId: "plan-rapid-checks",
+      description: "rapid-checks",
+    });
+    const now = new Date();
+    attempts.updateReconcile(server.db, "attempt-rapid-checks", {
+      firstEligibleCheckAt: new Date(now.getTime() - 2 * 60 * 1000).toISOString(),
+      checkedAt: now.toISOString(),
+      checks: 3,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+
+    const result = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    expect(result.status).toBe(409);
+    expect(entries.getById(server.db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+  });
+
+  it("accepts complete zero-match checks at t0, t5, and t10", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-spanning-checks",
+      attemptId: "attempt-spanning-checks",
+      planId: "plan-spanning-checks",
+      description: "spanning-checks",
+    });
+    const latest = new Date();
+    attempts.updateReconcile(server.db, "attempt-spanning-checks", {
+      firstEligibleCheckAt: new Date(latest.getTime() - 10 * 60 * 1000).toISOString(),
+      checkedAt: latest.toISOString(),
+      checks: 3,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+
+    const result = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/mark-not-created",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId: entry.id },
+    });
+    expect(result.status).toBe(200);
+    expect(entries.getById(server.db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("IDLE");
+  });
+
+  it("fails closed for legacy timing evidence and for a backward clock", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const legacy = seedEligibleAmbiguous(server, {
+      entryId: "re-legacy-checks",
+      attemptId: "attempt-legacy-checks",
+      planId: "plan-legacy-checks",
+      description: "legacy-checks",
+    }).entry;
+    const rollback = seedEligibleAmbiguous(server, {
+      entryId: "re-rollback-checks",
+      attemptId: "attempt-rollback-checks",
+      planId: "plan-rollback-checks",
+      description: "rollback-checks",
+    }).entry;
+    const now = new Date();
+    attempts.updateReconcile(server.db, "attempt-legacy-checks", {
+      checkedAt: now.toISOString(),
+      checks: 99,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+    attempts.updateReconcile(server.db, "attempt-rollback-checks", {
+      firstEligibleCheckAt: now.toISOString(),
+      checkedAt: new Date(now.getTime() - 10 * 60 * 1000).toISOString(),
+      checks: 3,
+      matchCount: 0,
+      candidateIds: [],
+      truncated: false,
+    });
+
+    for (const entry of [legacy, rollback]) {
+      const result = await server.addon.handle({
+        method: "POST",
+        path: "/api/entries/mark-not-created",
+        query: new URLSearchParams(),
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: { entryId: entry.id },
+      });
+      expect(result.status).toBe(409);
+    }
+  });
+
+  it("omits baselines and private timing, but retains known candidates only for the current ambiguity", async () => {
+    const { server, keys } = await boot();
+    const token = await install(server, keys);
+    const { entry } = seedEligibleAmbiguous(server, {
+      entryId: "re-private-wire",
+      attemptId: "attempt-private-wire",
+      planId: "plan-private-wire",
+      description: "private-wire",
+    });
+    attempts.updateReconcile(server.db, "attempt-private-wire", {
+      firstEligibleCheckAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      checkedAt: new Date().toISOString(),
+      checks: 2,
+      matchCount: 0,
+      candidateIds: ["known-positive-candidate"],
+      truncated: true,
+    });
+    server.db.prepare("UPDATE recreation_attempts SET outcome='AMBIGUOUS' WHERE id=?").run("attempt-private-wire");
+
+    const readDetail = () => server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entry.id }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const ambiguous = await readDetail();
+    const ambiguousAttempt = (ambiguous.body as { attempts: Array<Record<string, unknown>> }).attempts[0]!;
+    expect(ambiguousAttempt).not.toHaveProperty("baseline");
+    expect(ambiguousAttempt.reconcile).toMatchObject({ candidateIds: ["known-positive-candidate"], truncated: true });
+    expect(ambiguousAttempt.reconcile).not.toHaveProperty("firstEligibleCheckAt");
+
+    server.db.prepare("UPDATE recoverable_entries SET lifecycle_state='FAILED' WHERE id=?").run(entry.id);
+    const finalized = await readDetail();
+    const finalizedAttempt = (finalized.body as { attempts: Array<Record<string, unknown>> }).attempts[0]!;
+    expect(finalizedAttempt).not.toHaveProperty("baseline");
+    expect(finalizedAttempt.reconcile).not.toHaveProperty("candidateIds");
+    expect(finalizedAttempt.reconcile).not.toHaveProperty("firstEligibleCheckAt");
   });
 
   it("blocks mark-not-created while an automatic reconcile read is in flight", async () => {
@@ -590,13 +744,10 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     expect((reconciled.body as { result: { kind: string } }).result.kind).toBe("none");
     expect(entries.getById(server.db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
 
-    // A completed no-match check can still become eligible after the documented window.
+    // The prior three checks already span the documented window, so this complete no-match read
+    // keeps the action eligible without using the browser clock.
     const summary = attempts.getById(server.db, "attempt-auto-fence")?.reconcile;
     expect(summary?.checks).toBe(4);
-    attempts.updateReconcile(server.db, "attempt-auto-fence", {
-      ...summary!,
-      checkedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
-    });
     const afterWindow = await server.addon.handle({
       method: "POST",
       path: "/api/entries/mark-not-created",
@@ -702,6 +853,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       sourceHash: "h",
       choices: {},
       resolution: [],
+      presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: planned,
       warnings: [],
       blockers: [],
@@ -741,6 +893,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
           sourceHash: "h",
           choices: {},
           resolution: [],
+          presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
           plannedRequest: planned,
           warnings: [],
           blockers: [],

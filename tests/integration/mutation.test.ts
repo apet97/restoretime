@@ -10,6 +10,7 @@ import { openDatabase } from "../../src/store/db.js";
 import * as entries from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import * as plans from "../../src/store/plans.js";
 import { createSqliteInstallationStore, markInstallationBroken } from "../../src/platform/installations.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
@@ -95,6 +96,7 @@ function seedPlan(db: ReturnType<typeof freshDb>, recoverableEntryId: string) {
     sourceHash: "hash",
     choices: {},
     resolution: [],
+    presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
     plannedRequest: PLANNED,
     warnings: [],
     blockers: [],
@@ -145,7 +147,6 @@ describe("IT-13 create succeeds, verification read fails after read-retries", ()
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
     });
 
     expect(result.outcome).toBe("RECREATED");
@@ -156,6 +157,125 @@ describe("IT-13 create succeeds, verification read fails after read-retries", ()
     const row = entries.getById(db, WORKSPACE_ID, entry.id);
     expect(row?.lifecycleState).toBe("RECREATED");
     expect(row?.newEntryId).toBe("new-entry-1");
+    expect(attempts.getById(db, "tok-1")).toMatchObject({
+      outcome: "SUCCESS",
+      baseline: null,
+      reconcile: null,
+    });
+  });
+
+  it("persists definitive SUCCESS with a fallback diff before the verification read completes", async () => {
+    const db = freshDb();
+    const entry = seedEntry(db);
+    seedPlan(db, entry.id);
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "tok-1",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    let signalVerification!: () => void;
+    const verificationStarted = new Promise<void>((resolve) => { signalVerification = resolve; });
+    let releaseVerification!: () => void;
+    const verificationReleased = new Promise<void>((resolve) => { releaseVerification = resolve; });
+    const fetchStub: typeof fetch = async (input, init) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
+      if (method === "POST" && path.endsWith("/time-entries")) return jsonResponse(candidateEntry(), 201);
+      if (method === "GET" && path.includes("/time-entries/new-entry-1")) {
+        signalVerification();
+        await verificationReleased;
+        return jsonResponse(candidateEntry());
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    };
+    const client = createClockifyClient({
+      addonToken: "tok",
+      baseUrl: "https://developer.clockify.me/api/v1",
+      timeoutInSeconds: 30,
+      fetch: fetchStub,
+    });
+
+    const pending = attemptRecreation({
+      db,
+      client,
+      entryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      planId: "plan-1",
+      plannedRequest: PLANNED,
+      claimToken: "tok-1",
+      recreatedBy: USER_ID,
+    });
+    await verificationStarted;
+
+    expect(entries.getById(db, WORKSPACE_ID, entry.id)).toMatchObject({
+      lifecycleState: "RECREATED",
+      newEntryId: "new-entry-1",
+      claimToken: null,
+    });
+    const durableAttempt = attempts.getById(db, "tok-1");
+    expect(durableAttempt).toMatchObject({ outcome: "SUCCESS", newEntryId: "new-entry-1", baseline: null });
+    expect(durableAttempt?.diffs).toContainEqual({
+      field: "_verification",
+      planned: null,
+      actual: "verification read unavailable",
+    });
+
+    releaseVerification();
+    expect((await pending).outcome).toBe("RECREATED");
+  });
+
+  it("renews the claim lease after the baseline and before the create starts", async () => {
+    const db = freshDb();
+    const entry = seedEntry(db);
+    seedPlan(db, entry.id);
+    entries.claim(db, {
+      id: entry.id,
+      workspaceId: WORKSPACE_ID,
+      claimToken: "tok-1",
+      now: new Date("2026-08-08T09:01:00Z"),
+    });
+    let signalCreate!: () => void;
+    const createStarted = new Promise<void>((resolve) => { signalCreate = resolve; });
+    let releaseCreate!: () => void;
+    const createReleased = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    const fetchStub: typeof fetch = async (input, init) => {
+      const path = pathOf(input);
+      const method = methodOf(input, init);
+      if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
+      if (method === "POST" && path.endsWith("/time-entries")) {
+        signalCreate();
+        await createReleased;
+        return jsonResponse({ message: "rejected", code: 501 }, 400);
+      }
+      return jsonResponse({ message: "unstubbed" }, 404);
+    };
+    const client = createClockifyClient({
+      addonToken: "tok",
+      baseUrl: "https://developer.clockify.me/api/v1",
+      timeoutInSeconds: 30,
+      fetch: fetchStub,
+    });
+
+    const pending = attemptRecreation({
+      db,
+      client,
+      entryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      planId: "plan-1",
+      plannedRequest: PLANNED,
+      claimToken: "tok-1",
+      recreatedBy: USER_ID,
+    });
+    await createStarted;
+    const duringCreate = entries.getById(db, WORKSPACE_ID, entry.id);
+    expect(duringCreate).toMatchObject({ lifecycleState: "RECREATING", claimToken: "tok-1" });
+    expect(new Date(duringCreate!.claimExpiresAt!).getTime()).toBeGreaterThan(Date.now() + 50_000);
+    expect(attempts.getById(db, "tok-1")?.baseline).toEqual([]);
+
+    releaseCreate();
+    expect((await pending).outcome).toBe("FAILED");
   });
 });
 
@@ -186,7 +306,6 @@ describe("IT-05 dependency deleted between plan and create", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
     });
 
     expect(result.outcome).toBe("FAILED");
@@ -197,6 +316,11 @@ describe("IT-05 dependency deleted between plan and create", () => {
     const row = entries.getById(db, WORKSPACE_ID, entry.id);
     expect(row?.lifecycleState).toBe("FAILED");
     expect(row?.newEntryId).toBeNull();
+    expect(attempts.getById(db, "tok-1")).toMatchObject({
+      outcome: "FAILED",
+      baseline: null,
+      reconcile: null,
+    });
   });
 });
 
@@ -243,7 +367,6 @@ describe("SDK 5.1 write-outcome classification", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
       onUnexpectedError: (error) => unexpected.push(error),
     });
 
@@ -286,7 +409,6 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
       // The production callback, not a test double: routes.ts wires exactly this.
       onAddonTokenInvalid: () => {
         markedBroken = true;
@@ -361,7 +483,6 @@ describe("IT-04 ambiguous protocol", () => {
       plannedRequest: PLANNED,
       claimToken: "tok-1",
       recreatedBy: USER_ID,
-      now: new Date("2026-08-08T09:02:00Z"),
     });
     expect(result.outcome).toBe("AMBIGUOUS");
     expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
@@ -378,6 +499,11 @@ describe("IT-04 ambiguous protocol", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = createClockifyClient({ addonToken: "tok", baseUrl: "https://developer.clockify.me/api/v1", timeoutInSeconds: 30, fetch: reconcileFetch });
+    const reconcileRunId = beginReconcileFixture(db, {
+      recoverableEntryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      expectedAttemptId: "tok-1",
+    });
 
     const reconcileResult = await runReconcile({
       db,
@@ -388,6 +514,7 @@ describe("IT-04 ambiguous protocol", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "tok-1",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -408,6 +535,7 @@ describe("IT-04 ambiguous protocol", () => {
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
     entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    insertAttemptFixture(db, { id: "tok-1", planId: "plan-1", recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:01Z", baseline: [] });
     entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1" });
 
     const emptyFetch: typeof fetch = async (input) => {
@@ -416,6 +544,11 @@ describe("IT-04 ambiguous protocol", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const client = createClockifyClient({ addonToken: "tok", baseUrl: "https://developer.clockify.me/api/v1", timeoutInSeconds: 30, fetch: emptyFetch });
+    const reconcileRunId = beginReconcileFixture(db, {
+      recoverableEntryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      expectedAttemptId: "tok-1",
+    });
 
     const reconcileResult = await runReconcile({
       db,
@@ -426,6 +559,7 @@ describe("IT-04 ambiguous protocol", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "tok-1",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -442,6 +576,7 @@ describe("IT-04 ambiguous protocol", () => {
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
     entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    insertAttemptFixture(db, { id: "tok-1", planId: "plan-1", recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:01Z", baseline: [] });
     entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1" });
 
     const twoMatchesFetch: typeof fetch = async (input) => {
@@ -452,6 +587,11 @@ describe("IT-04 ambiguous protocol", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const client = createClockifyClient({ addonToken: "tok", baseUrl: "https://developer.clockify.me/api/v1", timeoutInSeconds: 30, fetch: twoMatchesFetch });
+    const reconcileRunId = beginReconcileFixture(db, {
+      recoverableEntryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      expectedAttemptId: "tok-1",
+    });
 
     const reconcileResult = await runReconcile({
       db,
@@ -462,6 +602,7 @@ describe("IT-04 ambiguous protocol", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "tok-1",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
@@ -506,6 +647,7 @@ describe("IT-04 ambiguous protocol", () => {
           sourceHash: "hash",
           choices: {},
           resolution: [],
+          presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
           plannedRequest: PLANNED,
           warnings: [],
           blockers: [],
@@ -540,6 +682,11 @@ describe("IT-04 ambiguous protocol", () => {
       timeoutInSeconds: 30,
       fetch: fetchStub,
     });
+    const reconcileRunId = beginReconcileFixture(db, {
+      recoverableEntryId: entry.id,
+      workspaceId: WORKSPACE_ID,
+      expectedAttemptId: "attempt-a",
+    });
 
     const result = await runReconcile({
       db,
@@ -550,11 +697,12 @@ describe("IT-04 ambiguous protocol", () => {
       plannedRequest: PLANNED,
       baseline: [],
       expectedAttemptId: "attempt-a",
+      reconcileRunId,
       recreatedBy: "viewer-1",
       now: new Date("2026-08-08T09:03:00Z"),
     });
 
-    expect(result).toEqual({ kind: "adopt-conflict" });
+    expect(result).toEqual({ kind: "adopt-conflict", candidateId: "new-entry-1" });
     expect(entries.getById(db, WORKSPACE_ID, entry.id)).toMatchObject({
       lifecycleState: "AMBIGUOUS",
       newEntryId: null,

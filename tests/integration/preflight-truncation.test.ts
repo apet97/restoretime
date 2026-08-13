@@ -17,6 +17,7 @@ import type { PlannedRequest } from "../../src/domain/entry.js";
 import { buildClockifyClient } from "../../src/clockify/client.js";
 import { fetchWorkspaceState, PreflightTruncatedError } from "../../src/clockify/preflight-data.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
+import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 
 const WORKSPACE_ID = "ws-1";
 
@@ -107,7 +108,7 @@ describe("IT-14 page bound reached (preflight)", () => {
     );
     const state = await fetchWorkspaceState(client, WORKSPACE_ID, SOURCE, {});
     expect(state.ownerStatus).toBe("ACTIVE");
-    expect(state.currentTags.get("tag-x")).toEqual({ id: "tag-x", archived: false });
+    expect(state.currentTags.get("tag-x")).toEqual({ id: "tag-x", name: "Tag X", archived: false });
   });
 });
 
@@ -160,11 +161,29 @@ describe("IT-14 page bound reached (reconcile)", () => {
         source: SOURCE,
       });
       db.prepare("UPDATE recoverable_entries SET lifecycle_state='AMBIGUOUS' WHERE id=?").run(entry.id);
+      db.prepare(
+        `INSERT INTO recreation_plans
+           (id, recoverable_entry_id, created_by, created_at, source_hash, choices_json,
+            resolution_json, planned_request_json, presentation_json, warnings_json, blockers_json,
+            action_required_json, fidelity, status)
+         VALUES ('plan-bound', ?, 'user-1', '2026-08-08T10:00:00Z', 'hash', '{}', '[]', '{}',
+                 '{}', '[]', '[]', '[]', 'FULL', 'CONSUMED')`,
+      ).run(entry.id);
+      db.prepare(
+        `INSERT INTO recreation_attempts
+           (id, plan_id, recoverable_entry_id, started_at, outcome, baseline_json)
+         VALUES ('attempt-bound', 'plan-bound', ?, '2026-08-08T10:01:00Z', 'AMBIGUOUS', '[]')`,
+      ).run(entry.id);
 
       const client = buildClockifyClient(
         { apiUrl: "https://developer.clockify.me/api", authToken: "tok" },
         { fetch: stubUnboundedUserEntries() },
       );
+      const reconcileRunId = beginReconcileFixture(db, {
+        recoverableEntryId: entry.id,
+        workspaceId: WORKSPACE_ID,
+        expectedAttemptId: "attempt-bound",
+      });
 
       const result = await runReconcile({
         db,
@@ -174,7 +193,8 @@ describe("IT-14 page bound reached (reconcile)", () => {
         userId: "user-1",
         plannedRequest: PLANNED,
         baseline: [],
-        expectedAttemptId: "no-attempt",
+        expectedAttemptId: "attempt-bound",
+        reconcileRunId,
         recreatedBy: "user-1",
         now: new Date("2026-08-08T10:05:00Z"),
       });

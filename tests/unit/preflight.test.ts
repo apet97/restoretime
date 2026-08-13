@@ -42,9 +42,9 @@ function workspace(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     lockTimeEntries: null,
     automaticLockSet: false,
     ownerStatus: "ACTIVE",
-    effectiveProject: { id: "proj-1", archived: false },
-    effectiveTask: { id: "task-1", status: "ACTIVE" },
-    currentTags: new Map([["tag-1", { id: "tag-1", archived: false }]]),
+    effectiveProject: { id: "proj-1", name: "Project One", archived: false },
+    effectiveTask: { id: "task-1", name: "Task One", status: "ACTIVE" },
+    currentTags: new Map([["tag-1", { id: "tag-1", name: "Tag One", archived: false }]]),
     customFields: [],
     ...overrides,
   };
@@ -149,7 +149,7 @@ describe("UT-P02 P-PROJ-GONE", () => {
 
 describe("UT-P03 P-PROJ-ARCH", () => {
   it("effective project archived -> warning ARCHIVED_PROJECT, never a blocker", () => {
-    const result = preflight({ workspace: workspace({ effectiveProject: { id: "proj-1", archived: true } }) });
+    const result = preflight({ workspace: workspace({ effectiveProject: { id: "proj-1", name: "Project One", archived: true } }) });
     expect(result.warnings.some((w) => w.code === "ARCHIVED_PROJECT")).toBe(true);
     expect(result.blockers).toHaveLength(0);
   });
@@ -162,17 +162,44 @@ describe("UT-P04 P-TASK-GONE / P-TASK-CTX", () => {
   });
 
   it("task status !== ACTIVE -> ACTION_REQUIRED", () => {
-    const result = preflight({ workspace: workspace({ effectiveTask: { id: "task-1", status: "DONE" } }) });
+    const result = preflight({ workspace: workspace({ effectiveTask: { id: "task-1", name: "Task One", status: "DONE" } }) });
     expect(ruleIds(result.actionRequired)).toContain("P-TASK-GONE");
   });
 
-  it("project substituted while a source task is set -> the source task cannot follow (treated as P-TASK-CTX/dropped, no ACTION_REQUIRED forced when the new project has no matching task selection)", () => {
+  it("project substituted while a source task is set requires an explicit task choice", () => {
     const result = preflight({
       choices: { projectId: "proj-2" },
-      workspace: workspace({ effectiveProject: { id: "proj-2", archived: false }, effectiveTask: undefined }),
+      workspace: workspace({ effectiveProject: { id: "proj-2", name: "Project Two", archived: false }, effectiveTask: undefined }),
     });
     expect(result.plannedRequest.taskId).toBeUndefined();
-    expect(result.fidelity).toBe("ADJUSTED");
+    expect(ruleIds(result.actionRequired)).toContain("P-TASK-GONE");
+    expect(result.actionRequired.find((item) => item.ruleId === "P-TASK-GONE")?.options).toEqual(["replace", "remove"]);
+  });
+
+  it("a forced-task workspace does not offer removal after the project changes", () => {
+    const result = preflight({
+      choices: { projectId: "proj-2" },
+      workspace: workspace({
+        forceTasks: true,
+        effectiveProject: { id: "proj-2", name: "Project Two", archived: false },
+        effectiveTask: undefined,
+      }),
+    });
+    expect(result.actionRequired.find((item) => item.ruleId === "P-TASK-GONE")?.options).toBeUndefined();
+  });
+
+  it("an explicit replacement task on the replacement project succeeds", () => {
+    const result = preflight({
+      choices: { projectId: "proj-2", taskId: "task-2" },
+      workspace: workspace({
+        forceTasks: true,
+        effectiveProject: { id: "proj-2", name: "Project Two", archived: false },
+        effectiveTask: { id: "task-2", name: "Task Two", status: "ACTIVE" },
+      }),
+    });
+    expect(ruleIds(result.actionRequired)).not.toContain("P-TASK-GONE");
+    expect(result.plannedRequest).toMatchObject({ projectId: "proj-2", taskId: "task-2" });
+    expect(result.presentation.task).toEqual({ id: "task-2", name: "Task Two", outcome: "substituted" });
   });
 });
 
@@ -201,7 +228,7 @@ describe("UT-P05 P-TAG-GONE / P-TAG-REQ", () => {
   it("all tags dropped, forceTags on, addTagIds provided -> no P-TAG-REQ", () => {
     const result = preflight({
       choices: { dropTagIds: ["tag-1"], addTagIds: ["tag-2"] },
-      workspace: workspace({ forceTags: true, currentTags: new Map([["tag-2", { id: "tag-2", archived: false }]]) }),
+      workspace: workspace({ forceTags: true, currentTags: new Map([["tag-2", { id: "tag-2", name: "Tag Two", archived: false }]]) }),
     });
     expect(ruleIds(result.actionRequired)).not.toContain("P-TAG-REQ");
     expect(result.plannedRequest.tagIds).toEqual(["tag-2"]);
@@ -221,7 +248,7 @@ describe("UT-P05 P-TAG-GONE / P-TAG-REQ", () => {
     const result = preflight({
       source: source({ tags: [] }),
       choices: { addTagIds: ["tag-archived"] },
-      workspace: workspace({ currentTags: new Map([["tag-archived", { id: "tag-archived", archived: true }]]) }),
+      workspace: workspace({ currentTags: new Map([["tag-archived", { id: "tag-archived", name: "Old Tag", archived: true }]]) }),
     });
     expect(ruleIds(result.actionRequired)).toContain("P-TAG-ARCH");
     expect(result.plannedRequest.tagIds).toBeUndefined();
@@ -230,7 +257,7 @@ describe("UT-P05 P-TAG-GONE / P-TAG-REQ", () => {
 
 describe("UT-P06 P-TAG-ARCH", () => {
   it("an archived tag -> ACTION_REQUIRED, not a warning", () => {
-    const result = preflight({ workspace: workspace({ currentTags: new Map([["tag-1", { id: "tag-1", archived: true }]]) }) });
+    const result = preflight({ workspace: workspace({ currentTags: new Map([["tag-1", { id: "tag-1", name: "Tag One", archived: true }]]) }) });
     expect(ruleIds(result.actionRequired)).toContain("P-TAG-ARCH");
     expect(result.warnings.some((w) => w.ruleId === "P-TAG-ARCH")).toBe(false);
   });
@@ -278,6 +305,7 @@ describe("UT-P09 P-DESC", () => {
     const result = preflight({ workspace: workspace({ forceDescription: true }) });
     expect(ruleIds(result.actionRequired)).not.toContain("P-DESC");
   });
+
 });
 
 describe("UT-P10 P-BILL", () => {
@@ -349,7 +377,11 @@ describe("UT-P12 P-CF-GONE", () => {
       source: source({ customFieldValues: [{ customFieldId: "cf-1", name: "Field", value: "x" }] }),
       workspace: workspace({ customFields: [] }),
     });
-    expect(result.warnings.some((w) => w.code === "CF_FIELD_GONE")).toBe(true);
+    const warning = result.warnings.find((w) => w.code === "CF_FIELD_GONE");
+    expect(warning?.message).toContain('"Field"');
+    expect(warning?.message).not.toContain('"x"');
+    expect(warning?.message).not.toContain("cf-1");
+    expect(warning?.refId).toBe("cf-1");
     expect(result.plannedRequest.customFields).toBeUndefined();
     expect(result.fidelity).toBe("PARTIAL");
   });
@@ -361,7 +393,10 @@ describe("UT-P12 P-CF-GONE", () => {
         customFields: [{ id: "cf-1", name: "Field cf-1", active: false, required: false, type: "TXT", allowedValues: null, defaultValue: null }],
       }),
     });
-    expect(result.warnings.some((w) => w.code === "CF_FIELD_GONE")).toBe(true);
+    const warning = result.warnings.find((w) => w.code === "CF_FIELD_GONE");
+    expect(warning?.message).toContain('"Field cf-1"');
+    expect(warning?.message).not.toContain('"x"');
+    expect(warning?.refId).toBe("cf-1");
     expect(result.fidelity).toBe("PARTIAL");
   });
 });
@@ -608,6 +643,9 @@ describe("UT-P16 P-CF-KEEP / P-CF-WRITE / P-CF-OPT / P-CF-REQ", () => {
       }),
     });
     expect(result.plannedRequest.customFields).toBeUndefined();
+    const warning = result.warnings.find((item) => item.code === "CF_VALUE_DROPPED");
+    expect(warning?.message).not.toContain('"STALE_OPTION"');
+    expect(warning?.refId).toBe("cf-1");
     expect(result.fidelity).toBe("PARTIAL");
   });
 
@@ -713,7 +751,7 @@ describe("fidelity of explicit removals (docs/07 §10)", () => {
     const result = preflight({
       source: source({ projectId: "proj-1", taskId: "task-1" }),
       choices: { taskId: null },
-      workspace: workspace({ effectiveProject: { id: "proj-1", archived: false } }),
+      workspace: workspace({ effectiveProject: { id: "proj-1", name: "Project One", archived: false } }),
     });
     expect(result.blockers).toEqual([]);
     expect(result.fidelity).toBe("ADJUSTED");
@@ -722,7 +760,7 @@ describe("fidelity of explicit removals (docs/07 §10)", () => {
   it("a plan with no substitutions and no drops stays FULL", () => {
     const result = preflight({
       source: source({ projectId: "proj-1" }),
-      workspace: workspace({ effectiveProject: { id: "proj-1", archived: false } }),
+      workspace: workspace({ effectiveProject: { id: "proj-1", name: "Project One", archived: false } }),
     });
     expect(result.fidelity).toBe("FULL");
   });

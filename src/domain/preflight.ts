@@ -7,6 +7,9 @@ import type {
   DeletedTimeEntry,
   Fidelity,
   PlanBlocker,
+  PlanPresentation,
+  PlanPresentationCustomField,
+  PlanPresentationReference,
   PlannedRequest,
   PlanResolution,
   PlanWarning,
@@ -47,11 +50,13 @@ function isNumericValue(value: unknown): boolean {
 
 export interface LookupResult {
   readonly id: string;
+  readonly name: string;
   readonly archived: boolean;
 }
 
 export interface TaskLookupResult {
   readonly id: string;
+  readonly name: string;
   readonly status: "ACTIVE" | "DONE" | "ALL";
 }
 
@@ -98,6 +103,7 @@ export interface PreflightResult {
   readonly blockers: PlanBlocker[];
   readonly actionRequired: ActionRequiredItem[];
   readonly plannedRequest: PlannedRequest;
+  readonly presentation: PlanPresentation;
   readonly fidelity: Fidelity;
 }
 
@@ -159,6 +165,10 @@ export function runPreflight(input: PreflightInput): PreflightResult {
   const warnings: PlanWarning[] = [];
   const blockers: PlanBlocker[] = [];
   const actionRequired: ActionRequiredItem[] = [];
+  let presentationProject: PlanPresentationReference | null = null;
+  let presentationTask: PlanPresentationReference | null = null;
+  const presentationTags: PlanPresentationReference[] = [];
+  const presentationCustomFields: PlanPresentationCustomField[] = [];
   let hasAdjustment = false;
   let hasPartialLoss = false;
 
@@ -244,10 +254,24 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     // docs/07 §10: ADJUSTED covers an explicit "drop … that changes values". Removing a project
     // the source had changes the new entry, so the plan must not be labelled FULL.
     if (projectDropped) hasAdjustment = true;
+    if (source.projectId !== null) {
+      presentationProject = {
+        id: source.projectId,
+        name: source.projectName ?? "Unavailable project",
+        outcome: "dropped",
+      };
+    }
     if (workspace.forceProjects && modeResolved && mode === "completed") {
       actionRequired.push({ ruleId: "P-PROJ-REQ", message: "Select a project." });
     }
   } else if (workspace.effectiveProject === null || workspace.effectiveProject === undefined) {
+    presentationProject = {
+      id: effectiveProjectId,
+      name: effectiveProjectId === source.projectId
+        ? (source.projectName ?? "Unavailable project")
+        : "Unavailable project",
+      outcome: "missing",
+    };
     actionRequired.push({
       ruleId: "P-PROJ-GONE",
       message: workspace.forceProjects
@@ -262,13 +286,37 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       outcome: projectChoiceProvided ? "substituted" : "kept",
     });
     if (projectChoiceProvided) hasAdjustment = true;
+    presentationProject = {
+      id: effectiveProjectId,
+      name: workspace.effectiveProject.name,
+      outcome: projectChoiceProvided ? "substituted" : "kept",
+    };
     if (workspace.effectiveProject.archived) {
       warnings.push({ ruleId: "P-PROJ-ARCH", code: "ARCHIVED_PROJECT", message: "The project is archived. Clockify still allows recreation." });
     }
   }
 
   // --- Task ---
-  if (taskChoiceProvided && choices.taskId === null && workspace.forceTasks) {
+  if (projectSubstituted && source.taskId !== null && !taskChoiceProvided) {
+    actionRequired.push({
+      ruleId: "P-TASK-GONE",
+      message: workspace.forceTasks
+        ? "The original task cannot follow the replacement project. Select a replacement task."
+        : "The original task cannot follow the replacement project. Select a replacement task, or remove the task.",
+      ...(workspace.forceTasks ? {} : { options: ["replace", "remove"] as const }),
+    });
+    presentationTask = {
+      id: source.taskId,
+      name: source.taskName ?? "Unavailable task",
+      outcome: "missing",
+    };
+  } else if (
+    source.taskId !== null &&
+    taskChoiceProvided &&
+    choices.taskId === null &&
+    workspace.forceTasks &&
+    effectiveProjectId !== null
+  ) {
     actionRequired.push({ ruleId: "P-TASK-GONE", message: "This workspace requires a task. Select a replacement task." });
   } else if (effectiveTaskId === null || effectiveTaskId === undefined) {
     const droppedByProjectChange = projectSubstituted && !taskChoiceProvided && source.taskId !== null;
@@ -280,11 +328,23 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       ...(droppedByProjectChange ? { detail: "project changed" } : {}),
     });
     if (droppedByProjectChange || droppedByChoice) hasAdjustment = true;
+    if (source.taskId !== null) {
+      presentationTask = {
+        id: source.taskId,
+        name: source.taskName ?? "Unavailable task",
+        outcome: "dropped",
+      };
+    }
   } else if (
     workspace.effectiveTask === null ||
     workspace.effectiveTask === undefined ||
     workspace.effectiveTask.status !== "ACTIVE"
   ) {
+    presentationTask = {
+      id: effectiveTaskId,
+      name: effectiveTaskId === source.taskId ? (source.taskName ?? "Unavailable task") : "Unavailable task",
+      outcome: "missing",
+    };
     actionRequired.push({
       ruleId: "P-TASK-GONE",
       message: workspace.forceTasks
@@ -299,6 +359,11 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       outcome: taskChoiceProvided ? "substituted" : "kept",
     });
     if (taskChoiceProvided) hasAdjustment = true;
+    presentationTask = {
+      id: effectiveTaskId,
+      name: workspace.effectiveTask.name,
+      outcome: taskChoiceProvided ? "substituted" : "kept",
+    };
   }
 
   // --- Tags ---
@@ -313,6 +378,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
   for (const tag of source.tags) {
     if (dropTagIds.has(tag.id)) {
       resolution.push({ kind: "tag", refId: tag.id, outcome: "dropped" });
+      presentationTags.push({ id: tag.id, name: tag.name, outcome: "dropped" });
       appliedTagDrops += 1;
       continue;
     }
@@ -326,6 +392,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         options: ["remove"],
         refId: tag.id,
       });
+      presentationTags.push({ id: tag.id, name: tag.name, outcome: "missing" });
     } else if (current.archived) {
       unresolvedTagIssues += 1;
       unresolvedTagIds.add(tag.id);
@@ -335,9 +402,11 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         options: ["remove"],
         refId: tag.id,
       });
+      presentationTags.push({ id: tag.id, name: current.name, outcome: "missing" });
     } else {
       keptTagIds.push(tag.id);
       resolution.push({ kind: "tag", refId: tag.id, outcome: "kept" });
+      presentationTags.push({ id: tag.id, name: current.name, outcome: "kept" });
     }
   }
 
@@ -359,6 +428,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       continue;
     }
     validAddTagIds.push(id);
+    presentationTags.push({ id, name: current.name, outcome: "substituted" });
   }
 
   const effectiveTagIds = [...new Set([...keptTagIds, ...validAddTagIds])];
@@ -394,8 +464,9 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     if (!field.active) {
       if (hasUsableValue(sourceValue)) {
-        warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${field.name}" no longer exists. Its value is not sent.` });
+        warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${field.name}" no longer exists. Its value is not sent.`, refId: field.id });
         resolution.push({ kind: "customField", refId: field.id, outcome: "dropped", detail: "field inactive" });
+        presentationCustomFields.push({ id: field.id, name: field.name, outcome: "dropped" });
         hasPartialLoss = true;
       }
       continue;
@@ -407,7 +478,8 @@ export function runPreflight(input: PreflightInput): PreflightResult {
         continue;
       }
       resolution.push({ kind: "customField", refId: field.id, outcome: "dropped" });
-      warnings.push({ ruleId: "P-CF-OPT", code: "CF_VALUE_DROPPED", message: `The value for "${field.name}" was dropped.` });
+      warnings.push({ ruleId: "P-CF-OPT", code: "CF_VALUE_DROPPED", message: `The value for "${field.name}" is not sent.`, refId: field.id });
+      presentationCustomFields.push({ id: field.id, name: field.name, outcome: "dropped" });
       hasPartialLoss = true;
       continue;
     }
@@ -432,6 +504,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
 
     if (!hasUsableValue(effectiveValue)) {
       resolution.push({ kind: "customField", refId: field.id, outcome: "kept" });
+      presentationCustomFields.push({ id: field.id, name: field.name, outcome: "kept" });
       continue;
     }
 
@@ -471,7 +544,7 @@ export function runPreflight(input: PreflightInput): PreflightResult {
       continue;
     }
     if (isDropdown(field) && field.allowedValues !== null && fromUserInput && !allOptionsAllowed(effectiveValue, field.allowedValues)) {
-      warnings.push({ ruleId: "P-CF-OPT", code: "CF_OPTION_STALE", message: `The value for "${field.name}" is not a current option. Clockify still accepts it.` });
+      warnings.push({ ruleId: "P-CF-OPT", code: "CF_OPTION_STALE", message: `The value for "${field.name}" is not a current option. Clockify still accepts it.`, refId: field.id });
     }
     // P-CF-WRITE requires the value to be valid for the field type (docs/07 §3). A NUMBER field
     // holding a non-numeric value would be rejected at create; resolve it at preflight instead.
@@ -495,11 +568,22 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     if (looselyEqual(effectiveValue, field.defaultValue)) {
       // P-CF-KEEP: equals the current default -> nothing sent, auto-attaches.
       resolution.push({ kind: "customField", refId: field.id, outcome: "kept" });
+      presentationCustomFields.push({
+        id: field.id,
+        name: field.name,
+        outcome: "kept",
+        ...(!looselyEqual(effectiveValue, sourceValue) ? { plannedValue: effectiveValue } : {}),
+      });
     } else {
       // P-CF-WRITE
       const changesSourceValue = fromUserInput && !looselyEqual(effectiveValue, sourceValue);
       plannedCustomFields.push({ customFieldId: field.id, sourceType: "WORKSPACE", value: effectiveValue });
       resolution.push({ kind: "customField", refId: field.id, outcome: changesSourceValue ? "substituted" : "kept" });
+      presentationCustomFields.push({
+        id: field.id,
+        name: field.name,
+        outcome: changesSourceValue ? "substituted" : "kept",
+      });
       // The P-CF-OPT "keep the original value" choice re-sends exactly the source value, so it
       // preserves and does not adjust (docs/07 §10 + P-CF-OPT's own "value preserved").
       if (changesSourceValue) hasAdjustment = true;
@@ -509,8 +593,10 @@ export function runPreflight(input: PreflightInput): PreflightResult {
   for (const item of source.customFieldValues) {
     if (consideredFieldIds.has(item.customFieldId)) continue;
     if (!hasUsableValue(item.value)) continue;
-    warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${item.customFieldId}" no longer exists. Its value is not sent.` });
+    const fieldName = item.name.trim() || "Unnamed custom field";
+    warnings.push({ ruleId: "P-CF-GONE", code: "CF_FIELD_GONE", message: `The custom field "${fieldName}" no longer exists. Its value is not sent.`, refId: item.customFieldId });
     resolution.push({ kind: "customField", refId: item.customFieldId, outcome: "dropped", detail: "field missing" });
+    presentationCustomFields.push({ id: item.customFieldId, name: fieldName, outcome: "dropped" });
     hasPartialLoss = true;
   }
 
@@ -562,6 +648,13 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     ...(effectiveTagIds.length > 0 ? { tagIds: effectiveTagIds } : {}),
     ...(plannedCustomFields.length > 0 ? { customFields: plannedCustomFields } : {}),
   };
+  const presentation: PlanPresentation = {
+    project: presentationProject,
+    task: presentationTask,
+    tags: presentationTags,
+    customFields: presentationCustomFields,
+    editable: actionRequired,
+  };
 
   const fidelity = classifyFidelity({
     hasBlockers: blockers.length > 0,
@@ -569,5 +662,5 @@ export function runPreflight(input: PreflightInput): PreflightResult {
     hasAdjustment,
   });
 
-  return { resolution, warnings, blockers, actionRequired, plannedRequest, fidelity };
+  return { resolution, warnings, blockers, actionRequired, plannedRequest, presentation, fidelity };
 }

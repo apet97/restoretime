@@ -5,6 +5,7 @@ import type {
   ActionRequiredItem,
   DeletedTimeEntry,
   PlanBlocker,
+  PlanPresentation,
   PlannedRequest,
   PlanResolution,
   PlanWarning,
@@ -27,6 +28,7 @@ export function isPlanUsable(plan: RecreationPlan, currentSourceHash: string): b
 export interface PreflightOutcomeShape {
   readonly plannedRequest: PlannedRequest;
   readonly resolution: readonly PlanResolution[];
+  readonly presentation: PlanPresentation;
   readonly warnings: readonly PlanWarning[];
   readonly blockers: readonly PlanBlocker[];
   readonly actionRequired: readonly ActionRequiredItem[];
@@ -35,9 +37,12 @@ export interface PreflightOutcomeShape {
 /** Revalidation (docs/07 §7 step 3): true when a fresh preflight outcome differs from the plan's
  * captured outcome in any field the mutable re-fetch could have changed (UT-S02). */
 export function outcomesDiffer(a: PreflightOutcomeShape, b: PreflightOutcomeShape): boolean {
+  const { editable: _aEditable, ...aPresentation } = a.presentation;
+  const { editable: _bEditable, ...bPresentation } = b.presentation;
   return (
     JSON.stringify(a.plannedRequest) !== JSON.stringify(b.plannedRequest) ||
     JSON.stringify(a.resolution) !== JSON.stringify(b.resolution) ||
+    JSON.stringify(aPresentation) !== JSON.stringify(bPresentation) ||
     JSON.stringify(a.warnings) !== JSON.stringify(b.warnings) ||
     JSON.stringify(a.blockers) !== JSON.stringify(b.blockers) ||
     JSON.stringify(a.actionRequired) !== JSON.stringify(b.actionRequired)

@@ -20,7 +20,6 @@ import {
 } from "@apet97/clockify-addon-sdk/testing";
 import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
-import * as plans from "../../src/store/plans.js";
 import * as entries from "../../src/store/entries.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
 
@@ -192,7 +191,7 @@ describe("N8 error-message sweep", () => {
     expect(answersWhatNext(message)).toBe(true);
   });
 
-  it("plan-consumed: a replay is rejected before revalidation and tells the user to get a current plan", async () => {
+  it("a non-ACTIVE plan is stale before old blockers or Clockify reads are considered", async () => {
     const { server, token, entryId } = await setup();
     const preflight = await server.addon.handle({
       method: "POST",
@@ -203,10 +202,29 @@ describe("N8 error-message sweep", () => {
     });
     const planId = (preflight.body as { plan: { id: string } }).plan.id;
 
-    const first = plans.consumeActive(server.db, planId);
-    expect(first?.status).toBe("CONSUMED");
-    const second = plans.consumeActive(server.db, planId);
-    expect(second).toBeUndefined(); // exactly-once, proven at the layer that actually enforces it
+    const first = entries.claimForActivePlan(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      planId,
+      claimToken: "first-claim",
+      now: new Date("2026-08-08T09:00:00Z"),
+    });
+    expect(first.kind).toBe("claimed");
+    const second = entries.claimForActivePlan(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      planId,
+      claimToken: "second-claim",
+      now: new Date("2026-08-08T09:00:01Z"),
+    });
+    expect(second.kind).toBe("plan-not-active"); // exactly-once at the atomic claim-and-consume boundary
+    server.db.prepare(
+      "UPDATE recreation_plans SET blockers_json=? WHERE id=?",
+    ).run(JSON.stringify([{ ruleId: "old", code: "OLD", message: "old blocker" }]), planId);
+    const fetchSpy = vi.fn(() => {
+      throw new Error("a stale plan must not reach Clockify");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
 
     // A replay cannot revalidate or create with a plan that another request already consumed.
     const res = await server.addon.handle({
@@ -218,9 +236,10 @@ describe("N8 error-message sweep", () => {
     });
     expect(res.status).toBe(409);
     const message = (res.body as { error: string }).error;
-    expect(message).toContain("already used by another attempt");
-    expect(message).toContain("Nothing was created");
+    expect(message).toContain("no longer current");
+    expect(message).toContain("Nothing was sent to Clockify");
     expect(answersWhatNext(message)).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("attempt-error (unknown outcome): explicitly does NOT claim nothing was created, and forbids hand-creating", async () => {

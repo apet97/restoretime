@@ -23,7 +23,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** Stubs every preflight read as empty/minimal, and answers the project lookup with `projectReply`. */
-function stubFetch(projectReply: () => Response): typeof fetch {
+function stubFetch(projectReply: () => Response, onTaskList?: () => void): typeof fetch {
   return async (input) => {
     const url = new URL(
       typeof input === "string"
@@ -34,6 +34,7 @@ function stubFetch(projectReply: () => Response): typeof fetch {
     );
     const path = url.pathname;
     if (path.includes("/projects/")) return projectReply();
+    if (path.endsWith("/tasks")) onTaskList?.();
     if (/\/workspaces\/[^/]+$/.test(path)) {
       return jsonResponse({ id: WORKSPACE_ID, workspaceSettings: {} });
     }
@@ -65,10 +66,10 @@ const SOURCE: DeletedTimeEntry = {
   customFieldValues: [],
 };
 
-function client(projectReply: () => Response) {
+function client(projectReply: () => Response, onTaskList?: () => void) {
   return buildClockifyClient(
     { apiUrl: "https://developer.clockify.me/api", authToken: "tok" },
-    { fetch: stubFetch(projectReply) },
+    { fetch: stubFetch(projectReply, onTaskList) },
   );
 }
 
@@ -95,6 +96,22 @@ describe("a gone project resolves to P-PROJ-GONE, not a transport failure", () =
     expect(state.effectiveProject).toBeNull();
   });
 
+  it("does not list tasks when the effective project is gone", async () => {
+    let taskListCalls = 0;
+    const state = await fetchWorkspaceState(
+      client(
+        () => jsonResponse({ message: "Not found" }, 404),
+        () => { taskListCalls += 1; },
+      ),
+      WORKSPACE_ID,
+      { ...SOURCE, taskId: "task-deleted", taskName: "Gone Task" },
+      {},
+    );
+    expect(state.effectiveProject).toBeNull();
+    expect(state.effectiveTask).toBeNull();
+    expect(taskListCalls).toBe(0);
+  });
+
   it("reports a project that still exists", async () => {
     const state = await fetchWorkspaceState(
       client(() => jsonResponse({ id: PROJECT_ID, name: "Live Project", archived: false })),
@@ -102,7 +119,7 @@ describe("a gone project resolves to P-PROJ-GONE, not a transport failure", () =
       SOURCE,
       {},
     );
-    expect(state.effectiveProject).toEqual({ id: PROJECT_ID, archived: false });
+    expect(state.effectiveProject).toEqual({ id: PROJECT_ID, name: "Live Project", archived: false });
   });
 
   it("does NOT swallow an unrelated 400 — a body code other than 501 still fails the preflight", async () => {

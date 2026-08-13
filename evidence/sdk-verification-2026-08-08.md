@@ -74,3 +74,9 @@ The planned independent advisor pass (`openclaw agent`, DeepSeek) did not run: t
 OpenAI provider auth failed (`openai isn't accepting your saved login`, 401 on token refresh).
 Re-run when provider auth is restored. The harness code-review agent was not used; all claims
 above were verified directly against source by the architect.
+
+## Addendum — 2026-08-13
+
+The findings above were verified with `@apet97/clockify-addon-sdk@1.2.0` and
+`clockify-sdk-ts-115@2.0.0`. Later version-dependent evidence supersedes a row where the row says
+so. This clarification is an addendum; it does not change the historical findings.

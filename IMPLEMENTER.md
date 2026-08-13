@@ -57,7 +57,8 @@ probes. A bare **`fact N`** citation anywhere in this repo means row `N` of the 
 8. Duplicate prevention lives in database constraints + the atomic claim, never in UI state.
 9. Authorization is server-side, from verified component claims only (ADR-008).
 10. Escape every Clockify-controlled string before rendering. Tokens never leave the server.
-11. Persist the normalized source only; no raw payloads; no sensitive data in logs (ADR-009).
+11. Discard raw webhook payloads after normalization. Persist only the normalized source and the
+    recovery records in docs/08. Do not put sensitive values in logs (ADR-009).
 12. No background workers (ADR-010). No new dependencies beyond `implementation/DEPENDENCIES.md`.
 13. App routes are exact paths. The addon SDK router has no path parameters (fact 2): `/api/*` uses exact paths with `entryId` in the JSON body (POST) or query (GET); identity and workspace scope come from verified claims only.
 14. `CLOCKIFY_PARENT_ORIGIN` (env var) is the Clockify app origin of the environment (production `https://app.clockify.me`, developer `https://developer.clockify.me`); it feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin` (fact 12).
@@ -69,15 +70,18 @@ as evidence and rationale, not as unfinished implementation instructions.
 
 ## Commands
 
+Use the Node 22 version in `.nvmrc`. After you switch Node versions, run `npm ci` before the gates.
+
 ```bash
 npm ci
 npm run typecheck
 npm run lint
 npm run test          # unit + contract + integration (offline)
-npm run test:e2e      # bundled UI product journeys
-npm run build
+npm run test:e2e      # builds once, then runs bundled UI product journeys
 npm run test:dev-smoke # env-gated developer-environment checks; not a release gate
-npm run test:live     # env-gated current-candidate release evidence
+npm run test:live     # diagnostic live run; missing prerequisites are BLOCKED, not release proof
+npm run test:live:trigger # creates the separate LV-02A trigger and prints its source ID
+npm run test:live:release # strict final gate; requires exact candidate receipts and zero skips
 ```
 
 ## Git expectations

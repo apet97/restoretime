@@ -67,7 +67,7 @@ ACTION_REQUIRED round are validated here, never trusted.
 | P-CF-WRITE | field exists and is active; value differs from `field.workspaceDefaultValue`; value valid for the field type (dropdown: in `allowedValues`; NUMBER: numeric) | include `{customFieldId, sourceType:"WORKSPACE", value}` in `plannedRequest.customFields` (R5) |
 | P-CF-OPT | dropdown value not in current `allowedValues`, no choice made | ACTION_REQUIRED with three choices: pick a current option (substitute → ADJUSTED), keep the original value (server accepts any string, R19 → warning `CF_OPTION_STALE`, value preserved), or drop the value (→ warning, PARTIAL) |
 | P-CF-GONE | field absent from the list, or `status === "INACTIVE"` | warning `CF_FIELD_GONE`; the value is not sent; fidelity → PARTIAL |
-| P-CF-REQ | an active field with `required === true` has no usable value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`). A value is mandatory at create (R22). Resolution order before asking: source value → `workspaceDefaultValue` → user input |
+| P-CF-REQ | an active field with `required === true` has no usable value | ACTION_REQUIRED: the user enters a value (`customFieldInputs`). A value is mandatory at create (R22). A usable explicit user input wins. Otherwise, use the source value, then `workspaceDefaultValue` |
 | P-BILL | (`onlyAdminsCanChangeBillableStatus` OR `defaultBillableProjects`) set AND viewer not admin AND source `billable` differs from what the workspace defaults imply | warning `BILLABLE_MAY_CHANGE` — silent override is PROVED (a regular user's `billable:false` was stored as `true`, R12); the post-create diff reports the actual stored value |
 | P-LOCK | viewer is admin/owner | rule does not apply — admins are lock-exempt on route B (R16, PROVED) |
 | P-LOCK-REG | viewer is regular AND any lock setting present (`lockTimeEntries` non-null or `automaticLock` set) AND `source.start` is 24 hours old or older | warning `PERIOD_MAY_BE_LOCKED` — finer lock-range semantics are not verified, so the rule never parses dates and never blocks; entries younger than 24 hours can never be locked (R22) and skip this rule. The rejection mapping is precise: 403 code 1003 → "The entry's date is in a locked period. An admin can recreate this entry, or unlock the period." (R15, R16) |
@@ -187,7 +187,7 @@ Branches:
 30 s), and on explicit "Check now". Bounded: a row whose latest reconcile is older than 10 minutes
 and has had ≥3 checks shows the "not found" choice. When that choice is already allowed, a detail
 view does not run another lazy check because that check would refresh the timestamp and hide the
-choice. Explicit "Check now" still starts a new check. List reads use the same description-filtered
+choice. Explicit "Check now" starts a new check subject to the same 30 s throttle (docs/03 §5). List reads use the same description-filtered
 read as the baseline, collected by `paginatedList(...).collect()` (`pageSize: 200, maxPages: 10`).
 An SDK result with `truncated: true` stays AMBIGUOUS and reports the bound.
 

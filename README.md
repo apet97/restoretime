@@ -38,8 +38,10 @@ can recreate entries for other users.
 
 This repository contains the implemented add-on, its tests, its evidence, and its operating docs.
 Run the local gates in `IMPLEMENTER.md` before you change the product. The Marketplace text package
-is prepared in `implementation/marketplace/`. Production deployment and current live proof remain
-separate release work.
+is prepared in `implementation/marketplace/`. Live run 16 in `evidence/live-release-run.md` is
+historical proof for `v1.0.0-rc.10`. It is not proof for later worktree changes. The strict live
+gate in `docs/13-testing.md` requires new receipts for the exact release candidate. Production
+`app.clockify.me` proof and Marketplace release inputs remain separate release work.
 
 ## Documentation map
 

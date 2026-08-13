@@ -4,10 +4,10 @@
 - Context: Delivery is at-least-once; `idempotency-key` changes per attempt (W10). The addon SDK
   ships a generic idempotency lease store. The ingestion effect is exactly one write: create the
   recoverable row.
-- Decision: Dedup is `INSERT OR IGNORE` into `recoverable_entries` keyed
-  `UNIQUE(workspace_id, source_entry_id)`. The dedup decision and the effect are the same
-  statement, so a crash can never acknowledge work that was not persisted. No inbox table, no lease
-  store, no event log.
+- Decision: Ingestion runs one database transaction. It uses `INSERT OR IGNORE` on
+  `recoverable_entries`, keyed by `UNIQUE(workspace_id, source_entry_id)`. When the deleted entry is
+  itself a prior recreation, the same transaction can also attach the lineage parent. The dedup
+  decision and all ingestion effects commit together. No inbox table, lease store, or event log.
 - Consequences: The SDK lease store is deliberately unused (recorded in docs/04). Dismissal must
   keep a DISMISSED row, because a genuine duplicate can arrive after a 2xx (W10) and must not
   resurrect the entry.

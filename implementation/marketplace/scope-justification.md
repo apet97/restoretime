@@ -6,7 +6,7 @@ features).
 
 | Scope | Why it is requested | Where it is used |
 |---|---|---|
-| `TIME_ENTRY_READ` | Reads the deleted entry's current-state dependents at preflight time (does the project/task/tag/custom-field still exist), and verifies a create by reading the new entry back | `src/clockify/preflight-data.ts` (`fetchEntryWorkspaceState`), `src/clockify/recreate.ts` (`timeEntries.get`, `listForUser` baseline/reconcile reads) |
+| `TIME_ENTRY_READ` | Reads the new entry after creation and lists the source owner's entries before a create and during ambiguity reconciliation. Project, task, tag, and custom-field checks use their own read scopes. | `src/clockify/recreate.ts` (`timeEntries.get`, `listForUser` baseline and reconcile reads) |
 | `TIME_ENTRY_WRITE` | The one mutation the product performs: creating the new (recreated) time entry | `src/clockify/recreate.ts` `executeCreate` → `timeEntries.createForUser` (docs/03 §2, ADR-004: user-scoped create route only — the product never uses the plain, non-user-scoped create route) |
 | `PROJECT_READ` | Preflight must know whether the source project still exists, and whether it is archived (P-PROJ-GONE, P-PROJ-ARCH) | `src/clockify/preflight-data.ts` |
 | `TASK_READ` | Same, for the source task (P-TASK-GONE, P-TASK-CTX) | `src/clockify/preflight-data.ts` |

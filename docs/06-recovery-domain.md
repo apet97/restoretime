@@ -65,7 +65,7 @@ resolution            per-dependency outcome (kept | substituted | dropped | mis
 plannedRequest        exact createForUser body to send
 warnings[]            non-blocking differences (CF defaults, archived project, billable drift…)
 blockers[]            conditions that make recreation impossible now
-fidelity              FULL | ADJUSTED | PARTIAL | IMPOSSIBLE (docs/07 §9)
+fidelity              FULL | ADJUSTED | PARTIAL | IMPOSSIBLE (docs/07 §10)
 status                ACTIVE | STALE | CONSUMED
 ```
 
@@ -83,7 +83,7 @@ current workspace, so persisting them would invite staleness.
 ```text
 IDLE ──claim──► RECREATING ──201+verify──► RECREATED (terminal)
   ▲                │  ├─4xx──► FAILED ──claim(new plan)──► RECREATING
-  │                │  └─5xx/timeout──► AMBIGUOUS ──adopt 1 match──► RECREATED
+  │                │  └─uncertain/unknown result──► AMBIGUOUS ──adopt 1 match──► RECREATED
   │                │                      │  └─user "not created"──► IDLE
   │                ├─expired, no attempt + detail read──► IDLE
   │                ├─expired, no attempt + new claim──► RECREATING (new token)

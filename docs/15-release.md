@@ -34,8 +34,22 @@ RC.11 run as proof for either boundary.
    `git rev-parse HEAD`, and verify that the remote `main` resolves to it. Stop if the commits
    differ.
 3. From a clean checkout of that exact commit, use Node 22 and run the CI gates above. Build the
-   container once. Record its immutable digest. Scan the image and reachable Git history for
-   secrets with the approved release scanner. Do not build a different source tree for Railway.
+   local validation container. Record its immutable digest, platform, pinned base-image index
+   digest, and application-source fingerprint at
+   `/app/.restoretime-source-fingerprint`. Scan the image and reachable Git history for
+   secrets with the approved release scanner. Railway performs a separate build in step 4. Deploy
+   it from the same clean checkout. The source fingerprint checks accidental input drift; it is
+   not a signed build attestation. Record the Railway image digest as the deployed artifact ID.
+   For the local migration and rollback drill, create a temporary version-2 database with
+   migrations `0001` and `0002`, and seed one known row. Verify the seed and require
+   `PRAGMA integrity_check` to return `ok`. Preserve one unchanged backup. Start the candidate on
+   a copy of that database. Require migration to version 3, the seeded row, and
+   `PRAGMA integrity_check` to return `ok`. Stop the candidate. Confirm that no process holds the
+   drill database or volume. Restore a copy of the preserved version-2 backup into that same drill
+   database or volume. Start the recorded prior image by its immutable digest. Require health and
+   the seeded row. Require `PRAGMA user_version` to return `2` and `PRAGMA integrity_check` to
+   return `ok`. Keep the preserved backup unchanged. Delete only the temporary drill containers,
+   database copies, and volumes after all results are recorded.
 4. Create a new Railway project named `restoretime`. In it, create an environment named
    `restoretime` and a service named `restoretime`. This is not the production project. Deploy the
    repository `Dockerfile` from the exact merged commit with `railway up`, and record the resulting
@@ -80,6 +94,8 @@ RC.11 run as proof for either boundary.
    digest against it, and verify `/healthz`, the expected schema version, and one authenticated
    component load. Retain the prior volume as the rollback target. This proves the RC.11 backup
    can be restored; it does not by itself prove that an older image can read a version-3 database.
+   Record the separate local version-2 migration and rollback drill from step 3. A fresh Railway
+   project has no prior remote database to use for that drill.
 9. Only after steps 1–8 pass, create `v1.0.0-rc.11` on the exact merged `main` commit. Publish it as
    a GitHub prerelease. The notes must list the developer-only proof, image digest, backup and
    restore receipt, live-test totals, cleanup result, and the open production and Marketplace

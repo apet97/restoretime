@@ -1,4 +1,4 @@
-# RestoreTime container image (docs/15 "Release pipeline" step 2, docs/05 "Configuration").
+# RestoreTime container image (docs/15 "RC.11 pipeline" step 3, docs/05 "Configuration").
 #
 # Three stages, all on the SAME base image family (node:22-bookworm-slim, glibc) — `better-sqlite3`
 # ships a compiled native binary; mixing glibc and musl (e.g. an alpine runtime) between build and
@@ -10,22 +10,25 @@
 # non-root user before `CMD`.
 
 # ---- builder: full devDependencies, compiles src/ -> dist/ -----------------------------------
-FROM node:22-bookworm-slim AS builder
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
+COPY .dockerignore Dockerfile ./
+COPY scripts/source-fingerprint.mjs ./scripts/source-fingerprint.mjs
 COPY src ./src
+RUN node scripts/source-fingerprint.mjs > /tmp/restoretime-source-fingerprint
 RUN npm run build
 
 # ---- deps: production-only node_modules, including the native better-sqlite3 build -----------
-FROM node:22-bookworm-slim AS deps
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # ---- runtime: non-root, dist + prod node_modules only -----------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -33,6 +36,7 @@ WORKDIR /app
 # defining a new one (AGENTS.md rule 15: no abstraction without a concrete requirement).
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /tmp/restoretime-source-fingerprint ./.restoretime-source-fingerprint
 COPY package.json ./
 
 # docs/05 "Configuration" — the seven environment variables this process reads at boot
@@ -50,7 +54,7 @@ COPY package.json ./
 #                           bake it into the image or a committed file
 #   LOG_LEVEL               debug|info|warn|error (default info)
 
-RUN mkdir -p /data && chown -R node:node /app /data
+RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 
 USER node

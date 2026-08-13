@@ -200,9 +200,21 @@ scripts/live-env.sh https://<exact-railway-origin> npm run test:live:release
   `appConsoleErrorCount: 0`, and `cspErrorCount: 0`. LV-02B adds `sourceEntryId`,
   `railwayWebhookLogCorrelated: true`, and `remoteSqliteRowPresent: true`.
 - The remote process verifies Railway's project, environment, service, and deployment variables.
-  It also verifies `RESTORETIME_CANDIDATE_ID`, a present `RAILWAY_GIT_COMMIT_SHA`, the public
-  origin, `/data` volume path, add-on key, and the exact active workspace/add-on row. It decrypts
-  that row inside the deployed container.
+  It also verifies `RESTORETIME_CANDIDATE_ID`, the public origin, `/data` volume path, add-on key,
+  and the exact active workspace/add-on row. It decrypts that row inside the deployed container.
+  The image contains a deterministic SHA-256 fingerprint of every application source input. The
+  local handoff computes the expected fingerprint from the named candidate Git commit and requires
+  an exact match. It also requires that the local checkout has that commit as `HEAD` and has no
+  tracked or non-ignored untracked change. Under the committed Dockerfile, this check detects
+  accidental source drift between the commit and the Railway upload. It is not a signed build
+  attestation. It does not defend against an operator who changes the Dockerfile or the fingerprint
+  program.
+  The independent Railway image digest identifies the deployed artifact. The Dockerfile pins the
+  Node base-image index digest. Record the selected platform and build provenance separately. A
+  GitHub-triggered deployment must also have a matching
+  `RAILWAY_GIT_COMMIT_SHA`.
+  `railway up` does not provide that Git-only variable, so its source binding uses the required
+  application-source fingerprint.
 - The local process generates a one-use public key. The remote process returns only an
   RSA-OAEP-256 and AES-256-GCM encrypted envelope bound to all target IDs. The local process
   decrypts it in memory and starts the command with `CK_LIVE_ADDON_TOKEN`, `CK_DEV_ADDON_TOKEN`,

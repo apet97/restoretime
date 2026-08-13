@@ -11,6 +11,7 @@ import {
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { releaseCandidateSourceFingerprint } from "./source-fingerprint.mjs";
 
 const OUTPUT_PREFIX = "RESTORETIME_RAILWAY_HANDOFF_V1:";
 const DEVELOPER_API_URL = "https://developer.clockify.me/api";
@@ -70,7 +71,7 @@ async function runChild(command, args, environment) {
   });
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const [command, ...args] = argv;
   if (!command) fail("usage: node scripts/railway-live-handoff.mjs <command> [args...]");
   if (required("CK_LIVE_TARGET") !== "developer") fail("CK_LIVE_TARGET must be developer");
@@ -88,10 +89,10 @@ export async function main(argv = process.argv.slice(2)) {
   const serviceId = required("CK_RAILWAY_SERVICE_ID");
   const deploymentId = required("CK_RAILWAY_DEPLOYMENT_ID");
   const deploymentInstanceId = required("CK_RAILWAY_DEPLOYMENT_INSTANCE_ID");
-  const volumeMountPath =
-    process.env.NODE_ENV === "test" && process.env.RT_TEST_RAILWAY_VOLUME_MOUNT_PATH
-      ? resolve(process.env.RT_TEST_RAILWAY_VOLUME_MOUNT_PATH)
-      : "/data";
+  const volumeMountPath = dependencies.volumeMountPath ? resolve(dependencies.volumeMountPath) : "/data";
+  const repositoryRoot = dependencies.repositoryRoot ?? fileURLToPath(new URL("..", import.meta.url));
+  const bindCandidate = dependencies.bindCandidate ?? releaseCandidateSourceFingerprint;
+  const expectedSourceFingerprint = bindCandidate(candidateId, repositoryRoot);
   const request = {
     schemaVersion: 1,
     handoffId: randomBytes(32).toString("hex"),
@@ -101,6 +102,7 @@ export async function main(argv = process.argv.slice(2)) {
     deploymentId,
     deploymentInstanceId,
     candidateId,
+    sourceFingerprint: expectedSourceFingerprint,
     workspaceId: required("CK_LIVE_WS"),
     addonId: required("CK_LIVE_ADDON_ID"),
     addonKey: required("CK_LIVE_ADDON_KEY"),
@@ -117,6 +119,7 @@ export async function main(argv = process.argv.slice(2)) {
     deploymentId: request.deploymentId,
     deploymentInstanceId: request.deploymentInstanceId,
     candidateId: request.candidateId,
+    sourceFingerprint: request.sourceFingerprint,
     workspaceId: request.workspaceId,
     addonId: request.addonId,
     addonKey: request.addonKey,
@@ -131,10 +134,7 @@ export async function main(argv = process.argv.slice(2)) {
   request.publicKey = publicKey.toString("base64url");
 
   const remoteSource = readFileSync(new URL("./railway-installation-export.mjs", import.meta.url), "utf8");
-  const railwayBin =
-    process.env.NODE_ENV === "test" && process.env.RT_TEST_RAILWAY_BIN
-      ? process.env.RT_TEST_RAILWAY_BIN
-      : "railway";
+  const railwayBin = dependencies.railwayBin ?? "railway";
   const result = spawnSync(
     railwayBin,
     [
@@ -209,8 +209,6 @@ export async function main(argv = process.argv.slice(2)) {
   };
   delete childEnvironment.TOKEN_ENCRYPTION_KEY;
   delete childEnvironment.DATABASE_PATH;
-  delete childEnvironment.RT_TEST_RAILWAY_BIN;
-  delete childEnvironment.RT_TEST_RAILWAY_VOLUME_MOUNT_PATH;
   const childResult = await runChild(command, args, childEnvironment);
   if (childResult.signal) {
     process.kill(process.pid, childResult.signal);

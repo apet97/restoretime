@@ -16,6 +16,7 @@ describe("Docker release source binding", () => {
       "COPY --from=builder /tmp/restoretime-source-fingerprint ./.restoretime-source-fingerprint",
     );
     expect(dockerfile).toContain("RUN mkdir -p /data && chown node:node /data");
+    expect(dockerfile).not.toContain('VOLUME ["/data"]');
     expect(dockerfile).not.toContain("chown -R node:node /app");
     expect(dockerfile).toContain("rm -rf /usr/local/lib/node_modules/npm");
     expect(dockerfile).toContain("/usr/local/lib/node_modules/corepack");

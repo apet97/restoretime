@@ -61,7 +61,6 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
 #   LOG_LEVEL               debug|info|warn|error (default info)
 
 RUN mkdir -p /data && chown node:node /data
-VOLUME ["/data"]
 
 USER node
 EXPOSE 8080

@@ -39,6 +39,12 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /tmp/restoretime-source-fingerprint ./.restoretime-source-fingerprint
 COPY package.json ./
 
+# Package managers are build tools. The running service does not use them. Remove them from the
+# final image so their command-line dependency trees cannot add runtime vulnerabilities.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v1.22.22 \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 # docs/05 "Configuration" — the seven environment variables this process reads at boot
 # (src/config.ts `loadConfig`). None have a baked-in default beyond `PORT` (8080) and `LOG_LEVEL`
 # ("info"); the rest are required and `loadConfig` fails fast with an actionable message if any is

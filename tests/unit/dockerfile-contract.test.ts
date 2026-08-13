@@ -17,6 +17,9 @@ describe("Docker release source binding", () => {
     );
     expect(dockerfile).toContain("RUN mkdir -p /data && chown node:node /data");
     expect(dockerfile).not.toContain("chown -R node:node /app");
+    expect(dockerfile).toContain("rm -rf /usr/local/lib/node_modules/npm");
+    expect(dockerfile).toContain("/usr/local/lib/node_modules/corepack");
+    expect(dockerfile).toContain("/opt/yarn-v1.22.22");
   });
 
   it("rejects test overrides before the live release handoff", () => {

@@ -3,11 +3,11 @@
 // confirms once; each entry is still claimed and executed independently server-side (no
 // cross-entry transaction) — this view only renders whatever per-entry outcome comes back.
 
-import { el, mount } from "../dom.js";
+import { el } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
 import type { Ctx } from "../state.js";
 import { MutationTransportError } from "../api.js";
-import { renderApiError, runAction } from "./shared.js";
+import { bindBusyAction, mountView, renderApiError, renderStatusPill, runAction } from "./shared.js";
 import { fidelityLabel } from "../format.js";
 import { renderFactsTable } from "./detail.js";
 import type { BulkPreflightRow, BulkRecreateRow } from "../types.js";
@@ -32,10 +32,41 @@ const STATUS_LABEL: Record<BulkPreflightRow["status"], string> = {
   error: "Error",
 };
 
-export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): void {
-  const selected = new Set(rows.filter((r) => r.status === "ready" && r.plan).map((r) => r.entryId));
+export function loadBulkReview(ctx: Ctx, previousRows: readonly BulkPreflightRow[]): void {
+  const ids = [...ctx.session.selectedEntryIds];
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Bulk review error" });
+  renderBulkReview(ctx, previousRows, false, errorRegion, true);
+  errorRegion.append(el("p", { role: "status" }, "Refreshing review…"));
+  void runAction(
+    ctx,
+    () => ctx.api.post("/api/entries/bulk-preflight", { ids }) as Promise<{ results: readonly BulkPreflightRow[] }>,
+    (res) => {
+      ctx.session.bulkReviewRows = res.results;
+      renderBulkReview(ctx, res.results);
+    },
+    (err) => {
+      renderBulkReview(ctx, previousRows, false, errorRegion);
+      renderApiError({ region: errorRegion, err, context: "", action: () => loadBulkReview(ctx, previousRows), actionLabel: "Reload review" });
+    },
+  );
+}
+
+export function renderBulkReview(
+  ctx: Ctx,
+  rows: readonly BulkPreflightRow[],
+  refresh = false,
+  suppliedErrorRegion?: HTMLElement,
+  refreshing = false,
+): void {
+  if (refresh) {
+    loadBulkReview(ctx, rows);
+    return;
+  }
+  ctx.session.bulkReviewRows = rows;
+  const selected = ctx.session.selectedEntryIds;
   let busy = false;
   const checkboxes: HTMLInputElement[] = [];
+  const errorRegion = suppliedErrorRegion ?? el("div", { class: "rt-inline-error", "aria-label": "Bulk review error" });
 
   const recreateButton = el("button", { type: "button", class: "rt-primary" }, "");
   const readyPlanIds = () => rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
@@ -45,8 +76,8 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
   const syncRecreateButton = () => {
     const count = readyPlanIds().length;
     recreateButton.textContent = `Recreate ${count} ${count === 1 ? "entry" : "entries"}`;
-    recreateButton.toggleAttribute("disabled", busy || count === 0);
-    for (const checkbox of checkboxes) checkbox.disabled = busy;
+    recreateButton.toggleAttribute("disabled", busy || refreshing || count === 0);
+    for (const checkbox of checkboxes) checkbox.disabled = busy || refreshing;
   };
 
   const listItems = rows.map((row) => {
@@ -57,13 +88,13 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
     const description = row.source?.description ?? "";
     const reason = rowReason(row);
     const line = [
-      el("strong", {}, STATUS_LABEL[row.status]),
+      renderStatusPill(bulkStatusPresentation(row.status)),
       ` — ${label}`,
-      ...(description ? [el("div", {}, description)] : []),
-      ...(reason ? [el("div", {}, reason)] : []),
+      ...(description ? [el("div", { class: "rt-entry-value" }, description)] : []),
+      ...(reason ? [el("div", { class: "rt-entry-value" }, reason)] : []),
     ];
     if (row.status === "ready" && row.plan) {
-      line.push(el("div", {}, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
+      line.push(el("div", { class: "rt-entry-value" }, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
       line.push(el("div", {}, `Fidelity: ${fidelityLabel(row.plan.fidelity)}`));
       if (row.source) line.push(renderFactsTable(row.source, row.plan, ctx.locale));
       if (row.plan.warnings.length > 0) {
@@ -72,7 +103,7 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
       // Named, so a screen reader announces which entry is being toggled rather than "checkbox".
       const identity = `${row.source?.ownerName ?? "Unknown owner"}, ${label}, ${description || "no description"}`;
       const checkbox = el("input", { type: "checkbox", "aria-label": `Recreate ${identity}` });
-      checkbox.checked = true;
+      checkbox.checked = selected.has(row.entryId);
       checkboxes.push(checkbox);
       checkbox.addEventListener("change", () => {
         if (busy) return;
@@ -84,50 +115,55 @@ export function renderBulkReview(ctx: Ctx, rows: readonly BulkPreflightRow[]): v
     }
     if (row.status === "not-found") return el("li", {}, ...line);
     const openButton = el("button", { type: "button" }, "Open");
-    openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.entryId }));
+    openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.entryId, returnTo: "bulk-review" }));
     return el("li", {}, ...line, " ", openButton);
   });
 
   syncRecreateButton();
-  recreateButton.addEventListener("click", () => {
+  bindBusyAction({
+    ctx,
+    button: recreateButton,
+    busyLabel: "Recreating entries…",
+    conflictingControls: () => [backButton, ...checkboxes],
+    action: async () => {
     const snapshot = rows.filter((row) => row.status === "ready" && row.plan && selected.has(row.entryId));
     const planIds = snapshot.map((row) => row.plan!.id);
-    if (planIds.length === 0) return;
+    if (planIds.length === 0) throw new Error("No selected ready entries.");
     busy = true;
     syncRecreateButton();
-    backButton.disabled = true;
-    void runAction(
-      ctx,
-      () => ctx.api.mutate("/api/entries/bulk-recreate", { planIds }),
-      (res) => {
+    const response = await ctx.api.mutate("/api/entries/bulk-recreate", { planIds });
+    return { response, snapshot };
+    },
+    onSuccess: ({ response: res, snapshot }) => {
         if (!hasBulkResults(res)) {
           const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
           ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
           return;
         }
         ctx.navigate({ kind: "bulk-results", rows: res.results, reviewRows: snapshot });
-      },
-      (err) => {
+    },
+    onError: (err) => {
+      const snapshot = rows.filter((row) => row.status === "ready" && row.plan && selected.has(row.entryId));
         if (err instanceof MutationTransportError) {
           const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
           ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
           return;
         }
-        busy = false;
-        renderApiError(ctx.root, err, () => renderBulkReview(ctx, rows));
-      },
-    );
+      busy = false;
+      renderApiError({ region: errorRegion, err, context: "", action: () => loadBulkReview(ctx, rows), actionLabel: "Reload review" });
+    },
   });
 
   const backButton = el("button", { type: "button" }, "Back to deleted entries");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));
 
-  mount(
-    ctx.root,
+  mountView(
+    ctx,
     el("h2", {}, "Review selected entries"),
     el("p", {}, "Entries needing input or individual review are excluded. Open each one to resolve it, then try again."),
+    errorRegion,
     el("ul", {}, ...listItems),
-    el("div", {}, recreateButton, backButton),
+    el("div", { class: "rt-action-group" }, recreateButton, backButton),
   );
 }
 
@@ -138,7 +174,7 @@ function hasBulkResults(value: unknown): value is { readonly results: readonly B
 const OUTCOME_LABEL: Record<string, string> = {
   RECREATED: "Recreated",
   FAILED: "Failed",
-  AMBIGUOUS: "Unknown result",
+  AMBIGUOUS: "Result uncertain",
   ERROR: "Failed",
 };
 
@@ -173,5 +209,24 @@ export function renderBulkResults(ctx: Ctx, rows: readonly BulkRecreateRow[], re
   const backButton = el("button", { type: "button" }, "Back to deleted entries");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));
 
-  mount(ctx.root, el("h2", {}, "Bulk recreation results"), el("ul", {}, ...listItems), backButton);
+  mountView(ctx, el("h2", {}, "Bulk recreation results"), bulkOutcomeSummary(rows), el("ul", {}, ...listItems), backButton);
+}
+
+function bulkOutcomeSummary(rows: readonly BulkRecreateRow[]): HTMLElement {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.outcome, (counts.get(row.outcome) ?? 0) + 1);
+  const parts = [...counts.entries()].map(([outcome, count]) => `${count} ${OUTCOME_LABEL[outcome] ?? outcome}`);
+  return el("p", { role: "status" }, `Summary: ${parts.join(", ") || "No entries were processed"}.`);
+}
+
+function bulkStatusPresentation(status: BulkPreflightRow["status"]): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
+  switch (status) {
+    case "ready": return { label: STATUS_LABEL[status], tone: "success" };
+    case "blocked":
+    case "error": return { label: STATUS_LABEL[status], tone: "danger" };
+    case "needs-input":
+    case "needs-review": return { label: STATUS_LABEL[status], tone: "warning" };
+    case "not-found":
+    case "not-actionable": return { label: STATUS_LABEL[status], tone: "neutral" };
+  }
 }

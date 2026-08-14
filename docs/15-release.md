@@ -28,6 +28,18 @@ RC.11 run as proof for either boundary.
 
 ## RC.11 pipeline (manual, not tag-triggered)
 
+### RC.11 operator amendments
+
+For RC.11 and later verification of this candidate, run the reachable-ref gitleaks scan with
+`--all`, `--redact=100`, and a `300` second timeout. Do not reduce the scan scope, scan ignored
+`.env.live` files, or inspect a finding for a secret value. A finding blocks the release.
+
+Railway platform backup/PITR and an isolated Railway platform restore are **NOT PROVEN — deferred
+infrastructure capability**. Railway requires Pro for this capability. The operator waived these
+three gates only for this RC prerelease: platform backup/PITR, locked Railway backup, and isolated
+Railway platform restore. Do not purchase or enable Pro for this release. This waiver permits the
+RC prerelease. It does not prove production disaster-recovery readiness.
+
 1. Open the PR. Complete the required manual review and all PR CI gates. Do not merge first and
    review later.
 2. Merge the reviewed PR to `main`. Wait for the `main` CI run. Record the exact merged commit with
@@ -107,10 +119,13 @@ RC.11 run as proof for either boundary.
    can be restored; it does not by itself prove that an older image can read a version-3 database.
    Record the separate local version-2 migration and rollback drill from step 3. A fresh Railway
    project has no prior remote database to use for that drill.
-9. Only after steps 1–8 pass, create `v1.0.0-rc.11` on the exact merged `main` commit. Publish it as
-   a GitHub prerelease. The notes must list the developer-only proof, image digest, backup and
-   restore receipt, live-test totals, cleanup result, and the open production and Marketplace
-   gaps.
+   For RC.11, the operator amendment above waives this step as a blocking gate. Record it as
+   `NOT PROVEN — deferred infrastructure capability`. Do not mark it as passed or claim that
+   Railway backup, PITR, or disaster recovery was proved.
+9. Only after steps 1–7 and every non-waived gate pass, create `v1.0.0-rc.11` on the exact merged
+   `main` commit. Publish it as a GitHub prerelease. The notes must list the developer-only proof,
+   image digest, live-test totals, cleanup result, the deferred Railway backup/PITR status, and the
+   open production and Marketplace gaps.
 
 ## Future Marketplace submission prerequisites
 

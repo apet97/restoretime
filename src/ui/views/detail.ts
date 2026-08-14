@@ -3,25 +3,31 @@
 // here comes from the plan the server just computed; nothing is decided client-side (AGENTS.md:
 // "the UI holds no business rules").
 
-import { el, mount } from "../dom.js";
+import { clear, el } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
-import type { ChoiceLabels, Ctx, ResolutionDraft } from "../state.js";
-import { renderApiError, renderBlockers, renderDifferences, renderLineage, runAction, withLoading } from "./shared.js";
+import type { ChoiceLabels, Ctx, ResolutionDraft, ReturnTarget } from "../state.js";
+import { bindBusyAction, mountView, renderApiError, renderBlockers, renderDifferences, renderLineage, renderNotice, runAction, withLoading } from "./shared.js";
 import { renderResult } from "./result.js";
 import { renderResolutionWidgets, toPreflightChoices, type MutableChoices } from "./resolution-widgets.js";
 import type { ActionRequiredItem, DeletedTimeEntry, DetailResponse, PreflightResponse, RecreationPlan } from "../types.js";
 
-export function renderDetail(ctx: Ctx, entryId: string, forceResolve = false, draft?: ResolutionDraft): void {
+export function renderDetail(ctx: Ctx, entryId: string, forceResolve = false, draft?: ResolutionDraft, returnTo: ReturnTarget = "list"): void {
   void withLoading(
     ctx,
     () => ctx.api.get("/api/entries/detail", { id: entryId }) as Promise<DetailResponse>,
-    (data) => routeDetail(ctx, entryId, data, forceResolve, draft),
+    (data) => routeDetail(ctx, entryId, data, forceResolve, draft, returnTo),
     "Loading entry…",
+    "Recheck entry",
   );
 }
 
-function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResolve: boolean, draft?: ResolutionDraft): void {
+function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResolve: boolean, draft: ResolutionDraft | undefined, returnTo: ReturnTarget): void {
   const { entry } = data;
+
+  if (data.disabled || data.broken) {
+    renderReadOnlyDetail(ctx, entry.source, data.plan, data.broken, data.lineage, returnTo);
+    return;
+  }
 
   if (!forceResolve) {
     if (entry.lifecycleState === "RECREATED" && data.plan && entry.newEntryId) {
@@ -36,6 +42,7 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
           diffs: attempt?.diffs ?? [],
         },
         data.lineage,
+        returnTo,
       );
       return;
     }
@@ -52,19 +59,20 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
           message: attempt?.errorMessage ?? "Clockify rejected the request.",
         },
         data.lineage,
+        returnTo,
       );
       return;
     }
     if (entry.lifecycleState === "AMBIGUOUS" && data.plan) {
-      renderResult(ctx, entryId, data.plan, { outcome: "AMBIGUOUS" });
+      renderResult(ctx, entryId, data.plan, { outcome: "AMBIGUOUS" }, data.lineage, returnTo);
       return;
     }
     if (entry.lifecycleState === "RECREATING") {
-      renderRecreating(ctx, entryId, data.lineage);
+      renderRecreating(ctx, entryId, data.lineage, returnTo);
       return;
     }
     if (entry.lifecycleState === "DISMISSED") {
-      renderDismissed(ctx, entryId, data.disabled, data.lineage);
+      renderDismissed(ctx, entryId, data.lineage, returnTo);
       return;
     }
   }
@@ -84,17 +92,55 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
     tags: { ...(draft?.labels.tags ?? {}) },
     customFields: { ...(draft?.labels.customFields ?? {}) },
   };
-  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, actionRequired, labels, data.disabled, data.lineage);
+  const shell = renderInitialDetailShell(ctx, data.entry.source, data.lineage, returnTo);
+  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, actionRequired, labels, false, data.lineage, returnTo, shell);
 }
 
-function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["lineage"]): void {
+function renderReadOnlyDetail(
+  ctx: Ctx,
+  source: DeletedTimeEntry,
+  plan: RecreationPlan | null,
+  broken: boolean,
+  lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+): void {
+  const back = el("button", { type: "button" }, backLabel(returnTo));
+  back.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
+  const notice = broken
+    ? "RestoreTime is no longer connected to this workspace. Ask a workspace admin to reinstall this add-on, then reload RestoreTime."
+    : "RestoreTime is disabled for this workspace.";
+  mountView(
+    ctx,
+    el("h2", {}, "Deleted time entry"),
+    renderDeletedEntryFacts(source, ctx.locale),
+    renderLineage(ctx, lineage),
+    renderNotice(broken ? "danger" : "info", notice),
+    ...(plan ? [renderFactsTable(source, plan, ctx.locale), renderDifferences(plan)] : []),
+    back,
+  );
+}
+
+function backToReturnTarget(ctx: Ctx, returnTo: ReturnTarget): void {
+  if (returnTo === "bulk-review") {
+    const rows = ctx.session.bulkReviewRows ?? [];
+    ctx.navigate({ kind: "bulk-review", rows, refresh: true });
+    return;
+  }
+  ctx.navigate({ kind: "list" });
+}
+
+function backLabel(returnTo: ReturnTarget): string {
+  return returnTo === "bulk-review" ? "Back to review" : "Back to deleted entries";
+}
+
+function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["lineage"], returnTo: ReturnTarget): void {
   const refresh = el("button", { type: "button" }, "Check status");
-  refresh.addEventListener("click", () => renderDetail(ctx, entryId));
-  const back = el("button", { type: "button" }, "Back to deleted entries");
-  back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-  mount(
-    ctx.root,
-    el("h2", {}, "Recreating…"),
+  refresh.addEventListener("click", () => renderDetail(ctx, entryId, false, undefined, returnTo));
+  const back = el("button", { type: "button" }, backLabel(returnTo));
+  back.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
+  mountView(
+    ctx,
+    el("h2", {}, "Recreating"),
     el("p", {}, "RestoreTime is sending this entry to Clockify."),
     renderLineage(ctx, lineage),
     refresh,
@@ -102,41 +148,35 @@ function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["li
   );
 }
 
-function renderDismissed(ctx: Ctx, entryId: string, disabled: boolean, lineage: DetailResponse["lineage"]): void {
-  const back = el("button", { type: "button" }, "Back to deleted entries");
-  back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-
-  if (disabled) {
-    const refresh = el("button", { type: "button" }, "Check status");
-    refresh.addEventListener("click", () => renderDetail(ctx, entryId));
-    mount(
-      ctx.root,
-      el("h2", {}, "Dismissed"),
-      el("p", {}, "This entry is hidden from the default list."),
-      el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."),
-      renderLineage(ctx, lineage),
-      refresh,
-      back,
-    );
-    return;
-  }
+function renderDismissed(
+  ctx: Ctx,
+  entryId: string,
+  lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+): void {
+  const back = el("button", { type: "button" }, backLabel(returnTo));
+  back.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
 
   const undismiss = el("button", { type: "button" }, "Undismiss");
-  undismiss.addEventListener("click", () => {
-    undismiss.disabled = true;
-    back.disabled = true;
-    void runAction(
-      ctx,
-      () => ctx.api.post("/api/entries/undismiss", { entryId }),
-      () => renderDetail(ctx, entryId),
-      (err) => renderApiError(ctx.root, err, () => renderDetail(ctx, entryId)),
-    );
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Dismissal error" });
+  bindBusyAction({
+    ctx,
+    button: undismiss,
+    busyLabel: "Undismissing…",
+    conflictingControls: [back],
+    action: () => ctx.api.post("/api/entries/undismiss", { entryId }),
+    onSuccess: () => {
+      ctx.session.list.dismissed = false;
+      renderDetail(ctx, entryId, false, undefined, returnTo);
+    },
+    onError: (err) => renderApiError({ region: errorRegion, err, context: "", action: () => renderDetail(ctx, entryId, false, undefined, returnTo), actionLabel: "Recheck entry" }),
   });
-  mount(
-    ctx.root,
+  mountView(
+    ctx,
     el("h2", {}, "Dismissed"),
     el("p", {}, "This entry is hidden from the default list."),
     renderLineage(ctx, lineage),
+    errorRegion,
     undismiss,
     back,
   );
@@ -151,18 +191,94 @@ function runPreflightAndRender(
   labels: ChoiceLabels,
   disabled: boolean,
   lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+  shell?: DetailShell,
+  focusKey?: string | null,
 ): void {
-  void withLoading(
-    ctx,
-    () => ctx.api.post("/api/entries/preflight", { entryId, choices: toPreflightChoices(choices) }) as Promise<PreflightResponse>,
-    (res) => {
-      for (const item of res.plan.actionRequired) {
-        if (!knownActionRequired.some((known) => known.ruleId === item.ruleId && known.refId === item.refId)) knownActionRequired.push(item);
-      }
-      renderResolveBody(ctx, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage);
-    },
-    "Checking what can be recreated…",
-  );
+  const preflightChoices = snapshotChoices(choices);
+  const load = () => ctx.api.post("/api/entries/preflight", { entryId, choices: preflightChoices }) as Promise<PreflightResponse>;
+  if (!shell) throw new Error("A detail preflight needs a mounted detail shell.");
+  const preflightNumber = ++shell.latestPreflight;
+  const accept = (res: PreflightResponse) => {
+    for (const item of res.plan.actionRequired) {
+      if (!knownActionRequired.some((known) => known.ruleId === item.ruleId && known.refId === item.refId)) knownActionRequired.push(item);
+    }
+    shell.planRegion.removeAttribute("aria-busy");
+    if (shell.initial) {
+      renderResolveBody(ctx, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo);
+      return;
+    }
+    renderPlanRegion(ctx, shell, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo, focusKey ?? null);
+  };
+  shell.planRegion.setAttribute("aria-busy", "true");
+  shell.planRegion.querySelector(".rt-plan-status")?.remove();
+  shell.planRegion.append(el("p", { role: "status", class: "rt-plan-status" }, "Checking choices…"));
+  const restoreControls = disableSubmittingControlGroup();
+  const run = async () => {
+    if (!shell.planRegion.isConnected) return;
+    await runAction(
+      ctx,
+      load,
+      (res) => {
+        restoreControls();
+        if (preflightNumber !== shell.latestPreflight || !shell.planRegion.isConnected) return;
+        accept(res);
+      },
+      (err) => {
+        restoreControls();
+        if (preflightNumber !== shell.latestPreflight || !shell.planRegion.isConnected) return;
+        shell.planRegion.removeAttribute("aria-busy");
+        shell.planRegion.querySelector(".rt-plan-status")?.remove();
+        renderApiError({
+          region: shell.errorRegion,
+          err,
+          context: shell.initial ? "RestoreTime could not update this plan. Stored deleted-entry facts remain available." : "",
+          action: () => runPreflightAndRender(ctx, entryId, source, choices, knownActionRequired, labels, disabled, lineage, returnTo, shell, focusKey),
+          actionLabel: "Check choices again",
+        });
+      },
+    );
+  };
+  if (shell.initial) {
+    void run();
+    return;
+  }
+  shell.preflightQueue = shell.preflightQueue.then(run, run);
+  void shell.preflightQueue;
+}
+
+function snapshotChoices(choices: MutableChoices): MutableChoices {
+  return {
+    ...(choices.projectId !== undefined ? { projectId: choices.projectId } : {}),
+    ...(choices.taskId !== undefined ? { taskId: choices.taskId } : {}),
+    ...(choices.dropTagIds ? { dropTagIds: [...choices.dropTagIds] } : {}),
+    ...(choices.addTagIds ? { addTagIds: [...choices.addTagIds] } : {}),
+    ...(choices.description !== undefined ? { description: choices.description } : {}),
+    ...(choices.runningMode !== undefined ? { runningMode: choices.runningMode } : {}),
+    ...(choices.completedEnd !== undefined ? { completedEnd: choices.completedEnd } : {}),
+    ...(choices.customFieldInputs
+      ? {
+          customFieldInputs: choices.customFieldInputs.map((item) => ({
+            ...item,
+            ...(Array.isArray(item.value) ? { value: [...item.value] } : {}),
+          })),
+        }
+      : {}),
+    ...(choices.dropCustomFieldIds ? { dropCustomFieldIds: [...choices.dropCustomFieldIds] } : {}),
+  };
+}
+
+function disableSubmittingControlGroup(): () => void {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active?.matches("input, select, textarea, button")) return () => undefined;
+  const group = active?.closest("fieldset") ?? active?.parentElement;
+  if (!group) return () => undefined;
+  const controls = Array.from(group.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input, select, textarea, button"));
+  const previous = controls.map((control) => ({ control, disabled: control.disabled }));
+  for (const { control } of previous) control.disabled = true;
+  return () => {
+    for (const { control, disabled } of previous) control.disabled = disabled;
+  };
 }
 
 function effectiveProjectId(plan: RecreationPlan): string | null {
@@ -249,6 +365,69 @@ export function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan,
   );
 }
 
+/** Deleted-entry facts belong to the stable detail shell. The comparison table below can update
+ * after every preflight choice, but these source facts must stay mounted while that happens. */
+export function renderDeletedEntryFacts(source: DeletedTimeEntry, locale: string): HTMLElement {
+  const projectAndTask = [source.projectName, source.taskName].filter((value): value is string => Boolean(value)).join(" — ") || "none";
+  const rows: readonly [string, string][] = [
+    ["Date and time", formatEntryHeader(source.start, source.end, locale)],
+    ["Description", source.description || "(no description)"],
+    ["Project and task", projectAndTask],
+    ["Tags", source.tags.map((tag) => tag.name).join(", ") || "none"],
+    ["Owner", source.ownerName],
+  ];
+  return el(
+    "section",
+    { class: "rt-deleted-facts", "aria-label": "Deleted entry facts" },
+    el("h3", {}, "Deleted entry facts"),
+    el("dl", {}, ...rows.map(([label, value]) => el("div", {}, el("dt", {}, label), el("dd", {}, value)))),
+  );
+}
+
+interface DetailShell {
+  readonly planRegion: HTMLElement;
+  readonly errorRegion: HTMLElement;
+  readonly initial: boolean;
+  preflightQueue: Promise<void>;
+  latestPreflight: number;
+}
+
+function renderInitialDetailShell(
+  ctx: Ctx,
+  source: DeletedTimeEntry,
+  lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+): DetailShell {
+  const planRegion = el("section", { class: "rt-plan-region", "aria-label": "Recreation plan" });
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Plan error" });
+  const backButton = el("button", { type: "button" }, backLabel(returnTo));
+  backButton.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
+  const shell: DetailShell = { planRegion, errorRegion, initial: true, preflightQueue: Promise.resolve(), latestPreflight: 0 };
+  mountView(
+    ctx,
+    el("h2", {}, "Deleted time entry"),
+    renderDeletedEntryFacts(source, ctx.locale),
+    renderLineage(ctx, lineage),
+    errorRegion,
+    planRegion,
+    el("div", { class: "rt-action-group" }, backButton),
+  );
+  return shell;
+}
+
+function draftFor(choices: MutableChoices, knownActionRequired: readonly ActionRequiredItem[], labels: ChoiceLabels): ResolutionDraft {
+  return {
+    choices: toPreflightChoices(choices),
+    actionRequired: [...knownActionRequired],
+    labels: {
+      ...(labels.project !== undefined ? { project: labels.project } : {}),
+      ...(labels.task !== undefined ? { task: labels.task } : {}),
+      tags: { ...labels.tags },
+      customFields: { ...labels.customFields },
+    },
+  };
+}
+
 function renderResolveBody(
   ctx: Ctx,
   entryId: string,
@@ -259,67 +438,84 @@ function renderResolveBody(
   plan: RecreationPlan,
   disabled: boolean,
   lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
 ): void {
-  const reflow = () => runPreflightAndRender(ctx, entryId, source, choices, knownActionRequired, labels, disabled, lineage);
-  const nodes: (Node | string)[] = [el("h2", {}, "Deleted time entry")];
+  const planRegion = el("section", { class: "rt-plan-region", "aria-label": "Recreation plan" });
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Plan error" });
+  const shell: DetailShell = { planRegion, errorRegion, initial: false, preflightQueue: Promise.resolve(), latestPreflight: 0 };
+  const backButton = el("button", { type: "button" }, backLabel(returnTo));
+  backButton.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
+  const actionGroup = el("div", { class: "rt-action-group" });
 
-  const lineageSection = renderLineage(ctx, lineage);
-  if (lineageSection) nodes.push(lineageSection);
+  if (!disabled) {
+    const dismissButton = el("button", { type: "button" }, "Dismiss");
+    bindBusyAction({
+      ctx,
+      button: dismissButton,
+      busyLabel: "Dismissing…",
+      conflictingControls: [backButton],
+      action: () => ctx.api.post("/api/entries/dismiss", { entryId }),
+      onSuccess: () => backToReturnTarget(ctx, returnTo),
+      onError: (err) => renderApiError({ region: errorRegion, err, context: "", action: () => renderDetail(ctx, entryId, false, undefined, returnTo), actionLabel: "Recheck entry" }),
+    });
+    actionGroup.append(dismissButton);
+  }
+  actionGroup.append(backButton);
 
+  renderPlanRegion(ctx, shell, entryId, source, choices, knownActionRequired, labels, plan, disabled, lineage, returnTo, null);
+  mountView(
+    ctx,
+    el("h2", {}, "Deleted time entry"),
+    renderDeletedEntryFacts(source, ctx.locale),
+    renderLineage(ctx, lineage),
+    errorRegion,
+    planRegion,
+    actionGroup,
+  );
+}
+
+function renderPlanRegion(
+  ctx: Ctx,
+  shell: DetailShell,
+  entryId: string,
+  source: DeletedTimeEntry,
+  choices: MutableChoices,
+  knownActionRequired: ActionRequiredItem[],
+  labels: ChoiceLabels,
+  plan: RecreationPlan,
+  disabled: boolean,
+  lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+  focusKey: string | null,
+): void {
+  clear(shell.planRegion);
+  const reflow = () => {
+    const active = document.activeElement as HTMLElement | null;
+    const activeFocusKey = active?.getAttribute("data-focus-key") ?? null;
+    runPreflightAndRender(ctx, entryId, source, choices, knownActionRequired, labels, disabled, lineage, returnTo, shell, activeFocusKey);
+  };
   const blockerSection = renderBlockers(plan.blockers);
-  if (blockerSection) nodes.push(blockerSection);
+  if (blockerSection) shell.planRegion.append(blockerSection);
+  shell.planRegion.append(renderFactsTable(source, plan, ctx.locale, labels), renderDifferences(plan));
 
-  nodes.push(renderFactsTable(source, plan, ctx.locale, labels));
-  nodes.push(renderDifferences(plan));
-
-  // docs/10 §8: while the addon is disabled the notice replaces actions, but the entry stays
-  // readable. The facts and differences above are still rendered; only the form and the confirm
-  // button go away — matching what the server will accept (routes.ts `actionGuard`).
   if (disabled) {
-    const back = el("button", { type: "button" }, "Back to deleted entries");
-    back.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-    nodes.push(el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."), back);
-    mount(ctx.root, ...nodes);
+    shell.planRegion.append(renderNotice("danger", "RestoreTime is not connected to Clockify. This entry is read-only."));
     return;
   }
 
   if (knownActionRequired.length > 0) {
-    nodes.push(renderResolutionWidgets(ctx, choices, reflow, knownActionRequired, effectiveProjectId(plan), source, labels));
+    const widgets = renderResolutionWidgets(ctx, choices, reflow, knownActionRequired, effectiveProjectId(plan), source, labels);
+    if (widgets) shell.planRegion.append(widgets);
   }
-
   const canConfirm = plan.presentation !== null && plan.blockers.length === 0 && plan.actionRequired.length === 0;
-  const continueButton = el("button", { type: "button", class: "rt-primary" }, "Continue to confirm");
-  continueButton.toggleAttribute("disabled", !canConfirm);
-  if (plan.presentation === null) nodes.push(el("p", { role: "alert" }, "This plan needs a new check before you can confirm it."));
-  const draft = (): ResolutionDraft => ({
-    choices: toPreflightChoices(choices),
-    actionRequired: [...knownActionRequired],
-    labels: {
-      ...(labels.project !== undefined ? { project: labels.project } : {}),
-      ...(labels.task !== undefined ? { task: labels.task } : {}),
-      tags: { ...labels.tags },
-      customFields: { ...labels.customFields },
-    },
-  });
-  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled, draft: draft() }));
-  const backButton = el("button", { type: "button" }, "Back to deleted entries");
-  backButton.addEventListener("click", () => ctx.navigate({ kind: "list" }));
-  // docs/06 lifecycle: IDLE/FAILED -> DISMISSED. Without this the server's dismiss endpoint had no
-  // caller, so nothing could ever enter the state that docs/10 §2's "Show dismissed" toggle exists
-  // to reveal, and a list could only ever grow. `renderDismissed` already offers the inverse.
-  const dismissButton = el("button", { type: "button" }, "Dismiss");
-  dismissButton.addEventListener("click", () => {
-    for (const control of Array.from(ctx.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"))) {
-      control.disabled = true;
-    }
-    void runAction(
-      ctx,
-      () => ctx.api.post("/api/entries/dismiss", { entryId }),
-      () => ctx.navigate({ kind: "list" }),
-      (err) => renderApiError(ctx.root, err, reflow),
-    );
-  });
-  nodes.push(el("div", {}, continueButton, dismissButton, backButton));
+  const continueButton = el("button", { type: "button", class: "rt-primary", "data-focus-key": "continue" }, "Continue to confirm");
+  continueButton.disabled = !canConfirm;
+  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled, draft: draftFor(choices, knownActionRequired, labels), returnTo }));
+  if (plan.presentation === null) shell.planRegion.append(renderNotice("warning", "This plan needs a new check before you can confirm it."));
+  shell.planRegion.append(el("div", { class: "rt-action-group" }, continueButton));
 
-  mount(ctx.root, ...nodes);
+  const target = focusKey
+    ? Array.from(shell.planRegion.querySelectorAll<HTMLElement>("[data-focus-key]")).find((node) => node.dataset.focusKey === focusKey)
+    : shell.planRegion.querySelector<HTMLElement>("[data-focus-key]");
+  if (target) target.focus();
 }

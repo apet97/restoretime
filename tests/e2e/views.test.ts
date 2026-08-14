@@ -14,9 +14,9 @@ import { renderDetail } from "../../src/ui/views/detail.js";
 import { renderList } from "../../src/ui/views/list.js";
 import { renderResolutionWidgets, type MutableChoices } from "../../src/ui/views/resolution-widgets.js";
 import { renderResult } from "../../src/ui/views/result.js";
-import { withLoading } from "../../src/ui/views/shared.js";
+import { renderSessionExpired, withLoading } from "../../src/ui/views/shared.js";
 import { ApiError, MutationTransportError, SessionExpiredError } from "../../src/ui/api.js";
-import type { Ctx, ResolutionDraft } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx, type ResolutionDraft } from "../../src/ui/state.js";
 import type { ActionRequiredItem, BulkPreflightRow, BulkRecreateRow, DeletedTimeEntry, DetailResponse, RecreationPlan } from "../../src/ui/types.js";
 
 function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
@@ -90,8 +90,11 @@ function stubCtx(): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 
@@ -142,7 +145,7 @@ describe("confirm view (docs/10 §5)", () => {
     const open = buttons.find((button) => button.textContent === "Open entry");
     expect(open).toBeDefined();
     open?.click();
-    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" });
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", returnTo: "list" });
   });
 
   it("treats a missing mutation response as unknown and does not offer recreate again", async () => {
@@ -154,7 +157,7 @@ describe("confirm view (docs/10 §5)", () => {
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("We do not know whether the entry was recreated."));
 
     const labels = Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent);
-    expect(labels).toEqual(["Open entry"]);
+    expect(labels).toEqual(["Open entry", "Back to deleted entries"]);
     expect(ctx.root.textContent).toContain("Do not recreate the entry again.");
   });
 
@@ -166,7 +169,7 @@ describe("confirm view (docs/10 §5)", () => {
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate entry")?.click();
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("We do not know whether the entry was recreated."));
 
-    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toEqual(["Open entry"]);
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toEqual(["Open entry", "Back to deleted entries"]);
   });
 
   it("requires a new check for a legacy plan without presentation metadata", () => {
@@ -200,6 +203,187 @@ describe("confirm view (docs/10 §5)", () => {
 });
 
 describe("action lifecycle", () => {
+  it("focuses and announces each full screen, but leaves focus in the updated plan region", async () => {
+    const ctx = stubCtx();
+    const initial = plan({
+      actionRequired: [{ ruleId: "P-DESC", message: "Enter a description." }],
+      presentation: { ...plan().presentation!, editable: [{ ruleId: "P-DESC", message: "Enter a description." }] },
+    });
+    const resolved = plan({ choices: { description: "Revised description" } });
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      entry: { id: "re-1", lifecycleState: "IDLE", source: source({ description: "" }) },
+      plan: initial,
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse);
+    (ctx.api.post as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ plan: initial })
+      .mockResolvedValueOnce({ plan: resolved });
+
+    renderDetail(ctx, "re-1");
+    await vi.waitFor(() => expect(ctx.root.querySelector('[data-view-heading]')?.textContent).toBe("Deleted time entry"));
+    const heading = ctx.root.querySelector<HTMLElement>('[data-view-heading]');
+    const facts = ctx.root.querySelector<HTMLElement>('[aria-label="Deleted entry facts"]');
+    expect(document.activeElement).toBe(heading);
+    expect(ctx.announce).toHaveBeenCalledWith("Deleted time entry");
+
+    const description = ctx.root.querySelector<HTMLInputElement>('input[aria-label="Description"]');
+    if (!description) throw new Error("Description control is missing.");
+    description.value = "Revised description";
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Save description")?.click();
+
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
+    expect(ctx.root.querySelector('[data-view-heading]')).toBe(heading);
+    expect(ctx.root.querySelector('[aria-label="Deleted entry facts"]')).toBe(facts);
+    expect(document.activeElement).toBe(ctx.root.querySelector('input[data-focus-key="description"]'));
+  });
+
+  it("serializes preflight requests and keeps each submitting control group disabled", async () => {
+    const ctx = stubCtx();
+    let resolveFirst: ((value: { plan: RecreationPlan }) => void) | undefined;
+    let resolveSecond: ((value: { plan: RecreationPlan }) => void) | undefined;
+    const initial = plan({
+      actionRequired: [
+        { ruleId: "P-PROJ-GONE", message: "Select a current project." },
+        { ruleId: "P-DESC", message: "Enter a description." },
+      ],
+      presentation: {
+        ...plan().presentation!,
+        editable: [
+          { ruleId: "P-PROJ-GONE", message: "Select a current project." },
+          { ruleId: "P-DESC", message: "Enter a description." },
+        ],
+      },
+    });
+    const first = new Promise<{ plan: RecreationPlan }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<{ plan: RecreationPlan }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
+      if (path === "/api/entries/detail") {
+        return Promise.resolve({
+          entry: { id: "re-1", lifecycleState: "IDLE", source: source({ description: "" }) },
+          plan: initial,
+          attempts: [],
+          lineage: { parent: null, child: null },
+          disabled: false,
+          broken: false,
+          canMarkNotCreated: false,
+        } as unknown as DetailResponse);
+      }
+      if (query?.kind === "projects") return Promise.resolve({ items: [{ id: "proj-new", name: "Customer API" }] });
+      return Promise.resolve({ items: [] });
+    });
+    (ctx.api.post as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ plan: initial })
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+
+    renderDetail(ctx, "re-1");
+    const project = await vi.waitFor(() => {
+      const select = ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]');
+      expect(select).not.toBeNull();
+      expect(select?.options).toHaveLength(2);
+      return select!;
+    });
+    project.value = "proj-new";
+    project.focus();
+    project.dispatchEvent(new Event("change"));
+    expect(project.disabled).toBe(true);
+
+    const description = ctx.root.querySelector<HTMLInputElement>('input[aria-label="Description"]');
+    if (!description) throw new Error("Description control is missing.");
+    description.value = "New description";
+    const save = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Save description");
+    save?.focus();
+    save?.click();
+    expect(save?.disabled).toBe(true);
+    await vi.waitFor(() => expect(ctx.api.post).toHaveBeenCalledTimes(2));
+
+    resolveFirst?.({ plan: plan({ choices: { projectId: "proj-new" } }) });
+    await vi.waitFor(() => expect(ctx.api.post).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(project.disabled).toBe(false));
+    expect(vi.mocked(ctx.api.post).mock.calls.at(-1)).toEqual([
+      "/api/entries/preflight",
+      { entryId: "re-1", choices: { projectId: "proj-new", description: "New description" } },
+    ]);
+
+    resolveSecond?.({ plan: plan({ choices: { projectId: "proj-new", description: "New description" } }) });
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
+  });
+
+  it("keeps stored deleted-entry facts visible when the initial preflight is unavailable", async () => {
+    const ctx = stubCtx();
+    const detail = {
+      entry: { id: "re-1", lifecycleState: "IDLE", source: source() },
+      plan: plan(),
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse;
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (ctx.api.post as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new ApiError(502, { error: "Clockify could not be reached. Nothing was created. Try again in a moment." }))
+      .mockResolvedValueOnce({ plan: detail.plan });
+
+    renderDetail(ctx, "re-1");
+    await vi.waitFor(() => expect(ctx.root.querySelector('[aria-label="Plan error"]')?.textContent).toContain("Stored deleted-entry facts remain available."));
+    expect(ctx.root.querySelector('[data-view-heading]')?.textContent).toBe("Deleted time entry");
+    expect(ctx.root.querySelector('[aria-label="Deleted entry facts"]')?.textContent).toContain("API investigation");
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Check choices again");
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Continue to confirm");
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check choices again")?.click();
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
+  });
+
+  it("keeps a mutation single-flight and exposes its busy state", () => {
+    const ctx = stubCtx();
+    (ctx.api.mutate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => undefined));
+    renderConfirm(ctx, "re-1", plan(), source());
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate entry");
+    recreate?.click();
+    recreate?.click();
+
+    expect(ctx.api.mutate).toHaveBeenCalledTimes(1);
+    expect(recreate?.disabled).toBe(true);
+    expect(recreate?.getAttribute("aria-busy")).toBe("true");
+    expect(recreate?.textContent).toBe("Recreating…");
+    expect(recreate?.getAttribute("aria-label")).toBe("Recreate entry");
+  });
+
+  it("keeps the confirm context and restores a safe action after a normal error", async () => {
+    const ctx = stubCtx();
+    (ctx.api.mutate as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(500, { error: "Clockify could not complete this request." }));
+    renderConfirm(ctx, "re-1", plan(), source());
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate entry");
+    recreate?.click();
+
+    await vi.waitFor(() => expect(ctx.root.querySelector('[role="alert"]')?.textContent).toContain("Clockify could not complete this request."));
+    expect(ctx.root.textContent).toContain("Confirm recreation");
+    expect(recreate?.disabled).toBe(false);
+    expect(recreate?.textContent).toBe("Recreate entry");
+  });
+
+  it("reloads an expired session only once", () => {
+    const ctx = stubCtx();
+    renderSessionExpired(ctx);
+    const reload = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Reload RestoreTime");
+    reload?.click();
+    reload?.click();
+    expect(ctx.reload).toHaveBeenCalledTimes(1);
+    expect(reload?.disabled).toBe(true);
+  });
+
   it("shows the session-expired takeover when Undismiss cannot refresh the session", async () => {
     const ctx = stubCtx();
     (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -223,6 +407,26 @@ describe("action lifecycle", () => {
     await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({ kind: "session-expired" }));
   });
 
+  it("keeps the bulk-review return path when it checks a recreating entry", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      entry: { id: "re-1", lifecycleState: "RECREATING", source: source() },
+      plan: null,
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse);
+
+    renderDetail(ctx, "re-1", false, undefined, "bulk-review");
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Recreating"));
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check status")?.click();
+
+    await vi.waitFor(() => expect(ctx.api.get).toHaveBeenCalledTimes(2));
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Back to review");
+  });
+
   it("ignores an action result after the user navigates away", async () => {
     let navigationVersion = 1;
     let resolveRequest: ((value: unknown) => void) | undefined;
@@ -237,12 +441,12 @@ describe("action lifecycle", () => {
 
     renderConfirm(ctx, "re-1", plan(), source());
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate entry")?.click();
-    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Back")?.click();
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Back to entry")?.click();
     resolveRequest?.({ result: { outcome: "RECREATED", newEntryId: "new-1", diffs: [] } });
     await Promise.resolve();
 
     expect(ctx.navigate).toHaveBeenCalledTimes(1);
-    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", forceResolve: true });
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", forceResolve: true, returnTo: "list" });
     expect(ctx.root.textContent).toContain("Confirm recreation");
     expect(ctx.root.textContent).not.toContain("Time entry recreated.");
   });
@@ -304,10 +508,10 @@ describe("action lifecycle", () => {
 
     void withLoading(ctx, () => first, (value) => {
       ctx.root.textContent = value;
-    });
+    }, undefined, "Reload list");
     void withLoading(ctx, () => second, (value) => {
       ctx.root.textContent = value;
-    });
+    }, undefined, "Reload list");
     finishSecond?.("new response");
     await vi.waitFor(() => expect(ctx.root.textContent).toBe("new response"));
     finishFirst?.("old response");
@@ -318,7 +522,7 @@ describe("action lifecycle", () => {
 });
 
 describe("bulk result view (docs/10 §7)", () => {
-  it("renders a post-attempt error as Unknown result with its truthful message", () => {
+  it("renders a post-attempt error as Result uncertain with its truthful message", () => {
     const ctx = stubCtx();
     const message =
       "The recreation might have reached Clockify, but RestoreTime did not get a clear result. It is not known whether the entry was created.";
@@ -329,7 +533,7 @@ describe("bulk result view (docs/10 §7)", () => {
     const reviewed: BulkPreflightRow = { entryId: "re-1", status: "ready", source: source(), plan: plan() };
     renderBulkResults(ctx, rows, [reviewed]);
 
-    expect(ctx.root.textContent).toContain("Unknown result");
+    expect(ctx.root.textContent).toContain("Result uncertain");
     expect(ctx.root.textContent).toContain(message);
     expect(ctx.root.textContent).toContain("Ana Markovic");
     expect(ctx.root.textContent).toContain("API investigation");
@@ -349,8 +553,8 @@ describe("bulk result view (docs/10 §7)", () => {
   });
 });
 
-describe("persistent resolution controls", () => {
-  it("shows the saved project, task, and tags after Confirm then Back", async () => {
+describe("resolved plan values", () => {
+  it("keeps saved project, task, and tags editable after Confirm then Back", async () => {
     const ctx = stubCtx();
     const editable: ActionRequiredItem[] = [
       { ruleId: "P-PROJ-GONE", message: "Select a current project.", options: ["substitute"] },
@@ -383,7 +587,7 @@ describe("persistent resolution controls", () => {
       },
     };
     renderConfirm(ctx, "re-1", savedPlan, source(), false, draft);
-    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Back")?.click();
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Back to entry")?.click();
     const backState = vi.mocked(ctx.navigate).mock.calls.at(-1)?.[0];
     if (backState?.kind !== "detail") throw new Error("Back did not navigate to detail.");
 
@@ -407,14 +611,19 @@ describe("persistent resolution controls", () => {
 
     renderDetail(ctx, backState.entryId, backState.forceResolve, backState.draft);
 
-    await vi.waitFor(() => {
-      expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new");
-      expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement task"]')?.value).toBe("task-new");
-      expect(Array.from(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Current tags to add"]')?.selectedOptions ?? []).map((option) => option.value)).toEqual(["tag-2"]);
-    });
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Customer API"));
+    expect(ctx.root.textContent).toContain("Investigation");
+    expect(ctx.root.textContent).toContain("urgent");
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new"));
+    expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement task"]')?.value).toBe("task-new");
+    expect(ctx.root.textContent).toContain("Add current tags");
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Continue to confirm")?.click();
+    const confirmState = vi.mocked(ctx.navigate).mock.calls.at(-1)?.[0];
+    if (confirmState?.kind !== "confirm") throw new Error("Continue did not navigate to confirm.");
+    expect(confirmState.draft?.actionRequired).toEqual(editable);
   });
 
-  it("reloads saved controls from the persisted plan after Try again", async () => {
+  it("shows the persisted planned values after reviewing a new plan", async () => {
     const ctx = stubCtx();
     const savedPlan = plan({
       choices: { projectId: "proj-new" },
@@ -444,9 +653,8 @@ describe("persistent resolution controls", () => {
 
     renderDetail(ctx, "re-1", true);
 
-    await vi.waitFor(() => {
-      expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new");
-    });
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Customer API"));
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new"));
   });
 
   it("shows a saved description and completed end time before they are changed", () => {
@@ -484,6 +692,7 @@ describe("success result view (docs/10 §6)", () => {
 
     expect(ctx.root.textContent).toContain("Time entry recreated.");
     expect(ctx.root.textContent).not.toContain("Clockify applied these changes");
+    expect(ctx.root.textContent).toContain("could not re-read it to verify every saved value");
   });
 });
 

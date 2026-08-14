@@ -1,10 +1,31 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { DetailResponse, RecreationPlan } from "../../src/ui/types.js";
 import { renderDetail } from "../../src/ui/views/detail.js";
 import { renderResult } from "../../src/ui/views/result.js";
+
+const deletedSource = {
+  workspaceId: "ws-1",
+  entryId: "entry-1",
+  ownerId: "user-1",
+  ownerName: "Ana Markovic",
+  description: "API investigation",
+  billable: true,
+  start: "2026-08-07T09:00:00Z",
+  end: "2026-08-07T10:00:00Z",
+  wasRunning: false,
+  type: "REGULAR",
+  timeZone: "UTC",
+  projectId: null,
+  projectName: null,
+  clientName: null,
+  taskId: null,
+  taskName: null,
+  tags: [],
+  customFieldValues: [],
+};
 
 function stubCtx(detail: DetailResponse): Ctx {
   const root = document.createElement("main");
@@ -15,8 +36,11 @@ function stubCtx(detail: DetailResponse): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 
@@ -29,6 +53,26 @@ beforeEach(() => {
 });
 
 describe("disabled detail actions", () => {
+  it("does not start preflight for a deep-linked broken installation", async () => {
+    const detail = {
+      entry: { id: "re-1", lifecycleState: "IDLE", source: deletedSource },
+      plan: null,
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: true,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse;
+    const ctx = stubCtx(detail);
+
+    renderDetail(ctx, "re-1");
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Ask a workspace admin to reinstall this add-on, then reload RestoreTime."));
+    expect(ctx.api.get).toHaveBeenCalledTimes(1);
+    expect(ctx.api.post).not.toHaveBeenCalled();
+    expect(buttonLabels(ctx)).toEqual(["Back to deleted entries"]);
+  });
+
   it.each([
     { canMarkNotCreated: true, candidateIds: [] },
     { canMarkNotCreated: false, candidateIds: ["clockify-1", "clockify-2"] },
@@ -51,37 +95,32 @@ describe("disabled detail actions", () => {
     renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS" });
 
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("RestoreTime is disabled for this workspace."));
-    expect(buttonLabels(ctx)).toEqual(["Check status", "Back to deleted entries"]);
-    expect(ctx.api.post).not.toHaveBeenCalled();
-
-    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check status")?.click();
-    await vi.waitFor(() => expect(ctx.api.get).toHaveBeenCalledTimes(2));
+    expect(buttonLabels(ctx)).toEqual(["Back to deleted entries"]);
     expect(ctx.api.post).not.toHaveBeenCalled();
 
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Back to deleted entries")?.click();
     expect(ctx.navigate).toHaveBeenCalledWith({ kind: "list" });
   });
 
-  it("keeps a DISMISSED entry readable without the Undismiss action", async () => {
+  it("keeps a FAILED deep link readable without recreation actions when the installation is broken", async () => {
     const detail = {
-      entry: { id: "re-1", lifecycleState: "DISMISSED" },
+      entry: { id: "re-1", lifecycleState: "FAILED", source: deletedSource },
       plan: null,
-      attempts: [],
+      attempts: [{ outcome: "FAILED", errorMessage: "Clockify rejected the request." }],
       lineage: { parent: null, child: null },
-      disabled: true,
+      disabled: false,
+      broken: true,
       canMarkNotCreated: false,
     } as unknown as DetailResponse;
     const ctx = stubCtx(detail);
 
     renderDetail(ctx, "re-1");
 
-    await vi.waitFor(() => expect(ctx.root.textContent).toContain("RestoreTime is disabled for this workspace."));
-    expect(ctx.root.textContent).toContain("This entry is hidden from the default list.");
-    expect(buttonLabels(ctx)).toEqual(["Check status", "Back to deleted entries"]);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Ask a workspace admin to reinstall this add-on, then reload RestoreTime."));
+    expect(ctx.root.textContent).toContain("Deleted entry facts");
+    expect(ctx.root.textContent).toContain("API investigation");
+    expect(buttonLabels(ctx)).toEqual(["Back to deleted entries"]);
     expect(ctx.api.post).not.toHaveBeenCalled();
-
-    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check status")?.click();
-    await vi.waitFor(() => expect(ctx.api.get).toHaveBeenCalledTimes(2));
-    expect(ctx.api.post).not.toHaveBeenCalled();
+    expect(ctx.root.textContent).not.toContain("Review a new plan");
   });
 });

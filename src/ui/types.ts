@@ -82,6 +82,8 @@ export interface DetailResponse {
   readonly lineage: { readonly parent: RecoverableEntry | null; readonly child: RecoverableEntry | null };
   /** The addon is INACTIVE for this workspace (docs/10 §8). Server fact, never derived here. */
   readonly disabled: boolean;
+  /** The stored installation token was rejected. This remains a server fact on deep links. */
+  readonly broken: boolean;
   /** docs/07 §8's bounded window has elapsed and enough checks have run. Server fact: computing it
    * from the browser clock would offer "it was not created" for an entry that exists. */
   readonly canMarkNotCreated: boolean;

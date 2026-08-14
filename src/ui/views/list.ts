@@ -3,37 +3,13 @@
 // Admins additionally get filters and bulk selection. Nothing else: no dashboards, no charts
 // (docs/10 §2).
 
-import { el, mount } from "../dom.js";
-import { formatDetected, formatEntryHeader, statusLabel } from "../format.js";
-import type { Ctx } from "../state.js";
-import { renderApiError, runAction, runBackgroundRequest, withLoading } from "./shared.js";
+import { el } from "../dom.js";
+import { formatDetected, formatEntryHeader, statusPresentation } from "../format.js";
+import type { Ctx, UiSessionState } from "../state.js";
+import { bindBusyAction, mountView, renderApiError, renderNotice, renderStatusPill, runBackgroundRequest, withLoading } from "./shared.js";
 import type { BulkPreflightRow, ListResponse, ListRow } from "../types.js";
 
-interface ListFilterState {
-  userName: string;
-  projectName: string;
-  from: string;
-  to: string;
-  status: string;
-  search: string;
-  dismissed: boolean;
-  bulkMode: boolean;
-  selected: Set<string>;
-}
-
-function freshFilters(): ListFilterState {
-  return {
-    userName: "",
-    projectName: "",
-    from: "",
-    to: "",
-    status: "",
-    search: "",
-    dismissed: false,
-    bulkMode: false,
-    selected: new Set(),
-  };
-}
+type ListFilterState = UiSessionState["list"];
 
 async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListResponse> {
   const query: Record<string, string> = {};
@@ -48,8 +24,15 @@ async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListRespon
 }
 
 export function renderList(ctx: Ctx): void {
-  const filters = freshFilters();
+  const filters = ctx.session.list;
   load(ctx, filters);
+}
+
+function clearSelection(ctx: Ctx): void {
+  const selected = ctx.session.selectedEntryIds;
+  if (selected.size === 0) return;
+  selected.clear();
+  ctx.announce("Selection cleared.");
 }
 
 function load(ctx: Ctx, filters: ListFilterState): void {
@@ -58,26 +41,29 @@ function load(ctx: Ctx, filters: ListFilterState): void {
     () => fetchList(ctx, filters),
     (data) => renderLoaded(ctx, filters, data),
     "Loading deleted time entries…",
+    "Reload list",
   );
 }
 
 function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): void {
-  const nodes: (Node | string)[] = [el("h2", {}, "Deleted time entries")];
+  const heading = el("h2", {}, "Deleted time entries");
+  const nodes: (Node | string)[] = [];
+  const actionsUnavailable = data.disabled || data.broken || data.clockifyUnavailable;
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "List error" });
+  nodes.push(errorRegion);
 
   if (data.disabled) {
-    nodes.push(
-      el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."),
-    );
+    nodes.push(renderNotice("info", "RestoreTime is disabled for this workspace."));
   }
   // docs/03 §6 / docs/11 / docs/14: a rejected token (401 code 4017) needs a reinstall, not a
   // retry — the generic "Clockify could not be reached" would send the user in circles.
   if (data.broken) {
-    nodes.push(
-      el("p", { role: "alert" }, "RestoreTime's Clockify connection was rejected. Reinstall the addon from the Clockify Marketplace."),
-    );
+    nodes.push(renderNotice("danger", "RestoreTime is no longer connected to this workspace. Ask a workspace admin to reinstall this add-on, then reload RestoreTime."));
   }
   if (data.clockifyUnavailable) {
-    nodes.push(el("p", { role: "status" }, "Clockify could not be reached; status and actions may be out of date."));
+    const reload = el("button", { type: "button" }, "Reload list");
+    reload.addEventListener("click", () => load(ctx, filters));
+    nodes.push(renderNotice("warning", "RestoreTime could not reach Clockify. This list is read-only until you reload it."), reload);
   }
 
   nodes.push(renderDismissedControl(ctx, filters));
@@ -90,7 +76,7 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   let reviewBusy = false;
   function syncReviewButton(): void {
     if (!reviewButton) return;
-    const count = filters.selected.size;
+    const count = ctx.session.selectedEntryIds.size;
     reviewButton.textContent = `Review selected (${count})`;
     reviewButton.toggleAttribute("disabled", reviewBusy || count === 0 || count > 50);
     if (reviewNote) reviewNote.hidden = count <= 50;
@@ -100,7 +86,7 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   if (rows.length === 0) {
     nodes.push(el("p", {}, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
   } else {
-    nodes.push(el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, data.disabled, syncReviewButton))));
+    nodes.push(el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton))));
     // Say so when the server withheld older rows, rather than letting a full page read as "all".
     if (data.truncated) {
       nodes.push(
@@ -111,31 +97,34 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
 
   if (ctx.isAdminRole && filters.bulkMode) {
     reviewButton = el("button", { type: "button" }, "Review selected (0)");
-    reviewButton.addEventListener("click", () => {
-      const ids = [...filters.selected];
-      if (ids.length === 0 || ids.length > 50) return;
-      reviewBusy = true;
-      syncReviewButton();
-      for (const control of Array.from(ctx.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"))) {
-        control.disabled = true;
-      }
-      void runAction(
-        ctx,
-        () => ctx.api.post("/api/entries/bulk-preflight", { ids }) as Promise<{ results: readonly BulkPreflightRow[] }>,
-        (res) => ctx.navigate({ kind: "bulk-review", rows: res.results }),
-        (err) => {
-          reviewBusy = false;
-          renderApiError(ctx.root, err, () => load(ctx, filters));
-        },
-      );
+    bindBusyAction({
+      ctx,
+      button: reviewButton,
+      busyLabel: "Preparing review…",
+      conflictingControls: () => Array.from(ctx.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")),
+      action: async () => {
+        const ids = [...ctx.session.selectedEntryIds];
+        if (ids.length === 0 || ids.length > 50) throw new Error("Invalid selection.");
+        reviewBusy = true;
+        syncReviewButton();
+        return ctx.api.post("/api/entries/bulk-preflight", { ids }) as Promise<{ results: readonly BulkPreflightRow[] }>;
+      },
+      onSuccess: (res) => {
+        ctx.session.bulkReviewRows = res.results;
+        ctx.navigate({ kind: "bulk-review", rows: res.results });
+      },
+      onError: (err) => {
+        reviewBusy = false;
+        renderApiError({ region: errorRegion, err, context: "", action: () => load(ctx, filters), actionLabel: "Reload review" });
+      },
     });
     reviewNote = el("p", { role: "alert" }, "Select at most 50 entries.");
     reviewNote.hidden = true;
-    nodes.push(el("div", {}, reviewButton, reviewNote));
+    nodes.push(el("div", { class: "rt-action-group" }, reviewButton, reviewNote));
     syncReviewButton();
   }
 
-  mount(ctx.root, ...nodes);
+  mountView(ctx, heading, ...nodes);
 }
 
 type SuggestionItems = readonly { readonly name?: string | null }[];
@@ -187,6 +176,7 @@ function renderDismissedControl(ctx: Ctx, filters: ListFilterState): HTMLElement
     // The admin status filter and this toggle select the same lifecycle-state column. The toggle
     // owns that selection while it is on, so discard a stale status before the next list read.
     if (filters.dismissed) filters.status = "";
+    clearSelection(ctx);
     load(ctx, filters);
   });
   return el("section", { "aria-label": "List options" }, el("label", {}, toggle, " Show dismissed"));
@@ -213,7 +203,7 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     el("option", { value: "RECREATING" }, "Recreating"),
     el("option", { value: "RECREATED" }, "Recreated"),
     el("option", { value: "FAILED" }, "Failed"),
-    el("option", { value: "AMBIGUOUS" }, "Unknown result"),
+    el("option", { value: "AMBIGUOUS" }, "Result uncertain"),
   );
   statusSelect.value = filters.status;
   // "Show dismissed" selects the DISMISSED lifecycle state, and this dropdown selects any other
@@ -224,6 +214,7 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
 
   const applyButton = el("button", { type: "button" }, "Apply filters");
   applyButton.addEventListener("click", () => {
+    const before = JSON.stringify(filters);
     filters.userName = userInput.value.trim();
     filters.projectName = projectInput.value.trim();
     filters.from = fromInput.value;
@@ -232,6 +223,7 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     // dropdown's stale value here would resurrect the contradiction this pair used to send.
     filters.status = statusSelect.disabled ? "" : statusSelect.value;
     filters.search = searchInput.value.trim();
+    if (before !== JSON.stringify(filters)) clearSelection(ctx);
     load(ctx, filters);
   });
 
@@ -239,7 +231,7 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
   bulkToggle.checked = filters.bulkMode;
   bulkToggle.addEventListener("change", () => {
     filters.bulkMode = bulkToggle.checked;
-    filters.selected.clear();
+    if (!filters.bulkMode) clearSelection(ctx);
     load(ctx, filters);
   });
   const bulkLabel = el("label", {}, bulkToggle, " Bulk mode");
@@ -264,7 +256,7 @@ function renderRow(
   ctx: Ctx,
   filters: ListFilterState,
   row: ListRow,
-  disabledInstallation: boolean,
+  actionsUnavailable: boolean,
   onSelectionChange: () => void,
 ): HTMLElement {
   const source = row.source;
@@ -275,7 +267,7 @@ function renderRow(
   const projectLine = [source.projectName, source.taskName].filter((v): v is string => Boolean(v)).join(" — ");
   const tagNames = source.tags.map((t) => t.name).join(", ");
   const detected = formatDetected(row.detectedAt, ctx.locale);
-  const status = statusLabel(row);
+  const status = statusPresentation(row);
   const actionable = row.lifecycleState === "IDLE" || row.lifecycleState === "FAILED";
 
   const openButton = el("button", { type: "button", class: "rt-title" }, header);
@@ -284,24 +276,24 @@ function renderRow(
   const lines = [
     el("div", {}, openButton),
     el("div", { class: "rt-desc" }, source.description || "(no description)"),
-    ...(projectLine ? [el("div", {}, projectLine)] : []),
-    el("div", {}, `Tags: ${tagNames || "none"}`, "  ", `Detected: ${detected}`),
-    el("div", {}, `Status: ${status}`),
+    ...(projectLine ? [el("div", { class: "rt-entry-value" }, projectLine)] : []),
+    el("div", { class: "rt-metadata" }, el("span", {}, `Tags: ${tagNames || "none"}`), el("span", {}, `Detected: ${detected}`)),
+    el("div", {}, "Status: ", renderStatusPill(status)),
   ];
 
-  if (actionable && !disabledInstallation) {
+  if (actionable && !actionsUnavailable) {
     const recreateButton = el("button", { type: "button", class: "rt-primary" }, "Recreate");
     recreateButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
     lines.push(el("div", {}, recreateButton));
   }
 
-  if (ctx.isAdminRole && filters.bulkMode && actionable && !disabledInstallation) {
+  if (ctx.isAdminRole && filters.bulkMode && actionable && !actionsUnavailable) {
     const identity = `${source.ownerName}, ${header}, ${source.description || "no description"}`;
     const checkbox = el("input", { type: "checkbox", "aria-label": `Select ${identity}` });
-    checkbox.checked = filters.selected.has(row.id);
+    checkbox.checked = ctx.session.selectedEntryIds.has(row.id);
     checkbox.addEventListener("change", () => {
-      if (checkbox.checked) filters.selected.add(row.id);
-      else filters.selected.delete(row.id);
+      if (checkbox.checked) ctx.session.selectedEntryIds.add(row.id);
+      else ctx.session.selectedEntryIds.delete(row.id);
       onSelectionChange();
     });
     lines.unshift(el("div", {}, checkbox));

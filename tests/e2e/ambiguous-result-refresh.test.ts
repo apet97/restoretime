@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { DetailResponse, RecreationPlan } from "../../src/ui/types.js";
 import { renderResult } from "../../src/ui/views/result.js";
 
@@ -14,8 +14,11 @@ function stubCtx(detail: DetailResponse): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 
@@ -24,6 +27,48 @@ beforeEach(() => {
 });
 
 describe("ambiguous result refresh", () => {
+  it("uses human candidate cards and sends the hidden candidate ID once", async () => {
+    const candidateId = "clockify-candidate-123456";
+    const plan = {
+      plannedRequest: {
+        description: "API investigation",
+        start: "2026-08-07T09:00:00Z",
+        end: "2026-08-07T10:00:00Z",
+      },
+      presentation: {
+        project: { id: "p-1", name: "Customer API", outcome: "kept" },
+        task: { id: "t-1", name: "Investigation", outcome: "kept" },
+      },
+    } as unknown as RecreationPlan;
+    const detail = {
+      entry: { id: "re-1", lifecycleState: "AMBIGUOUS", newEntryId: null },
+      plan,
+      attempts: [{ outcome: "AMBIGUOUS", finishedAt: null, reconcile: { checks: 2, checkedAt: "2026-08-07T12:00:00Z", candidateIds: [candidateId], truncated: false } }],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse;
+    const ctx = stubCtx(detail);
+    (ctx.api.post as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => undefined));
+
+    renderResult(ctx, "re-1", plan, { outcome: "AMBIGUOUS" });
+
+    const useMatch = await vi.waitFor(() => {
+      const button = Array.from(ctx.root.querySelectorAll("button")).find((item) => item.textContent === "Use this match");
+      expect(button).toBeDefined();
+      return button;
+    });
+    expect(useMatch?.textContent).not.toContain(candidateId);
+    expect(ctx.root.textContent).toContain("Possible match 1");
+    expect(ctx.root.textContent).toContain("Entry reference ending 123456");
+    expect(ctx.root.querySelector("details")?.textContent).toContain(candidateId);
+    useMatch?.click();
+    useMatch?.click();
+    expect(ctx.api.post).toHaveBeenCalledTimes(1);
+    expect(ctx.api.post).toHaveBeenCalledWith("/api/entries/resolve-ambiguous", { entryId: "re-1", newEntryId: candidateId });
+  });
+
   it("returns to the detail router when reconciliation has already recreated the entry", async () => {
     const detail = {
       entry: { id: "re-1", lifecycleState: "RECREATED", newEntryId: "clockify-1" },
@@ -37,7 +82,7 @@ describe("ambiguous result refresh", () => {
 
     renderResult(ctx, "re-1", {} as RecreationPlan, { outcome: "AMBIGUOUS" });
 
-    await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" }));
+    await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", returnTo: "list" }));
     expect(ctx.root.textContent).not.toContain("We do not know whether Clockify created this entry.");
   });
 

@@ -49,6 +49,10 @@ documented migration path in the release notes.
   running deployment instance instead. Set `RAILWAY_RUN_UID=1000` for the final service. A
   Railway SSH command runs in a root diagnostic shell, so do not use that shell's UID as the
   application proof. Read the UID of PID 1 (`node dist/server.js`) from `/proc`.
+- The process handles `SIGTERM` and `SIGINT`. It first stops the HTTP listener, then closes SQLite
+  after current HTTP connections drain. Set a non-zero Railway draining interval so this sequence
+  has time to finish. This document records local signal-handling proof only. It does not change a
+  Railway setting or prove hosted shutdown behavior.
 - For a file-copy backup, quiesce requests, stop the Node process, and confirm that no writer
   remains. Open the file with SQLite, run `PRAGMA wal_checkpoint(TRUNCATE)`, close that connection,
   and then copy the database. Confirm that no `-wal` or `-shm` sidecar remains. If the process must

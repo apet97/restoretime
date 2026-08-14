@@ -13,7 +13,7 @@ import { createApiClient } from "./api.js";
 import { setupBridge, type TokenAuthorityHandle } from "./bridge.js";
 import { el, mount } from "./dom.js";
 import { normalizeLocale } from "./format.js";
-import type { Ctx, ViewState } from "./state.js";
+import { createUiSessionState, type Ctx, type ViewState } from "./state.js";
 import { renderList } from "./views/list.js";
 import { renderDetail } from "./views/detail.js";
 import { renderConfirm } from "./views/confirm.js";
@@ -32,22 +32,22 @@ function dispatch(ctx: Ctx, state: ViewState): void {
       renderList(ctx);
       return;
     case "detail":
-      renderDetail(ctx, state.entryId, state.forceResolve ?? false, state.draft);
+      renderDetail(ctx, state.entryId, state.forceResolve ?? false, state.draft, state.returnTo);
       return;
     case "confirm":
-      renderConfirm(ctx, state.entryId, state.plan, state.source, state.disabled ?? false, state.draft);
+      renderConfirm(ctx, state.entryId, state.plan, state.source, state.disabled ?? false, state.draft, state.returnTo);
       return;
     case "result":
-      renderResult(ctx, state.entryId, state.plan, state.result);
+      renderResult(ctx, state.entryId, state.plan, state.result, undefined, state.returnTo);
       return;
     case "bulk-review":
-      renderBulkReview(ctx, state.rows);
+      renderBulkReview(ctx, state.rows, state.refresh ?? false);
       return;
     case "bulk-results":
       renderBulkResults(ctx, state.rows, state.reviewRows);
       return;
     case "session-expired":
-      renderSessionExpired(ctx.root);
+      renderSessionExpired(ctx);
       return;
   }
 }
@@ -55,7 +55,7 @@ function dispatch(ctx: Ctx, state: ViewState): void {
 export interface BootOptions {
   readonly window: ClockifyBrowserWindow & {
     readonly document: Document;
-    readonly location: { readonly search: string };
+    readonly location: { readonly search: string; reload?(): void };
   };
   readonly fetchImpl?: typeof fetch;
 }
@@ -84,17 +84,23 @@ export function boot(options: BootOptions): TokenAuthorityHandle | undefined {
   const api = createApiClient(auth, options.fetchImpl ?? fetch);
 
   let navigationVersion = 0;
+  const announcer = window.document.getElementById("rt-announcer");
   const ctx: Ctx = {
     root,
     api,
     bridge,
     locale,
     isAdminRole: isClockifyAdminRole(body.dataset.role ?? ""),
+    session: createUiSessionState(),
     getNavigationVersion: () => navigationVersion,
     navigate: (state) => {
       navigationVersion += 1;
       dispatch(ctx, state);
     },
+    announce: (message) => {
+      if (announcer) announcer.textContent = message;
+    },
+    reload: () => window.location.reload?.(),
   };
 
   ctx.navigate({ kind: "list" });

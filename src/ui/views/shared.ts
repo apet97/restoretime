@@ -3,7 +3,8 @@
 // view and the confirm view show verbatim (docs/10 §3, §5 — "Warnings and differences").
 
 import { ApiError, MutationTransportError, SessionExpiredError } from "../api.js";
-import { el, mount } from "../dom.js";
+import { clear, el, mount } from "../dom.js";
+import type { StatusPresentation } from "../format.js";
 import type { Ctx } from "../state.js";
 import type { DetailResponse, PlanBlocker, PlanWarning, RecreationPlan } from "../types.js";
 
@@ -13,15 +14,33 @@ export function renderLoading(root: HTMLElement, label = "Loading…"): void {
 
 /** docs/10 §8: on a refresh timeout, "Reload the component" — the shell cannot recover a session
  * on its own (reloading re-reads `?auth_token` from the iframe URL Clockify controls). */
-export function renderSessionExpired(root: HTMLElement): void {
-  mount(
-    root,
-    el(
-      "section",
-      {},
-      el("h2", {}, "Your session expired"),
-      el("p", {}, "RestoreTime could not refresh your connection to Clockify. Reload the component."),
-    ),
+export function mountView(ctx: Ctx, heading: HTMLHeadingElement, ...children: (Node | string | null)[]): void {
+  heading.setAttribute("data-view-heading", "");
+  heading.setAttribute("tabindex", "-1");
+  mount(ctx.root, heading, ...children);
+  try {
+    heading.focus({ preventScroll: true });
+  } catch {
+    heading.focus();
+  }
+  ctx.announce(heading.textContent ?? "RestoreTime");
+}
+
+export function renderSessionExpired(ctx: Ctx): void {
+  const heading = el("h2", {}, "Your session expired");
+  const reload = el("button", { type: "button", class: "rt-primary" }, "Reload RestoreTime");
+  let used = false;
+  reload.addEventListener("click", () => {
+    if (used) return;
+    used = true;
+    reload.disabled = true;
+    ctx.reload();
+  });
+  mountView(
+    ctx,
+    heading,
+    el("p", {}, "RestoreTime could not refresh your connection to Clockify. Reload RestoreTime."),
+    reload,
   );
 }
 
@@ -59,7 +78,13 @@ function isCurrentView(ctx: Ctx, generation: ViewGeneration): boolean {
 /** Runs an API call, mounts a loading placeholder first, and routes a session timeout to the
  * takeover view — every view's data-loading entry point goes through this so that behavior is
  * identical everywhere instead of re-implemented per view. */
-export async function withLoading<T>(ctx: Ctx, load: () => Promise<T>, onLoaded: (value: T) => void, loadingLabel?: string): Promise<void> {
+export async function withLoading<T>(
+  ctx: Ctx,
+  load: () => Promise<T>,
+  onLoaded: (value: T) => void,
+  loadingLabel: string | undefined,
+  errorActionLabel: string,
+): Promise<void> {
   const generation = beginRequest(ctx);
   renderLoading(ctx.root, loadingLabel);
   try {
@@ -72,7 +97,7 @@ export async function withLoading<T>(ctx: Ctx, load: () => Promise<T>, onLoaded:
       ctx.navigate({ kind: "session-expired" });
       return;
     }
-    renderApiError(ctx.root, err, () => void withLoading(ctx, load, onLoaded, loadingLabel));
+    renderInitialLoadError(ctx, err, () => void withLoading(ctx, load, onLoaded, loadingLabel, errorActionLabel), errorActionLabel);
   }
 }
 
@@ -121,26 +146,101 @@ export async function runBackgroundRequest<T>(
   }
 }
 
-/** A failed API call outside the initial load (a button action). The caller supplies the safe next
- * action; retry remains the default label for read and preflight failures. */
-export function renderApiError(root: HTMLElement, err: unknown, action: () => void, actionLabel = "Try again"): void {
-  const message =
-    err instanceof MutationTransportError
-      ? "RestoreTime did not receive a response. The request might have reached RestoreTime. Check the current status before you try again."
-      : err instanceof ApiError
-        ? apiErrorMessage(err)
-        : "RestoreTime could not complete that request.";
-  const actionButton = el("button", { type: "button", class: "rt-primary" }, actionLabel);
-  actionButton.addEventListener("click", action);
-  mount(root, el("section", {}, el("p", {}, message), actionButton));
+export type NoticeTone = "danger" | "warning" | "info" | "success";
+
+export function renderNotice(tone: NoticeTone, message: string, title?: string): HTMLElement {
+  return el(
+    "section",
+    { class: `rt-notice rt-notice--${tone}` },
+    ...(title ? [el("h3", {}, title)] : []),
+    el("p", {}, message),
+  );
 }
 
-function apiErrorMessage(err: ApiError): string {
-  const body = err.body;
-  if (typeof body === "object" && body !== null && "error" in body && typeof (body as { error: unknown }).error === "string") {
-    return (body as { error: string }).error;
+export function renderStatusPill(presentation: StatusPresentation): HTMLElement {
+  return el("span", { class: `rt-status-pill rt-status-pill--${presentation.tone}` }, presentation.label);
+}
+
+export interface ApiErrorOptions {
+  readonly region: HTMLElement;
+  readonly err: unknown;
+  readonly context: string;
+  readonly action: () => void;
+  readonly actionLabel: string;
+}
+
+/** Renders an action error inside its named region. The caller keeps the surrounding view mounted. */
+export function renderApiError({ region, err, context, action, actionLabel }: ApiErrorOptions): void {
+  clear(region);
+  const notice = renderNotice("danger", `${context} ${errorMessage(err)}`.trim());
+  notice.setAttribute("role", "alert");
+  const actionButton = el("button", { type: "button", class: "rt-primary" }, actionLabel);
+  actionButton.addEventListener("click", action);
+  region.append(notice, actionButton);
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof MutationTransportError) {
+    return "RestoreTime did not receive a response. The request might have reached RestoreTime. Check the current status before you act again.";
   }
-  return `RestoreTime could not complete that request (status ${err.status}).`;
+  if (!(err instanceof ApiError)) return "RestoreTime could not complete this request.";
+  const body = err.body;
+  if (typeof body === "object" && body !== null && !Array.isArray(body) && "error" in body && typeof (body as { error: unknown }).error === "string") {
+    const message = (body as { error: string }).error;
+    if (message.length <= 500) return message;
+  }
+  return "RestoreTime could not complete this request.";
+}
+
+function renderInitialLoadError(ctx: Ctx, err: unknown, action: () => void, actionLabel: string): void {
+  const heading = el("h2", {}, "RestoreTime could not load this view");
+  const errorRegion = el("div", { class: "rt-inline-error" });
+  renderApiError({ region: errorRegion, err, context: "", action, actionLabel });
+  mountView(ctx, heading, errorRegion);
+}
+
+export interface BusyActionOptions<T> {
+  readonly ctx: Ctx;
+  readonly button: HTMLButtonElement;
+  readonly busyLabel: string;
+  readonly conflictingControls?: readonly (HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement)[] | (() => readonly (HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement)[]);
+  readonly action: () => Promise<T>;
+  readonly onSuccess: (value: T) => void;
+  readonly onError: (err: unknown) => void;
+}
+
+/** Adds one single-flight button action while preserving the existing runAction transport rules. */
+export function bindBusyAction<T>(options: BusyActionOptions<T>): void {
+  const { ctx, button, busyLabel, action, onSuccess, onError } = options;
+  const originalLabel = button.textContent ?? "";
+  let busy = false;
+  button.addEventListener("click", () => {
+    if (busy || button.disabled) return;
+    busy = true;
+    const conflicts = typeof options.conflictingControls === "function" ? options.conflictingControls() : (options.conflictingControls ?? []);
+    const controls = [...new Set([button, ...conflicts])];
+    const previous = controls.map((control) => ({ control, disabled: control.disabled }));
+    for (const { control } of previous) control.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.setAttribute("aria-label", originalLabel);
+    button.textContent = busyLabel;
+    void runAction(
+      ctx,
+      action,
+      onSuccess,
+      (err) => {
+        const canRestore = !(err instanceof MutationTransportError);
+        if (canRestore) {
+          busy = false;
+          button.removeAttribute("aria-busy");
+          button.removeAttribute("aria-label");
+          button.textContent = originalLabel;
+          for (const item of previous) item.control.disabled = item.disabled;
+        }
+        onError(err);
+      },
+    );
+  });
 }
 
 /** docs/10 §3 "Differences" section: the fixed system-differences sentence, always shown, plus
@@ -179,7 +279,7 @@ export function renderBlockers(blockers: readonly PlanBlocker[]): HTMLElement | 
     "section",
     // rt-notice, not a bare <section>: the stylesheet marks what the user must not miss, and
     // "Differences" is routine information that must not borrow the same alarm.
-    { class: "rt-notice" },
+    { class: "rt-notice rt-notice--danger" },
     el("h3", {}, "This entry cannot be recreated yet"),
     el("ul", {}, ...blockers.map((b) => el("li", {}, b.message))),
   );
@@ -188,7 +288,7 @@ export function renderBlockers(blockers: readonly PlanBlocker[]): HTMLElement | 
 export function renderWarningMessages(warnings: readonly PlanWarning[]): HTMLElement | null {
   const shown = warnings.filter((w) => w.ruleId !== "P-SYS");
   if (shown.length === 0) return null;
-  return el("ul", {}, ...shown.map((w) => el("li", {}, w.message)));
+  return el("section", { class: "rt-notice rt-notice--warning" }, el("ul", {}, ...shown.map((w) => el("li", {}, w.message))));
 }
 
 /** The server removes lineage that the viewer cannot read. This helper only renders the related

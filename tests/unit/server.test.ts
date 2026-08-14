@@ -99,6 +99,9 @@ describe("GET /component", () => {
     );
     expect(response.status).toBe(200);
     expect(String(response.body)).toContain("RestoreTime");
+    expect(String(response.body)).toContain('<header class="rt-shell-header"><h1>RestoreTime</h1></header>');
+    expect(String(response.body)).toContain('<main id="app"><p role="status">Loading…</p></main>');
+    expect(String(response.body)).toContain('id="rt-announcer" class="rt-sr-only" aria-live="polite" aria-atomic="true"');
     // fact 12: CLOCKIFY_PARENT_ORIGIN feeds both the CSP frame-ancestors *and* the bridge's
     // parentOrigin. The shell carries the origin to the browser via this data attribute — cover
     // both sides, not just the CSP header, so a renamed/dropped attribute fails a test instead of

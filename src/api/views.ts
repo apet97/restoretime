@@ -37,7 +37,9 @@ export function componentShellHtml(
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Time Entry Recovery</title><link rel="stylesheet" href="${safeStylePath}"></head>
 <body data-parent-origin="${safeOrigin}" data-theme="${safeTheme}" data-language="${safeLanguage}" data-role="${safeRole}">
-<main id="app"><h1>RestoreTime</h1><p>Loading…</p></main>
+<header class="rt-shell-header"><h1>RestoreTime</h1></header>
+<main id="app"><p role="status">Loading…</p></main>
+<div id="rt-announcer" class="rt-sr-only" aria-live="polite" aria-atomic="true"></div>
 <script src="${safeScriptPath}"></script>
 </body>
 </html>`;

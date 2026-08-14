@@ -368,7 +368,7 @@ describe("component E2E: list -> detail -> resolution -> confirm -> success", ()
     expect(text()).toContain("Deleted time entries");
     expect(text()).toContain("Needs your input");
     findButton("Recreate").click();
-    await waitFor(() => text().includes("Deleted time entry"));
+    await waitFor(() => text().includes("no longer exists"));
 
     // Detail view (docs/10 §3-§4): the P-PROJ-GONE resolution widget.
     expect(text()).toContain("no longer exists");
@@ -434,7 +434,7 @@ describe("component E2E: member dismissal", () => {
     await waitFor(() => text().includes("API investigation"));
 
     findButton("Recreate").click();
-    await waitFor(() => text().includes("Deleted time entry"));
+    await waitFor(() => Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Dismiss"));
     findButton("Dismiss").click();
     await waitFor(() => text().includes("No deleted time entries"));
 
@@ -536,7 +536,7 @@ describe("component E2E: unknown result (AMBIGUOUS)", () => {
 });
 
 describe("component E2E: failed (nothing created)", () => {
-  it("shows the mapped reason and never blocks Try again from re-entering the resolve flow", async () => {
+  it("shows the mapped reason and lets the user review a new plan", async () => {
     const server = await bootServer();
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
     await install(server, webhookToken);
@@ -576,11 +576,11 @@ describe("component E2E: failed (nothing created)", () => {
     // docs/10 §6 Failed: what happened, nothing was created, what to do next.
     expect(text()).toContain("Clockify did not create the entry.");
     expect(text()).toContain("Reason:");
-    expect(text()).toContain("Nothing was created. You can change your selections and try again.");
+    expect(text()).toContain("Nothing was created. Review a new plan before you recreate the entry.");
 
-    // "Try again" re-enters the resolve flow (forceResolve) rather than redisplaying the same
+    // "Review a new plan" re-enters the resolve flow (forceResolve) rather than redisplaying the same
     // failure — the row is still IDLE-equivalent (FAILED, but claimable again) server-side.
-    findButton("Try again").click();
+    findButton("Review a new plan").click();
     await waitFor(() => text().includes("Continue to confirm"));
     expect(text()).not.toContain("Clockify did not create the entry.");
   });
@@ -700,7 +700,7 @@ describe("component E2E: broken installation (docs/11, docs/14 reinstall notice)
     boot({ window, fetchImpl: makeFetchImpl(server, clockify) });
     await waitFor(() => text().includes("Deleted time entries"));
 
-    expect(text()).toContain("Reinstall the addon from the Clockify Marketplace.");
+    expect(text()).toContain("Ask a workspace admin to reinstall this add-on, then reload RestoreTime.");
     // The list itself stays readable — a broken token blocks Clockify calls, not stored rows.
     expect(text()).toContain("API investigation");
   });

@@ -27,11 +27,49 @@ function declaration(css: string, name: string): string {
   return match[1];
 }
 
+function themeBlock(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+  if (!match?.[1]) throw new Error(`Missing ${selector} in the shipped stylesheet.`);
+  return match[1];
+}
+
+function themedDeclaration(css: string, selector: string, name: string): string {
+  return declaration(themeBlock(css, selector), name);
+}
+
 describe("shipped component CSS", () => {
   const css = readFileSync(join(process.cwd(), "dist", "static", "app.css"), "utf8");
 
-  it("keeps light-theme primary text contrast at 4.5:1 or higher", () => {
-    expect(contrast(declaration(css, "--rt-accent"), declaration(css, "--rt-accent-text"))).toBeGreaterThanOrEqual(4.5);
+  it("keeps light and dark primary text contrast at 4.5:1 or higher", () => {
+    for (const selector of [":root", ':root[data-clockify-theme="dark"]']) {
+      expect(contrast(themedDeclaration(css, selector, "--rt-accent"), themedDeclaration(css, selector, "--rt-accent-text"))).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("keeps every status-pill label readable against its semantic background", () => {
+    const statusPairs: readonly (readonly [string, string])[] = [
+      ["--rt-ok", "--rt-pill-success-bg"],
+      ["--rt-warn", "--rt-pill-warning-bg"],
+      ["--rt-danger", "--rt-pill-danger-bg"],
+      ["--rt-progress", "--rt-pill-progress-bg"],
+      ["--rt-muted", "--rt-pill-neutral-bg"],
+    ];
+    for (const selector of [":root", ':root[data-clockify-theme="dark"]']) {
+      for (const [text, background] of statusPairs) {
+        expect(contrast(themedDeclaration(css, selector, text), themedDeclaration(css, selector, background))).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it("keeps a visible focus indicator and avoids positional selectors", () => {
+    const source = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(source).toMatch(/:focus-visible\s*\{[^}]*outline\s*:\s*2px\s+solid\s+var\(--rt-focus\)/);
+    expect(source).not.toMatch(/:(?:first|last|nth)-child/);
+  });
+
+  it("stops busy animation when the user requests reduced motion", () => {
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.rt-busy-spinner\s*\{[^}]*animation\s*:\s*none/);
   });
 
   it("contains long tables inside a narrow component instead of widening the page", () => {

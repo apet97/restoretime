@@ -135,7 +135,7 @@ function backLabel(returnTo: ReturnTarget): string {
 
 function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["lineage"], returnTo: ReturnTarget): void {
   const refresh = el("button", { type: "button" }, "Check status");
-  refresh.addEventListener("click", () => renderDetail(ctx, entryId));
+  refresh.addEventListener("click", () => renderDetail(ctx, entryId, false, undefined, returnTo));
   const back = el("button", { type: "button" }, backLabel(returnTo));
   back.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
   mountView(

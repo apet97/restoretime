@@ -407,6 +407,26 @@ describe("action lifecycle", () => {
     await vi.waitFor(() => expect(ctx.navigate).toHaveBeenCalledWith({ kind: "session-expired" }));
   });
 
+  it("keeps the bulk-review return path when it checks a recreating entry", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      entry: { id: "re-1", lifecycleState: "RECREATING", source: source() },
+      plan: null,
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse);
+
+    renderDetail(ctx, "re-1", false, undefined, "bulk-review");
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Recreating"));
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check status")?.click();
+
+    await vi.waitFor(() => expect(ctx.api.get).toHaveBeenCalledTimes(2));
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Back to review");
+  });
+
   it("ignores an action result after the user navigates away", async () => {
     let navigationVersion = 1;
     let resolveRequest: ((value: unknown) => void) | undefined;

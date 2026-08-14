@@ -1,9 +1,15 @@
+// @vitest-environment happy-dom
+
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
+import type { BulkPreflightRow, DeletedTimeEntry, ListResponse } from "../../src/ui/types.js";
+import { renderBulkReview } from "../../src/ui/views/bulk.js";
+import { renderList } from "../../src/ui/views/list.js";
 
 interface LayoutMetrics {
   readonly fixture: string;
@@ -21,21 +27,108 @@ interface LayoutMetrics {
 interface Fixture {
   readonly name: string;
   readonly widths: readonly number[];
-  readonly content: string;
+  readonly content?: string;
+  readonly render?: () => string | Promise<string>;
 }
 
 const unbroken = "x".repeat(300);
 
+function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
+  return {
+    workspaceId: "ws-1",
+    entryId: "entry-1",
+    ownerId: "user-1",
+    ownerName: "Ana Markovic",
+    description: "API investigation",
+    billable: false,
+    start: "2026-08-07T09:00:00Z",
+    end: "2026-08-07T10:00:00Z",
+    wasRunning: false,
+    type: "REGULAR",
+    timeZone: "UTC",
+    projectId: null,
+    projectName: null,
+    clientName: null,
+    taskId: null,
+    taskName: null,
+    tags: [],
+    customFieldValues: [],
+    ...overrides,
+  };
+}
+
+function markupCtx(isAdminRole = false): Ctx {
+  const root = document.createElement("main");
+  document.body.append(root);
+  return {
+    root,
+    api: { get: vi.fn(), post: vi.fn(), mutate: vi.fn() } as unknown as Ctx["api"],
+    bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
+    locale: "en-GB",
+    isAdminRole,
+    session: createUiSessionState(),
+    getNavigationVersion: () => 0,
+    navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
+  };
+}
+
+async function productionListMarkup(): Promise<string> {
+  const ctx = markupCtx();
+  const response: ListResponse = {
+    entries: [{
+      id: "re-1",
+      lifecycleState: "IDLE",
+      detectedAt: "2026-08-07T12:00:00Z",
+      source: source({ description: unbroken, projectName: unbroken, taskName: unbroken }),
+      preflightSummary: { fidelity: "FULL", blockerCount: 0, actionRequiredCount: 0 },
+    } as unknown as ListResponse["entries"][number]],
+    clockifyUnavailable: false,
+    disabled: false,
+    broken: false,
+    truncated: false,
+    limit: 200,
+  };
+  (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(response);
+  renderList(ctx);
+  await vi.waitFor(() => expect(ctx.root.querySelector(".rt-entry-value")).not.toBeNull());
+  const markup = ctx.root.innerHTML;
+  ctx.root.remove();
+  return markup;
+}
+
+function productionBulkMarkup(): string {
+  const ctx = markupCtx(true);
+  const readySource = source({ description: unbroken, ownerName: unbroken });
+  const rows: BulkPreflightRow[] = [
+    {
+      entryId: "re-ready",
+      status: "ready",
+      source: readySource,
+      plan: {
+        id: "plan-ready",
+        plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: readySource.start, end: readySource.end },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: [],
+        blockers: [],
+        actionRequired: [],
+        fidelity: "FULL",
+      } as unknown as NonNullable<BulkPreflightRow["plan"]>,
+    },
+    { entryId: "re-error", status: "error", source: source({ description: unbroken }), message: unbroken },
+  ];
+  renderBulkReview(ctx, rows);
+  const markup = ctx.root.innerHTML;
+  ctx.root.remove();
+  return markup;
+}
+
 const fixtures: readonly Fixture[] = [
   {
-    name: "long-list",
+    name: "production-list-row",
     widths: [360, 480],
-    content: `<ul><li><div class="rt-desc">${unbroken}</div></li></ul>`,
-  },
-  {
-    name: "long-metadata",
-    widths: [360, 480],
-    content: `<ul><li><div class="rt-metadata"><span>Owner: ${unbroken}</span><span>Project: ${unbroken}</span><span>Task: ${unbroken}</span><span>Tags: ${unbroken}</span></div></li></ul>`,
+    render: productionListMarkup,
   },
   {
     name: "long-select",
@@ -58,9 +151,9 @@ const fixtures: readonly Fixture[] = [
     content: `<ul><li class="rt-card"><h3>Possible match 1</h3><p>${unbroken}</p><details><summary>Show full technical reference</summary><p>${unbroken}</p></details><button>Use this match</button></li></ul>`,
   },
   {
-    name: "bulk-row",
+    name: "production-bulk-rows",
     widths: [360, 480, 860],
-    content: `<ul><li><div class="rt-metadata"><span>Owner: ${unbroken}</span><span>Description: ${unbroken}</span></div><button>Open</button></li></ul>`,
+    render: productionBulkMarkup,
   },
   {
     name: "action-group",
@@ -88,8 +181,13 @@ function componentHtml(css: string, content: string): string {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>${css}</style></head><body><main id="app"><h2>Layout fixture</h2>${content}</main></body></html>`;
 }
 
-function pageHtml(css: string): string {
-  const cases = fixtures.flatMap((fixture) => fixture.widths.map((width) => ({ fixture: fixture.name, width, html: componentHtml(css, fixture.content) })));
+async function pageHtml(css: string): Promise<string> {
+  const cases = [] as { fixture: string; width: number; html: string }[];
+  for (const fixture of fixtures) {
+    const content = fixture.render ? await fixture.render() : fixture.content;
+    if (content === undefined) throw new Error(`Fixture ${fixture.name} has no content.`);
+    for (const width of fixture.widths) cases.push({ fixture: fixture.name, width, html: componentHtml(css, content) });
+  }
   return `<!doctype html><html><body><output id="metrics"></output><script>
 const cases=${JSON.stringify(cases)};
 const metrics=[];
@@ -188,7 +286,7 @@ describe("component layout in Chrome", () => {
     const directory = mkdtempSync(join(tmpdir(), "restoretime-layout-"));
     const htmlPath = join(directory, "layout.html");
     try {
-      writeFileSync(htmlPath, pageHtml(css));
+      writeFileSync(htmlPath, await pageHtml(css));
       const metrics = await measure(chrome, htmlPath, join(directory, "profile"));
       expect(metrics).toHaveLength(fixtures.reduce((count, fixture) => count + fixture.widths.length, 0));
 

@@ -90,11 +90,11 @@ export function renderBulkReview(
     const line = [
       renderStatusPill(bulkStatusPresentation(row.status)),
       ` — ${label}`,
-      ...(description ? [el("div", {}, description)] : []),
-      ...(reason ? [el("div", {}, reason)] : []),
+      ...(description ? [el("div", { class: "rt-entry-value" }, description)] : []),
+      ...(reason ? [el("div", { class: "rt-entry-value" }, reason)] : []),
     ];
     if (row.status === "ready" && row.plan) {
-      line.push(el("div", {}, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
+      line.push(el("div", { class: "rt-entry-value" }, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
       line.push(el("div", {}, `Fidelity: ${fidelityLabel(row.plan.fidelity)}`));
       if (row.source) line.push(renderFactsTable(row.source, row.plan, ctx.locale));
       if (row.plan.warnings.length > 0) {

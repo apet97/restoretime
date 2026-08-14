@@ -238,7 +238,110 @@ describe("action lifecycle", () => {
     await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
     expect(ctx.root.querySelector('[data-view-heading]')).toBe(heading);
     expect(ctx.root.querySelector('[aria-label="Deleted entry facts"]')).toBe(facts);
-    expect(document.activeElement).toBe(ctx.root.querySelector('button[data-focus-key="continue"]'));
+    expect(document.activeElement).toBe(ctx.root.querySelector('input[data-focus-key="description"]'));
+  });
+
+  it("serializes preflight requests and keeps each submitting control group disabled", async () => {
+    const ctx = stubCtx();
+    let resolveFirst: ((value: { plan: RecreationPlan }) => void) | undefined;
+    let resolveSecond: ((value: { plan: RecreationPlan }) => void) | undefined;
+    const initial = plan({
+      actionRequired: [
+        { ruleId: "P-PROJ-GONE", message: "Select a current project." },
+        { ruleId: "P-DESC", message: "Enter a description." },
+      ],
+      presentation: {
+        ...plan().presentation!,
+        editable: [
+          { ruleId: "P-PROJ-GONE", message: "Select a current project." },
+          { ruleId: "P-DESC", message: "Enter a description." },
+        ],
+      },
+    });
+    const first = new Promise<{ plan: RecreationPlan }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<{ plan: RecreationPlan }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
+      if (path === "/api/entries/detail") {
+        return Promise.resolve({
+          entry: { id: "re-1", lifecycleState: "IDLE", source: source({ description: "" }) },
+          plan: initial,
+          attempts: [],
+          lineage: { parent: null, child: null },
+          disabled: false,
+          broken: false,
+          canMarkNotCreated: false,
+        } as unknown as DetailResponse);
+      }
+      if (query?.kind === "projects") return Promise.resolve({ items: [{ id: "proj-new", name: "Customer API" }] });
+      return Promise.resolve({ items: [] });
+    });
+    (ctx.api.post as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ plan: initial })
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+
+    renderDetail(ctx, "re-1");
+    const project = await vi.waitFor(() => {
+      const select = ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]');
+      expect(select).not.toBeNull();
+      expect(select?.options).toHaveLength(2);
+      return select!;
+    });
+    project.value = "proj-new";
+    project.focus();
+    project.dispatchEvent(new Event("change"));
+    expect(project.disabled).toBe(true);
+
+    const description = ctx.root.querySelector<HTMLInputElement>('input[aria-label="Description"]');
+    if (!description) throw new Error("Description control is missing.");
+    description.value = "New description";
+    const save = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Save description");
+    save?.focus();
+    save?.click();
+    expect(save?.disabled).toBe(true);
+    await vi.waitFor(() => expect(ctx.api.post).toHaveBeenCalledTimes(2));
+
+    resolveFirst?.({ plan: plan({ choices: { projectId: "proj-new" } }) });
+    await vi.waitFor(() => expect(ctx.api.post).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(project.disabled).toBe(false));
+    expect(vi.mocked(ctx.api.post).mock.calls.at(-1)).toEqual([
+      "/api/entries/preflight",
+      { entryId: "re-1", choices: { projectId: "proj-new", description: "New description" } },
+    ]);
+
+    resolveSecond?.({ plan: plan({ choices: { projectId: "proj-new", description: "New description" } }) });
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
+  });
+
+  it("keeps stored deleted-entry facts visible when the initial preflight is unavailable", async () => {
+    const ctx = stubCtx();
+    const detail = {
+      entry: { id: "re-1", lifecycleState: "IDLE", source: source() },
+      plan: plan(),
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse;
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (ctx.api.post as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new ApiError(502, { error: "Clockify could not be reached. Nothing was created. Try again in a moment." }))
+      .mockResolvedValueOnce({ plan: detail.plan });
+
+    renderDetail(ctx, "re-1");
+    await vi.waitFor(() => expect(ctx.root.querySelector('[aria-label="Plan error"]')?.textContent).toContain("Stored deleted-entry facts remain available."));
+    expect(ctx.root.querySelector('[data-view-heading]')?.textContent).toBe("Deleted time entry");
+    expect(ctx.root.querySelector('[aria-label="Deleted entry facts"]')?.textContent).toContain("API investigation");
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Check choices again");
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Continue to confirm");
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check choices again")?.click();
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
   });
 
   it("keeps a mutation single-flight and exposes its busy state", () => {
@@ -431,7 +534,7 @@ describe("bulk result view (docs/10 §7)", () => {
 });
 
 describe("resolved plan values", () => {
-  it("keeps saved project, task, and tags readable after Confirm then Back without stale widgets", async () => {
+  it("keeps saved project, task, and tags editable after Confirm then Back", async () => {
     const ctx = stubCtx();
     const editable: ActionRequiredItem[] = [
       { ruleId: "P-PROJ-GONE", message: "Select a current project.", options: ["substitute"] },
@@ -491,8 +594,13 @@ describe("resolved plan values", () => {
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("Customer API"));
     expect(ctx.root.textContent).toContain("Investigation");
     expect(ctx.root.textContent).toContain("urgent");
-    expect(ctx.root.querySelector('select[aria-label="Replacement project"]')).toBeNull();
-    expect(ctx.root.querySelector('select[aria-label="Replacement task"]')).toBeNull();
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new"));
+    expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement task"]')?.value).toBe("task-new");
+    expect(ctx.root.textContent).toContain("Add current tags");
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Continue to confirm")?.click();
+    const confirmState = vi.mocked(ctx.navigate).mock.calls.at(-1)?.[0];
+    if (confirmState?.kind !== "confirm") throw new Error("Continue did not navigate to confirm.");
+    expect(confirmState.draft?.actionRequired).toEqual(editable);
   });
 
   it("shows the persisted planned values after reviewing a new plan", async () => {
@@ -526,7 +634,7 @@ describe("resolved plan values", () => {
     renderDetail(ctx, "re-1", true);
 
     await vi.waitFor(() => expect(ctx.root.textContent).toContain("Customer API"));
-    expect(ctx.root.querySelector('select[aria-label="Replacement project"]')).toBeNull();
+    await vi.waitFor(() => expect(ctx.root.querySelector<HTMLSelectElement>('select[aria-label="Replacement project"]')?.value).toBe("proj-new"));
   });
 
   it("shows a saved description and completed end time before they are changed", () => {

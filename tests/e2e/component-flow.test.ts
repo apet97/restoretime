@@ -368,7 +368,7 @@ describe("component E2E: list -> detail -> resolution -> confirm -> success", ()
     expect(text()).toContain("Deleted time entries");
     expect(text()).toContain("Needs your input");
     findButton("Recreate").click();
-    await waitFor(() => text().includes("Deleted time entry"));
+    await waitFor(() => text().includes("no longer exists"));
 
     // Detail view (docs/10 §3-§4): the P-PROJ-GONE resolution widget.
     expect(text()).toContain("no longer exists");
@@ -434,7 +434,7 @@ describe("component E2E: member dismissal", () => {
     await waitFor(() => text().includes("API investigation"));
 
     findButton("Recreate").click();
-    await waitFor(() => text().includes("Deleted time entry"));
+    await waitFor(() => Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Dismiss"));
     findButton("Dismiss").click();
     await waitFor(() => text().includes("No deleted time entries"));
 

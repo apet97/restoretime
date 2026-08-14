@@ -270,8 +270,8 @@ do not prove a live Clockify installation or a deployed candidate.
 | E2E-UI-06 | `tests/e2e/ui-layout.test.ts`, `tests/e2e/ui-css.test.ts`, `tests/e2e/custom-field-resolution-widgets.test.ts`: responsive and keyboard contracts | Chrome fixtures contain document layout at required widths. The table keeps local scrolling. Native checkbox groups keep labels and keyboard behavior. |
 | E2E-SHUTDOWN-01 | `tests/e2e/server-shutdown.test.ts`: child process shutdown | `SIGTERM` closes the HTTP listener and SQLite database. The process exits 0 within five seconds and database integrity remains `ok`. |
 
-On the final local run dated 2026-08-14, `npm run test` passed 44 files and 441 tests. `npm run
-test:e2e` passed 12 files and 77 tests. These results are local evidence only. They do not prove a
+On the final local run dated 2026-08-14, `npm run test` passed 44 files and 442 tests. `npm run
+test:e2e` passed 12 files and 79 tests. These results are local evidence only. They do not prove a
 deployed candidate or a Clockify developer installation.
 
 ## Commands

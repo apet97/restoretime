@@ -102,26 +102,25 @@ describe("disabled detail actions", () => {
     expect(ctx.navigate).toHaveBeenCalledWith({ kind: "list" });
   });
 
-  it("keeps a DISMISSED entry readable without the Undismiss action", async () => {
+  it("keeps a FAILED deep link readable without recreation actions when the installation is broken", async () => {
     const detail = {
-      entry: { id: "re-1", lifecycleState: "DISMISSED" },
+      entry: { id: "re-1", lifecycleState: "FAILED", source: deletedSource },
       plan: null,
-      attempts: [],
+      attempts: [{ outcome: "FAILED", errorMessage: "Clockify rejected the request." }],
       lineage: { parent: null, child: null },
-      disabled: true,
+      disabled: false,
+      broken: true,
       canMarkNotCreated: false,
     } as unknown as DetailResponse;
     const ctx = stubCtx(detail);
 
     renderDetail(ctx, "re-1");
 
-    await vi.waitFor(() => expect(ctx.root.textContent).toContain("RestoreTime is disabled for this workspace."));
-    expect(ctx.root.textContent).toContain("This entry is hidden from the default list.");
-    expect(buttonLabels(ctx)).toEqual(["Check status", "Back to deleted entries"]);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("Ask a workspace admin to reinstall this add-on, then reload RestoreTime."));
+    expect(ctx.root.textContent).toContain("Deleted entry facts");
+    expect(ctx.root.textContent).toContain("API investigation");
+    expect(buttonLabels(ctx)).toEqual(["Back to deleted entries"]);
     expect(ctx.api.post).not.toHaveBeenCalled();
-
-    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check status")?.click();
-    await vi.waitFor(() => expect(ctx.api.get).toHaveBeenCalledTimes(2));
-    expect(ctx.api.post).not.toHaveBeenCalled();
+    expect(ctx.root.textContent).not.toContain("Review a new plan");
   });
 });

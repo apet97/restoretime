@@ -24,6 +24,11 @@ export function renderDetail(ctx: Ctx, entryId: string, forceResolve = false, dr
 function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResolve: boolean, draft: ResolutionDraft | undefined, returnTo: ReturnTarget): void {
   const { entry } = data;
 
+  if (data.disabled || data.broken) {
+    renderReadOnlyDetail(ctx, entry.source, data.plan, data.broken, data.lineage, returnTo);
+    return;
+  }
+
   if (!forceResolve) {
     if (entry.lifecycleState === "RECREATED" && data.plan && entry.newEntryId) {
       const attempt = data.attempts.find((a) => a.outcome === "SUCCESS") ?? data.attempts[0];
@@ -67,14 +72,9 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
       return;
     }
     if (entry.lifecycleState === "DISMISSED") {
-      renderDismissed(ctx, entryId, data.disabled, data.broken, data.lineage, returnTo);
+      renderDismissed(ctx, entryId, data.lineage, returnTo);
       return;
     }
-  }
-
-  if (data.disabled || data.broken) {
-    renderReadOnlyDetail(ctx, entry.source, data.plan, data.broken, data.lineage, returnTo);
-    return;
   }
 
   const initial = draft?.choices ?? data.plan?.choices ?? {};
@@ -92,7 +92,8 @@ function routeDetail(ctx: Ctx, entryId: string, data: DetailResponse, forceResol
     tags: { ...(draft?.labels.tags ?? {}) },
     customFields: { ...(draft?.labels.customFields ?? {}) },
   };
-  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, actionRequired, labels, false, data.lineage, returnTo);
+  const shell = renderInitialDetailShell(ctx, data.entry.source, data.lineage, returnTo);
+  runPreflightAndRender(ctx, entryId, data.entry.source, initialChoices, actionRequired, labels, false, data.lineage, returnTo, shell);
 }
 
 function renderReadOnlyDetail(
@@ -150,34 +151,11 @@ function renderRecreating(ctx: Ctx, entryId: string, lineage: DetailResponse["li
 function renderDismissed(
   ctx: Ctx,
   entryId: string,
-  disabled: boolean,
-  broken: boolean,
   lineage: DetailResponse["lineage"],
   returnTo: ReturnTarget,
 ): void {
   const back = el("button", { type: "button" }, backLabel(returnTo));
   back.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
-
-  if (disabled || broken) {
-    const refresh = el("button", { type: "button" }, "Check status");
-    refresh.addEventListener("click", () => renderDetail(ctx, entryId));
-    mountView(
-      ctx,
-      el("h2", {}, "Dismissed"),
-      el("p", {}, "This entry is hidden from the default list."),
-      el(
-        "p",
-        { role: "alert" },
-        broken
-          ? "RestoreTime is no longer connected to this workspace. Ask a workspace admin to reinstall this add-on, then reload RestoreTime."
-          : "RestoreTime is disabled for this workspace.",
-      ),
-      renderLineage(ctx, lineage),
-      refresh,
-      back,
-    );
-    return;
-  }
 
   const undismiss = el("button", { type: "button" }, "Undismiss");
   const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Dismissal error" });
@@ -217,40 +195,90 @@ function runPreflightAndRender(
   shell?: DetailShell,
   focusKey?: string | null,
 ): void {
-  const load = () => ctx.api.post("/api/entries/preflight", { entryId, choices: toPreflightChoices(choices) }) as Promise<PreflightResponse>;
+  const preflightChoices = snapshotChoices(choices);
+  const load = () => ctx.api.post("/api/entries/preflight", { entryId, choices: preflightChoices }) as Promise<PreflightResponse>;
+  if (!shell) throw new Error("A detail preflight needs a mounted detail shell.");
+  const preflightNumber = ++shell.latestPreflight;
   const accept = (res: PreflightResponse) => {
     for (const item of res.plan.actionRequired) {
       if (!knownActionRequired.some((known) => known.ruleId === item.ruleId && known.refId === item.refId)) knownActionRequired.push(item);
     }
-    if (shell) {
-      shell.planRegion.removeAttribute("aria-busy");
-      renderPlanRegion(ctx, shell, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo, focusKey ?? null);
+    shell.planRegion.removeAttribute("aria-busy");
+    if (shell.initial) {
+      renderResolveBody(ctx, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo);
       return;
     }
-    renderResolveBody(ctx, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo);
+    renderPlanRegion(ctx, shell, entryId, source, choices, knownActionRequired, labels, res.plan, disabled, lineage, returnTo, focusKey ?? null);
   };
-  if (shell) {
-    shell.planRegion.setAttribute("aria-busy", "true");
-    const checking = el("p", { role: "status", class: "rt-plan-status" }, "Checking choices…");
-    shell.planRegion.append(checking);
-    void runAction(
+  shell.planRegion.setAttribute("aria-busy", "true");
+  shell.planRegion.querySelector(".rt-plan-status")?.remove();
+  shell.planRegion.append(el("p", { role: "status", class: "rt-plan-status" }, "Checking choices…"));
+  const restoreControls = disableSubmittingControlGroup();
+  const run = async () => {
+    if (!shell.planRegion.isConnected) return;
+    await runAction(
       ctx,
       load,
-      accept,
+      (res) => {
+        restoreControls();
+        if (preflightNumber !== shell.latestPreflight || !shell.planRegion.isConnected) return;
+        accept(res);
+      },
       (err) => {
+        restoreControls();
+        if (preflightNumber !== shell.latestPreflight || !shell.planRegion.isConnected) return;
         shell.planRegion.removeAttribute("aria-busy");
-        renderApiError({ region: shell.errorRegion, err, context: "", action: () => runPreflightAndRender(ctx, entryId, source, choices, knownActionRequired, labels, disabled, lineage, returnTo, shell, focusKey), actionLabel: "Check choices again" });
+        shell.planRegion.querySelector(".rt-plan-status")?.remove();
+        renderApiError({
+          region: shell.errorRegion,
+          err,
+          context: shell.initial ? "RestoreTime could not update this plan. Stored deleted-entry facts remain available." : "",
+          action: () => runPreflightAndRender(ctx, entryId, source, choices, knownActionRequired, labels, disabled, lineage, returnTo, shell, focusKey),
+          actionLabel: "Check choices again",
+        });
       },
     );
+  };
+  if (shell.initial) {
+    void run();
     return;
   }
-  void withLoading(
-    ctx,
-    load,
-    accept,
-    "Checking what can be recreated…",
-    "Recheck entry",
-  );
+  shell.preflightQueue = shell.preflightQueue.then(run, run);
+  void shell.preflightQueue;
+}
+
+function snapshotChoices(choices: MutableChoices): MutableChoices {
+  return {
+    ...(choices.projectId !== undefined ? { projectId: choices.projectId } : {}),
+    ...(choices.taskId !== undefined ? { taskId: choices.taskId } : {}),
+    ...(choices.dropTagIds ? { dropTagIds: [...choices.dropTagIds] } : {}),
+    ...(choices.addTagIds ? { addTagIds: [...choices.addTagIds] } : {}),
+    ...(choices.description !== undefined ? { description: choices.description } : {}),
+    ...(choices.runningMode !== undefined ? { runningMode: choices.runningMode } : {}),
+    ...(choices.completedEnd !== undefined ? { completedEnd: choices.completedEnd } : {}),
+    ...(choices.customFieldInputs
+      ? {
+          customFieldInputs: choices.customFieldInputs.map((item) => ({
+            ...item,
+            ...(Array.isArray(item.value) ? { value: [...item.value] } : {}),
+          })),
+        }
+      : {}),
+    ...(choices.dropCustomFieldIds ? { dropCustomFieldIds: [...choices.dropCustomFieldIds] } : {}),
+  };
+}
+
+function disableSubmittingControlGroup(): () => void {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active?.matches("input, select, textarea, button")) return () => undefined;
+  const group = active?.closest("fieldset") ?? active?.parentElement;
+  if (!group) return () => undefined;
+  const controls = Array.from(group.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input, select, textarea, button"));
+  const previous = controls.map((control) => ({ control, disabled: control.disabled }));
+  for (const { control } of previous) control.disabled = true;
+  return () => {
+    for (const { control, disabled } of previous) control.disabled = disabled;
+  };
 }
 
 function effectiveProjectId(plan: RecreationPlan): string | null {
@@ -359,6 +387,32 @@ export function renderDeletedEntryFacts(source: DeletedTimeEntry, locale: string
 interface DetailShell {
   readonly planRegion: HTMLElement;
   readonly errorRegion: HTMLElement;
+  readonly initial: boolean;
+  preflightQueue: Promise<void>;
+  latestPreflight: number;
+}
+
+function renderInitialDetailShell(
+  ctx: Ctx,
+  source: DeletedTimeEntry,
+  lineage: DetailResponse["lineage"],
+  returnTo: ReturnTarget,
+): DetailShell {
+  const planRegion = el("section", { class: "rt-plan-region", "aria-label": "Recreation plan" });
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Plan error" });
+  const backButton = el("button", { type: "button" }, backLabel(returnTo));
+  backButton.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
+  const shell: DetailShell = { planRegion, errorRegion, initial: true, preflightQueue: Promise.resolve(), latestPreflight: 0 };
+  mountView(
+    ctx,
+    el("h2", {}, "Deleted time entry"),
+    renderDeletedEntryFacts(source, ctx.locale),
+    renderLineage(ctx, lineage),
+    errorRegion,
+    planRegion,
+    el("div", { class: "rt-action-group" }, backButton),
+  );
+  return shell;
 }
 
 function draftFor(choices: MutableChoices, knownActionRequired: readonly ActionRequiredItem[], labels: ChoiceLabels): ResolutionDraft {
@@ -388,7 +442,7 @@ function renderResolveBody(
 ): void {
   const planRegion = el("section", { class: "rt-plan-region", "aria-label": "Recreation plan" });
   const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Plan error" });
-  const shell: DetailShell = { planRegion, errorRegion };
+  const shell: DetailShell = { planRegion, errorRegion, initial: false, preflightQueue: Promise.resolve(), latestPreflight: 0 };
   const backButton = el("button", { type: "button" }, backLabel(returnTo));
   backButton.addEventListener("click", () => backToReturnTarget(ctx, returnTo));
   const actionGroup = el("div", { class: "rt-action-group" });
@@ -449,14 +503,14 @@ function renderPlanRegion(
     return;
   }
 
-  if (plan.actionRequired.length > 0) {
-    const widgets = renderResolutionWidgets(ctx, choices, reflow, plan.actionRequired, effectiveProjectId(plan), source, labels);
+  if (knownActionRequired.length > 0) {
+    const widgets = renderResolutionWidgets(ctx, choices, reflow, knownActionRequired, effectiveProjectId(plan), source, labels);
     if (widgets) shell.planRegion.append(widgets);
   }
   const canConfirm = plan.presentation !== null && plan.blockers.length === 0 && plan.actionRequired.length === 0;
   const continueButton = el("button", { type: "button", class: "rt-primary", "data-focus-key": "continue" }, "Continue to confirm");
   continueButton.disabled = !canConfirm;
-  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled, draft: draftFor(choices, plan.actionRequired, labels), returnTo }));
+  continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled, draft: draftFor(choices, knownActionRequired, labels), returnTo }));
   if (plan.presentation === null) shell.planRegion.append(renderNotice("warning", "This plan needs a new check before you can confirm it."));
   shell.planRegion.append(el("div", { class: "rt-action-group" }, continueButton));
 

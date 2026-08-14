@@ -276,7 +276,7 @@ function renderRow(
   const lines = [
     el("div", {}, openButton),
     el("div", { class: "rt-desc" }, source.description || "(no description)"),
-    ...(projectLine ? [el("div", {}, projectLine)] : []),
+    ...(projectLine ? [el("div", { class: "rt-entry-value" }, projectLine)] : []),
     el("div", { class: "rt-metadata" }, el("span", {}, `Tags: ${tagNames || "none"}`), el("span", {}, `Detected: ${detected}`)),
     el("div", {}, "Status: ", renderStatusPill(status)),
   ];

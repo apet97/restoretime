@@ -357,6 +357,51 @@ describe("N8 error-message sweep", () => {
     expect((list.body as { clockifyUnavailable: boolean }).clockifyUnavailable).toBe(true);
   });
 
+  it("a rejected addon token found by lazy detail reconciliation marks the installation broken", async () => {
+    const { server, token, entryId } = await setup();
+    const preflight = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/preflight",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { entryId, choices: {} },
+    });
+    const planId = (preflight.body as { plan: { id: string } }).plan.id;
+    const attemptId = "attempt-lazy-token-rejection";
+    expect(entries.claim(server.db, {
+      id: entryId,
+      workspaceId: WORKSPACE_ID,
+      claimToken: attemptId,
+      now: new Date("2026-08-08T12:00:00Z"),
+    })).toBeDefined();
+    entries.setAmbiguous(server.db, { id: entryId, workspaceId: WORKSPACE_ID, claimToken: attemptId });
+    insertAttemptFixture(server.db, {
+      id: attemptId,
+      planId,
+      recoverableEntryId: entryId,
+      startedAt: "2026-08-08T12:00:00Z",
+      baseline: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      (async () => jsonResponse({ message: "Addon token invalid", code: 4017 }, 401)) as typeof fetch,
+    );
+
+    const detail = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries/detail",
+      query: new URLSearchParams({ id: entryId }),
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(detail.status).toBe(200);
+    expect((detail.body as { broken: boolean }).broken).toBe(true);
+    const installation = server.db
+      .prepare("SELECT broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get(WORKSPACE_ID, ADDON_ID) as { broken_at: string | null };
+    expect(installation.broken_at).not.toBeNull();
+  });
+
   it("a genuine transport failure (revalidation read fails): safely states nothing was created", async () => {
     const { server, token, entryId } = await setup();
     const preflight = await server.addon.handle({

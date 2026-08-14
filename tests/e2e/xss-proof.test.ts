@@ -344,7 +344,7 @@ describe("XSS proof: hostile fixture through every rendered view", () => {
     expect(text()).toContain(XSS_TAG_NAME);
 
     findButton("Recreate").click();
-    await waitFor(() => text().includes("Deleted time entry"));
+    await waitFor(() => document.querySelector("select") !== null);
 
     // --- Detail view (src/ui/views/detail.ts): the facts table (description, project, tags kept
     // as-is before any resolution; owner name).

@@ -160,6 +160,8 @@ below either describes a current static fact or identifies itself as historical 
 - [ ] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
 - [ ] The current candidate has a local version-2 migration and rollback drill. The drill stops
       the candidate, restores a copy of the preserved version-2 backup, starts the recorded prior
-      image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`. Its deployed
-      version-3 database also has a backup locked against expiration, an operator record that
-      forbids deletion, and isolated restore proof.
+      image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`.
+- [ ] Railway platform backup/PITR and isolated Railway platform restore are **NOT PROVEN — deferred
+      infrastructure capability**. The available Railway plan requires Pro. The operator waived
+      these as blocking requirements for the RC.11 prerelease only. This waiver does not prove
+      production disaster-recovery readiness and does not authorize a Railway plan upgrade.

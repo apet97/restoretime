@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { ActionRequiredItem, DeletedTimeEntry } from "../../src/ui/types.js";
 import { renderResolutionWidgets, type MutableChoices } from "../../src/ui/views/resolution-widgets.js";
 
@@ -37,8 +37,11 @@ function stubCtx(): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: false,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 

@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionExpiredError } from "../../src/ui/api.js";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { DeletedTimeEntry, ListResponse } from "../../src/ui/types.js";
 import { renderList } from "../../src/ui/views/list.js";
 import { renderResolutionWidgets } from "../../src/ui/views/resolution-widgets.js";
@@ -54,10 +54,13 @@ function stubCtx(get: Ctx["api"]["get"]): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    session: createUiSessionState(),
     getNavigationVersion: () => navigationVersion,
     navigate: vi.fn(() => {
       navigationVersion += 1;
     }),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 

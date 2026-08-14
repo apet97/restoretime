@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { formatEntryHeader, normalizeLocale, statusLabel } from "../../src/ui/format.js";
+import { formatEntryHeader, normalizeLocale, statusLabel, statusPresentation } from "../../src/ui/format.js";
 
 const originalTimeZone = process.env.TZ;
 
@@ -22,6 +22,18 @@ describe("statusLabel", () => {
       lifecycleState: "IDLE",
       preflightSummary: { blockerCount: 0, actionRequiredCount: 0, fidelity: "FULL" },
     })).toBe("Ready to recreate");
+  });
+
+  it.each([
+    [{ lifecycleState: "IDLE", preflightSummary: { blockerCount: 1, actionRequiredCount: 0, fidelity: "IMPOSSIBLE" } }, { label: "Blocked", tone: "danger" }],
+    [{ lifecycleState: "IDLE", preflightSummary: { blockerCount: 0, actionRequiredCount: 1, fidelity: "ADJUSTED" } }, { label: "Needs your input", tone: "warning" }],
+    [{ lifecycleState: "RECREATING", preflightSummary: null }, { label: "Recreating", tone: "progress" }],
+    [{ lifecycleState: "RECREATED", preflightSummary: null }, { label: "Recreated", tone: "success" }],
+    [{ lifecycleState: "FAILED", preflightSummary: null }, { label: "Failed", tone: "danger" }],
+    [{ lifecycleState: "AMBIGUOUS", preflightSummary: null }, { label: "Result uncertain", tone: "warning" }],
+    [{ lifecycleState: "DISMISSED", preflightSummary: null }, { label: "Dismissed", tone: "neutral" }],
+  ] as const)("maps %o to a visible semantic status", (row, expected) => {
+    expect(statusPresentation(row)).toEqual(expected);
   });
 });
 

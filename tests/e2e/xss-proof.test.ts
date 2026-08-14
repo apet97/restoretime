@@ -30,7 +30,7 @@ import { boot as bootApp, type BootOptions } from "../../src/ui/app.js";
 import type { TokenAuthorityHandle } from "../../src/ui/bridge.js";
 import { renderBulkReview, renderBulkResults } from "../../src/ui/views/bulk.js";
 import { renderResult } from "../../src/ui/views/result.js";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { BulkPreflightRow, BulkRecreateRow, RecreationPlan } from "../../src/ui/types.js";
 
 const ADDON_KEY = "restoretime-xss";
@@ -401,16 +401,11 @@ describe("XSS proof: hostile fixture through every rendered view", () => {
     findButton("Recreate entry").click();
     await waitFor(() => text().includes("Time entry recreated.") || text().includes("did not create"));
 
-    // --- Result/success view (src/ui/views/result.ts): the verification-diff list renders the
-    // actual custom-field value Clockify returned, via a template-string child — still one text
-    // node, never parsed.
+    // --- Result/success view (src/ui/views/result.ts): the closed human diff presenter does not
+    // print raw custom-field data. The DOM assertion proves it cannot become markup.
     assertNoInjectedElements();
     expect(text()).toContain("Time entry recreated.");
-    // result.ts renders this line via `JSON.stringify(d.actual)` inside one template-string text
-    // node, so the payload's quotes come through JSON-escaped (`\"`) rather than byte-identical —
-    // still just text, never markup. `assertNoInjectedElements()` above is the proof that matters;
-    // this checks the payload actually reached the screen rather than being silently dropped.
-    expect(text()).toContain(JSON.stringify(XSS_CF_VALUE_ACTUAL));
+    expect(text()).toContain("Clockify saved a different value for Ticket.");
   });
 });
 
@@ -433,8 +428,11 @@ function stubCtx(): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 

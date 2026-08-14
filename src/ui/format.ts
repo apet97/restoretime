@@ -7,28 +7,39 @@
 import { formatClockifyDate } from "@apet97/clockify-addon-sdk/ui";
 import type { Fidelity, ListRow } from "./types.js";
 
+export type StatusTone = "success" | "warning" | "danger" | "progress" | "neutral";
+
+export interface StatusPresentation {
+  readonly label: string;
+  readonly tone: StatusTone;
+}
+
 /** docs/10 §1: the exact status vocabulary, derived from the entry's stored lifecycle state (never
  * a client-side eligibility decision) plus the server's own preflight summary counts. */
-export function statusLabel(row: Pick<ListRow, "lifecycleState" | "preflightSummary">): string {
+export function statusPresentation(row: Pick<ListRow, "lifecycleState" | "preflightSummary">): StatusPresentation {
   switch (row.lifecycleState) {
     case "RECREATING":
-      return "Recreating…";
+      return { label: "Recreating", tone: "progress" };
     case "RECREATED":
-      return "Recreated";
+      return { label: "Recreated", tone: "success" };
     case "FAILED":
-      return "Failed";
+      return { label: "Failed", tone: "danger" };
     case "AMBIGUOUS":
-      return "Unknown result";
+      return { label: "Result uncertain", tone: "warning" };
     case "DISMISSED":
-      return "Dismissed";
+      return { label: "Dismissed", tone: "neutral" };
     case "IDLE": {
       const summary = row.preflightSummary;
-      if (summary === null) return "Status unknown";
-      if (summary.blockerCount > 0) return "Blocked";
-      if (summary.actionRequiredCount > 0) return "Needs your input";
-      return "Ready to recreate";
+      if (summary === null) return { label: "Status unknown", tone: "neutral" };
+      if (summary.blockerCount > 0) return { label: "Blocked", tone: "danger" };
+      if (summary.actionRequiredCount > 0) return { label: "Needs your input", tone: "warning" };
+      return { label: "Ready to recreate", tone: "success" };
     }
   }
+}
+
+export function statusLabel(row: Pick<ListRow, "lifecycleState" | "preflightSummary">): string {
+  return statusPresentation(row).label;
 }
 
 /** docs/10 §5: Complete / Adjusted / Partial. IMPOSSIBLE never reaches the confirm view (a plan

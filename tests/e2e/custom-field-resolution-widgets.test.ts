@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderResolutionWidgets, type MutableChoices } from "../../src/ui/views/resolution-widgets.js";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import type { ActionRequiredItem, CustomFieldOption, DeletedTimeEntry } from "../../src/ui/types.js";
 
 const FIELDS: readonly CustomFieldOption[] = [
@@ -45,8 +45,11 @@ function stubCtx() {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
   return { ctx, get };
 }
@@ -66,6 +69,11 @@ async function waitForSelect(node: HTMLElement): Promise<HTMLSelectElement> {
   return node.querySelector("select") as HTMLSelectElement;
 }
 
+async function waitForCheckboxes(node: HTMLElement): Promise<HTMLInputElement[]> {
+  await vi.waitFor(() => expect(node.querySelectorAll('input[type="checkbox"]').length).toBeGreaterThan(0));
+  return Array.from(node.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+}
+
 function clickButton(node: HTMLElement, label: string): void {
   const button = Array.from(node.querySelectorAll("button")).find((candidate) => candidate.textContent === label);
   if (!button) throw new Error(`Button not found: ${label}`);
@@ -82,6 +90,7 @@ describe("custom-field resolution widgets", () => {
     const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-single", value: "High" }] };
     const message = "Priority is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-single", message)], null, source());
+    ctx.root.append(rendered);
     const node = itemNode(rendered, message);
     const select = await waitForSelect(node);
 
@@ -95,19 +104,19 @@ describe("custom-field resolution widgets", () => {
     expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-single", value: "Low" }]);
   });
 
-  it("uses current options for a required multiple dropdown and submits a string array", async () => {
+  it("uses a labeled checkbox group for a required multiple dropdown and submits a string array", async () => {
     const { ctx } = stubCtx();
     const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-multiple", value: ["South"] }] };
     const message = "Regions is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-multiple", message)], null, source());
+    ctx.root.append(rendered);
     const node = itemNode(rendered, message);
-    const select = await waitForSelect(node);
+    const values = await waitForCheckboxes(node);
 
-    expect(select.multiple).toBe(true);
-    expect(Array.from(select.selectedOptions).map((option) => option.value)).toEqual(["South"]);
-    expect(select.getAttribute("aria-label")).toBe("Regions");
-    select.options[0]!.selected = true;
-    select.options[1]!.selected = true;
+    expect(values.map((input) => input.closest("label")?.textContent)).toEqual(["North", "South"]);
+    expect(values.map((input) => input.checked)).toEqual([false, true]);
+    values[0]!.checked = true;
+    values[0]!.dispatchEvent(new Event("change"));
     clickButton(node, "Save values");
 
     expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-multiple", value: ["North", "South"] }]);
@@ -118,6 +127,7 @@ describe("custom-field resolution widgets", () => {
     const choices: MutableChoices = { customFieldInputs: [{ customFieldId: "cf-checkbox", value: false }] };
     const message = "Approved is required.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-REQ", "cf-checkbox", message)], null, source());
+    ctx.root.append(rendered);
     const node = itemNode(rendered, message);
     const select = await waitForSelect(node);
 
@@ -139,19 +149,20 @@ describe("custom-field resolution widgets", () => {
     const choices: MutableChoices = { dropCustomFieldIds: ["cf-stale-multiple"] };
     const message = "Teams has a stale value.";
     const rendered = renderResolutionWidgets(ctx, choices, vi.fn(), [action("P-CF-OPT", "cf-stale-multiple", message)], null, source());
+    ctx.root.append(rendered);
     const node = itemNode(rendered, message);
-    const select = await waitForSelect(node);
+    const values = await waitForCheckboxes(node);
 
-    expect(select.multiple).toBe(true);
     expect(node.textContent).toContain("This value will not be sent.");
-    expect(select.getAttribute("aria-label")).toBe("Teams");
     expect(Array.from(node.querySelectorAll("button")).map((button) => button.textContent)).toEqual([
       "Use selected values",
       "Keep the original value",
       "Drop this value",
     ]);
-    select.options[0]!.selected = true;
-    select.options[1]!.selected = true;
+    values[0]!.checked = true;
+    values[0]!.dispatchEvent(new Event("change"));
+    values[1]!.checked = true;
+    values[1]!.dispatchEvent(new Event("change"));
     clickButton(node, "Use selected values");
 
     expect(choices.customFieldInputs).toEqual([{ customFieldId: "cf-stale-multiple", value: ["Platform", "Support"] }]);

@@ -373,6 +373,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   if ("error" in loaded) return loaded.error;
   let entry = loaded.entry;
   const disabled = getInstallationStatus(deps.db, viewer.workspaceId, viewer.addonId) === "INACTIVE";
+  const broken = isInstallationBroken(deps.db, viewer.workspaceId, viewer.addonId);
 
   // A crashed request has no process left to retry the claim. Recover an expired lease when the
   // user opens the detail view. This changes local state only; it never sends a Clockify write.
@@ -391,6 +392,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   // timestamp on every detail view and make the action unreachable.
   if (
     !disabled &&
+    !broken &&
     entry.lifecycleState === "AMBIGUOUS" &&
     !markNotCreatedAllowed(deps.db, latestAttempt)
   ) {
@@ -441,6 +443,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
     )),
     lineage: { parent, child },
     disabled,
+    broken,
     canMarkNotCreated: entry.lifecycleState === "AMBIGUOUS" && markNotCreatedAllowed(deps.db, latestAttempt),
   });
 }

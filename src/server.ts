@@ -318,14 +318,88 @@ export async function createServer(
 }
 
 async function main(): Promise<void> {
-  const { addon, config, logger } = await createServer();
-  createNodeHttpAddonServer(addon, {
+  const { addon, config, logger, db } = await createServer();
+  const httpServer = createNodeHttpAddonServer(addon, {
     onError(error, context) {
       logger.error("http error", { source: context.source, ...safeErrorSummary(error) });
     },
-  }).listen(config.port, () => {
-    logger.info("listening", { port: config.port, baseUrl: config.publicBaseUrl });
   });
+
+  await new Promise<void>((resolve, reject) => {
+    const onListenError = (error: Error) => {
+      httpServer.off("error", onListenError);
+      db.close();
+      reject(error);
+    };
+    httpServer.once("error", onListenError);
+    httpServer.listen(config.port, () => {
+      httpServer.off("error", onListenError);
+      logger.info("listening", { port: config.port, baseUrl: config.publicBaseUrl });
+      resolve();
+    });
+  });
+
+  let shuttingDown = false;
+  let databaseClosed = false;
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const removeSignalHandlers = () => {
+    process.off("SIGTERM", shutdown);
+    process.off("SIGINT", shutdown);
+  };
+
+  const closeDatabase = () => {
+    if (databaseClosed) return;
+    db.close();
+    databaseClosed = true;
+  };
+
+  const finishWithError = (signal: NodeJS.Signals, error: unknown) => {
+    if (forceTimer) clearTimeout(forceTimer);
+    removeSignalHandlers();
+    logger.error("shutdown_failed", { signal, ...safeErrorSummary(error) });
+    process.exitCode = 1;
+  };
+
+  function shutdown(signal: NodeJS.Signals): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info("shutdown_started", { signal });
+
+    forceTimer = setTimeout(() => {
+      try {
+        httpServer.closeAllConnections();
+        closeDatabase();
+      } catch (error) {
+        logger.error("shutdown_force_close_failed", { signal, ...safeErrorSummary(error) });
+      }
+      removeSignalHandlers();
+      logger.error("shutdown_timeout", { signal });
+      // This path is only for a listener that did not drain before the container grace period.
+      // It must not wait for Docker or Railway to send SIGKILL.
+      process.exit(1);
+    }, 3_000);
+    forceTimer.unref();
+
+    httpServer.close((error) => {
+      if (error) {
+        finishWithError(signal, error);
+        return;
+      }
+      try {
+        closeDatabase();
+      } catch (closeError) {
+        finishWithError(signal, closeError);
+        return;
+      }
+      if (forceTimer) clearTimeout(forceTimer);
+      removeSignalHandlers();
+      process.exitCode = 0;
+    });
+  }
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 const isMainModule =

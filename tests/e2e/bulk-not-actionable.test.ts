@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Ctx } from "../../src/ui/state.js";
+import { createUiSessionState, type Ctx } from "../../src/ui/state.js";
 import { MutationTransportError } from "../../src/ui/api.js";
 import type { BulkPreflightRow, DeletedTimeEntry } from "../../src/ui/types.js";
 import { renderBulkReview } from "../../src/ui/views/bulk.js";
@@ -38,8 +38,11 @@ function stubCtx(): Ctx {
     bridge: { subscribe: vi.fn(), refreshAddonToken: vi.fn(), navigate: vi.fn(), showToast: vi.fn() } as unknown as Ctx["bridge"],
     locale: "en-GB",
     isAdminRole: true,
+    session: createUiSessionState(),
     getNavigationVersion: () => 0,
     navigate: vi.fn(),
+    announce: vi.fn(),
+    reload: vi.fn(),
   };
 }
 
@@ -48,6 +51,36 @@ beforeEach(() => {
 });
 
 describe("bulk review state changes", () => {
+  it("keeps the previous review readable but disables recreation while a return refresh is running", async () => {
+    const ctx = stubCtx();
+    let finish: ((value: { results: readonly BulkPreflightRow[] }) => void) | undefined;
+    (ctx.api.post as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((resolve) => {
+      finish = resolve;
+    }));
+    const rows: BulkPreflightRow[] = [{
+      entryId: "re-1",
+      status: "ready",
+      source: source(),
+      plan: {
+        id: "plan-1",
+        plannedRequest: { workspaceId: "ws-1", userId: "user-1", start: source().start, end: source().end },
+        presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
+        warnings: [], blockers: [], actionRequired: [], fidelity: "FULL",
+      } as unknown as NonNullable<BulkPreflightRow["plan"]>,
+    }];
+    ctx.session.selectedEntryIds.add("re-1");
+
+    renderBulkReview(ctx, rows, true);
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry");
+    expect(ctx.root.textContent).toContain("Refreshing review…");
+    expect(recreate?.disabled).toBe(true);
+    expect(ctx.api.post).toHaveBeenCalledWith("/api/entries/bulk-preflight", { ids: ["re-1"] });
+
+    finish?.({ results: rows });
+    await vi.waitFor(() => expect(Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry")?.disabled).toBe(false));
+  });
+
   it("sends one request when the user clicks Recreate twice", () => {
     const ctx = stubCtx();
     (ctx.api.mutate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => undefined));
@@ -66,6 +99,7 @@ describe("bulk review state changes", () => {
       } as unknown as NonNullable<BulkPreflightRow["plan"]>,
     }];
 
+    ctx.session.selectedEntryIds.add("re-1");
     renderBulkReview(ctx, rows);
 
     const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry");
@@ -89,7 +123,7 @@ describe("bulk review state changes", () => {
     const open = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Open");
     expect(open).toBeDefined();
     open?.click();
-    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1" });
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", returnTo: "bulk-review" });
   });
 
   it("locks the snapshotted selection and shows an identified unknown result after transport loss", async () => {
@@ -109,6 +143,7 @@ describe("bulk review state changes", () => {
         fidelity: "FULL",
       } as unknown as NonNullable<BulkPreflightRow["plan"]>,
     };
+    ctx.session.selectedEntryIds.add("re-1");
     renderBulkReview(ctx, [row]);
 
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry")?.click();
@@ -139,6 +174,7 @@ describe("bulk review state changes", () => {
         fidelity: "FULL",
       } as unknown as NonNullable<BulkPreflightRow["plan"]>,
     };
+    ctx.session.selectedEntryIds.add("re-1");
     renderBulkReview(ctx, [row]);
 
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry")?.click();

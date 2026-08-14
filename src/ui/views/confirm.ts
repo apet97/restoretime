@@ -4,12 +4,12 @@
 // and handles whatever the server decides (a 200 outcome, or a 409 `stale` with a fresh plan to
 // show instead).
 
-import { el, mount } from "../dom.js";
+import { el } from "../dom.js";
 import { fidelityLabel } from "../format.js";
 import { renderFactsTable } from "./detail.js";
-import type { Ctx, ResolutionDraft } from "../state.js";
+import type { Ctx, ResolutionDraft, ReturnTarget } from "../state.js";
 import { ApiError, MutationTransportError } from "../api.js";
-import { renderApiError, renderDifferences, renderWarningMessages, runAction } from "./shared.js";
+import { bindBusyAction, mountView, renderApiError, renderDifferences, renderNotice, renderWarningMessages } from "./shared.js";
 import { renderResult } from "./result.js";
 import type { DeletedTimeEntry, RecreateResponse, RecreationPlan } from "../types.js";
 
@@ -23,60 +23,71 @@ export function renderConfirm(
   source: DeletedTimeEntry,
   disabled = false,
   draft?: ResolutionDraft,
+  returnTo: ReturnTarget = "list",
 ): void {
+  const heading = el("h2", {}, "Confirm recreation");
   const nodes: (Node | string)[] = [
-    el("h2", {}, "Confirm recreation"),
     renderFactsTable(source, plan, ctx.locale, draft?.labels),
     el("p", {}, el("strong", {}, "Fidelity: "), fidelityLabel(plan.fidelity)),
+    fidelityExplanation(plan.fidelity),
+    el("p", {}, "RestoreTime will create one new time entry in Clockify with these values. The deleted entry's history stays unchanged."),
   ];
 
   const warnings = renderWarningMessages(plan.warnings);
   if (warnings) nodes.push(el("section", {}, el("h3", {}, "Warnings"), warnings));
   nodes.push(renderDifferences(plan));
 
-  const backButton = el("button", { type: "button" }, "Back");
-  backButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}) }));
+  const backButton = el("button", { type: "button" }, returnTo === "bulk-review" ? "Back to review" : "Back to entry");
+  backButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}), returnTo }));
 
   // docs/10 §8: while the addon is disabled the notice replaces the action. The server refuses it
   // too (routes.ts `actionGuard`); this keeps the user from being told "yes" and then "no".
   if (disabled) {
-    nodes.push(el("p", { role: "alert" }, "RestoreTime is disabled for this workspace."), backButton);
-    mount(ctx.root, ...nodes);
+    nodes.push(renderNotice("info", "RestoreTime is disabled for this workspace."), backButton);
+    mountView(ctx, heading, ...nodes);
     return;
   }
 
   if (plan.presentation === null) {
     const refresh = el("button", { type: "button", class: "rt-primary" }, "Check the plan again");
     refresh.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}) }));
-    nodes.push(el("p", { role: "alert" }, "This saved plan does not have the details needed for confirmation."), refresh, backButton);
-    mount(ctx.root, ...nodes);
+    nodes.push(renderNotice("warning", "This saved plan does not have the details needed for confirmation."), refresh, backButton);
+    mountView(ctx, heading, ...nodes);
     return;
   }
 
   const confirmButton = el("button", { type: "button", class: "rt-primary" }, "Recreate entry");
-
-  confirmButton.addEventListener("click", () => {
-    confirmButton.toggleAttribute("disabled", true);
-    void runAction(
-      ctx,
-      () => ctx.api.mutate("/api/entries/recreate", { entryId, planId: plan.id }) as Promise<RecreateResponse>,
-      (res) => {
+  const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Recreation error" });
+  bindBusyAction({
+    ctx,
+    button: confirmButton,
+    busyLabel: "Recreating…",
+    action: () => ctx.api.mutate("/api/entries/recreate", { entryId, planId: plan.id }) as Promise<RecreateResponse>,
+    onSuccess: (res) => {
         if (!isRecreateResponse(res)) {
-          renderUnknownMutation(ctx, entryId);
+          renderUnknownMutation(ctx, entryId, returnTo);
           return;
         }
         // docs/10 §10 bridge integration: showToast alongside the success view's navigate("tracker")
         // — a toast only on the mutation that just happened, never when a stored RECREATED entry is
         // reopened later (renderResult/renderSuccess is shared with that read-only path).
         if (res.result.outcome === "RECREATED") ctx.bridge.showToast("success", "Time entry recreated.");
-        renderResult(ctx, entryId, plan, res.result);
-      },
-      (err) => handleConfirmError(ctx, entryId, plan, source, draft, err, confirmButton),
-    );
+        renderResult(ctx, entryId, plan, res.result, undefined, returnTo);
+    },
+    onError: (err) => handleConfirmError(ctx, entryId, plan, source, draft, returnTo, errorRegion, err),
   });
 
-  nodes.push(el("div", {}, confirmButton, backButton));
-  mount(ctx.root, ...nodes);
+  nodes.push(errorRegion, el("div", { class: "rt-action-group" }, confirmButton, backButton));
+  mountView(ctx, heading, ...nodes);
+}
+
+function fidelityExplanation(fidelity: RecreationPlan["fidelity"]): HTMLElement {
+  switch (fidelity) {
+    case "FULL": return el("p", {}, "All supported values from the deleted entry are included.");
+    case "ADJUSTED": return el("p", {}, "The new entry includes the choices you made during review.");
+    case "PARTIAL": return el("p", {}, "Some values from the deleted entry cannot be included. Review the differences below.");
+    case "IMPOSSIBLE": return el("p", {}, "This plan cannot create a new entry.");
+  }
 }
 
 function isRecreateResponse(value: unknown): value is RecreateResponse {
@@ -96,14 +107,14 @@ function handleConfirmError(
   plan: RecreationPlan,
   source: DeletedTimeEntry,
   draft: ResolutionDraft | undefined,
+  returnTo: ReturnTarget,
+  errorRegion: HTMLElement,
   err: unknown,
-  confirmButton: HTMLButtonElement,
 ): void {
   if (err instanceof MutationTransportError) {
-    renderUnknownMutation(ctx, entryId);
+    renderUnknownMutation(ctx, entryId, returnTo);
     return;
   }
-  confirmButton.toggleAttribute("disabled", false);
   if (
     err instanceof ApiError &&
     typeof err.body === "object" &&
@@ -111,24 +122,27 @@ function handleConfirmError(
     "unknownResult" in err.body &&
     (err.body as { unknownResult: unknown }).unknownResult === true
   ) {
-    renderApiError(ctx.root, err, () => ctx.navigate({ kind: "detail", entryId }), "Open entry");
+    renderApiError({ region: errorRegion, err, context: "", action: () => ctx.navigate({ kind: "detail", entryId, returnTo }), actionLabel: "Open entry" });
     return;
   }
   if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
-    renderApiError(ctx.root, err, () => ctx.navigate({ kind: "detail", entryId, forceResolve: true }));
+    renderApiError({ region: errorRegion, err, context: "", action: () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, returnTo }), actionLabel: "Review a new plan" });
     return;
   }
-  renderApiError(ctx.root, err, () => ctx.navigate({ kind: "confirm", entryId, plan, source, ...(draft ? { draft } : {}) }));
+  renderApiError({ region: errorRegion, err, context: "", action: () => ctx.navigate({ kind: "confirm", entryId, plan, source, ...(draft ? { draft } : {}), returnTo }), actionLabel: "Review a new plan" });
 }
 
-function renderUnknownMutation(ctx: Ctx, entryId: string): void {
+function renderUnknownMutation(ctx: Ctx, entryId: string, returnTo: ReturnTarget): void {
   const open = el("button", { type: "button", class: "rt-primary" }, "Open entry");
-  open.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId }));
-  mount(
-    ctx.root,
-    el("h2", {}, "We do not know whether the entry was recreated."),
+  open.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, returnTo }));
+  const back = el("button", { type: "button" }, returnTo === "bulk-review" ? "Back to review" : "Back to deleted entries");
+  back.addEventListener("click", () => returnTo === "bulk-review" ? ctx.navigate({ kind: "bulk-review", rows: ctx.session.bulkReviewRows ?? [], refresh: true }) : ctx.navigate({ kind: "list" }));
+  mountView(
+    ctx,
+    el("h2", {}, "Result uncertain"),
+    el("p", {}, "We do not know whether the entry was recreated."),
     el("p", {}, "RestoreTime did not receive a response after it sent the request."),
     el("p", { role: "alert" }, "Do not recreate the entry again. Open it and check its current status."),
-    open,
+    el("div", { class: "rt-action-group" }, open, back),
   );
 }

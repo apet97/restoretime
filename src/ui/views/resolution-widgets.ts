@@ -31,6 +31,45 @@ function itemsFor(items: readonly ActionRequiredItem[], ruleId: string): ActionR
   return items.filter((i) => i.ruleId === ruleId);
 }
 
+function renderCheckboxGroup(
+  legend: string,
+  options: readonly { readonly id: string; readonly name: string }[],
+  selectedIds: readonly string[],
+  actionLabel: string,
+  apply: (values: string[], names: Record<string, string>) => void,
+): HTMLElement {
+  const selected = new Set(selectedIds);
+  const summary = el("p", { role: "status" }, "");
+  const syncSummary = () => {
+    const count = selected.size;
+    summary.textContent = `${count} ${count === 1 ? "value" : "values"} selected`;
+  };
+  const list = el("div", { class: "rt-checkbox-list" });
+  for (const option of options) {
+    const checkbox = el("input", { type: "checkbox", "data-focus-key": `${legend}-${option.id}` });
+    checkbox.checked = selected.has(option.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selected.add(option.id);
+      else selected.delete(option.id);
+      syncSummary();
+    });
+    list.append(el("label", {}, checkbox, option.name));
+  }
+  const applyButton = el("button", { type: "button" }, actionLabel);
+  applyButton.addEventListener("click", () => {
+    const values = options.filter((option) => selected.has(option.id)).map((option) => option.id);
+    apply(values, Object.fromEntries(options.filter((option) => selected.has(option.id)).map((option) => [option.id, option.name])));
+  });
+  syncSummary();
+  return el("fieldset", {}, el("legend", {}, legend), list, summary, applyButton);
+}
+
+function optionLoadFailure(reflow: () => void): HTMLElement {
+  const reload = el("button", { type: "button" }, "Reload choices");
+  reload.addEventListener("click", reflow);
+  return el("div", { class: "rt-inline-error" }, el("p", { role: "alert" }, "Current choices could not load."), reload);
+}
+
 /** P-RUN / P-RUN-END: running-timer disposition (docs/10 §4 "Running entry"). */
 function renderRunningWidget(
   choices: MutableChoices,
@@ -106,7 +145,7 @@ function renderProjectWidget(
   if (!item) return null;
   const canRemove = (item.options ?? []).includes("remove");
 
-  const select = el("select", { "aria-label": "Replacement project" }, el("option", { value: "" }, "Choose a project…"));
+  const select = el("select", { "aria-label": "Replacement project", "data-focus-key": "project" }, el("option", { value: "" }, "Choose a project…"));
   if (canRemove) select.append(el("option", { value: "__none__" }, "No project"));
   select.addEventListener("change", () => {
     if (select.value === "") return;
@@ -126,10 +165,7 @@ function renderProjectWidget(
       if (choices.projectId === null && canRemove) select.value = "__none__";
       else if (typeof choices.projectId === "string") select.value = choices.projectId;
     },
-    () => {
-      /* The select stays usable with just its two fixed options; the next preflight call still
-       * reports the same ACTION_REQUIRED item if nothing was picked. */
-    },
+    () => select.after(optionLoadFailure(reflow)),
   );
 
   return el("fieldset", {}, el("legend", {}, "Project"), el("p", {}, item.message), select);
@@ -148,7 +184,7 @@ function renderTaskWidget(
   if (!item || effectiveProjectId === null) return null;
   const canRemove = (item.options ?? []).includes("remove");
 
-  const select = el("select", { "aria-label": "Replacement task" }, el("option", { value: "" }, "Choose a task…"));
+  const select = el("select", { "aria-label": "Replacement task", "data-focus-key": "task" }, el("option", { value: "" }, "Choose a task…"));
   if (canRemove) select.append(el("option", { value: "__none__" }, "No task"));
   select.addEventListener("change", () => {
     if (select.value === "") return;
@@ -166,6 +202,7 @@ function renderTaskWidget(
       if (choices.taskId === null && canRemove) select.value = "__none__";
       else if (typeof choices.taskId === "string") select.value = choices.taskId;
     },
+    () => select.after(optionLoadFailure(reflow)),
   );
 
   return el("fieldset", {}, el("legend", {}, "Task"), el("p", {}, item.message), select);
@@ -211,27 +248,21 @@ function renderTagsWidget(
 
   if (reqItem) container.append(el("p", {}, reqItem.message));
 
-  const addSelect = el("select", { multiple: "multiple", "aria-label": "Current tags to add" });
-  addSelect.addEventListener("change", () => {
-    const selected = Array.from(addSelect.options).filter((option) => option.selected);
-    choices.addTagIds = selected.map((option) => option.value);
-    labels.tags = Object.fromEntries(selected.map((option) => [option.value, option.textContent ?? option.value]));
-    reflow();
-  });
+  const addContainer = el("div", {}, el("p", { role: "status" }, "Loading current tags…"));
   void runBackgroundRequest(
     ctx,
     () => fetchOptions(ctx, "tags"),
     (tags) => {
-      for (const t of tags) {
-        addSelect.append(el("option", { value: t.id }, t.name));
-      }
-      const selectedIds = new Set(choices.addTagIds ?? []);
-      for (const option of Array.from(addSelect.options)) {
-        option.selected = selectedIds.has(option.value);
-      }
+      if (!addContainer.isConnected) return;
+      addContainer.replaceChildren(renderCheckboxGroup("Add current tags", tags, choices.addTagIds ?? [], "Apply tag values", (values, names) => {
+        choices.addTagIds = values;
+        labels.tags = names;
+        reflow();
+      }));
     },
+    () => addContainer.replaceChildren(optionLoadFailure(reflow)),
   );
-  container.append(el("label", {}, "Add current tags", addSelect));
+  container.append(addContainer);
 
   return container;
 }
@@ -240,7 +271,7 @@ function renderTagsWidget(
 function renderDescriptionWidget(choices: MutableChoices, reflow: () => void, items: readonly ActionRequiredItem[]): HTMLElement | null {
   const item = itemsFor(items, "P-DESC")[0];
   if (!item) return null;
-  const input = el("input", { type: "text", value: choices.description ?? "", "aria-label": "Description" });
+  const input = el("input", { type: "text", value: choices.description ?? "", "aria-label": "Description", "data-focus-key": "description" });
   const save = el("button", { type: "button" }, "Save description");
   save.addEventListener("click", () => {
     choices.description = input.value;
@@ -289,8 +320,7 @@ function renderCustomFieldItem(
     container.append(el("p", { role: "status" }, sameAsSource ? "The original value will be sent." : `Selected value: ${JSON.stringify(savedInput)}`));
   }
 
-  const unavailable = (): HTMLParagraphElement =>
-    el("p", { role: "alert" }, "Current field settings are not available. Reload the page and try again.");
+  const unavailable = (): HTMLElement => optionLoadFailure(reflow);
 
   if (item.ruleId === "P-CF-OPT") {
     const replacement = el("div", {}, el("p", {}, "Loading current field settings…"));
@@ -305,6 +335,7 @@ function renderCustomFieldItem(
       ctx,
       () => fieldsPromise,
       (fields) => {
+        if (!replacement.isConnected) return;
         const field = fields.find((candidate) => candidate.id === refId);
         if (!field) {
           replacement.replaceChildren(unavailable());
@@ -313,22 +344,23 @@ function renderCustomFieldItem(
         labels.customFields[refId] = field.name;
 
         const multiple = field.type === "DROPDOWN_MULTIPLE";
+        const saved = choices.customFieldInputs?.find((candidate) => candidate.customFieldId === refId)?.value;
+        if (multiple) {
+          replacement.replaceChildren(renderCheckboxGroup(field.name, (field.allowedValues ?? []).map((value) => ({ id: value, name: value })), Array.isArray(saved) ? saved.filter((value): value is string => typeof value === "string") : [], "Use selected values", (values) => setInput(values)));
+          return;
+        }
         const select = el(
           "select",
-          multiple ? { multiple: "multiple", "aria-label": field.name } : { "aria-label": field.name },
-          multiple ? null : el("option", { value: "" }, "Choose a value…"),
+          { "aria-label": field.name, "data-focus-key": `custom-field-${refId}` },
+          el("option", { value: "" }, "Choose a value…"),
           ...(field.allowedValues ?? []).map((value) => el("option", { value }, value)),
         );
-        const saved = choices.customFieldInputs?.find((candidate) => candidate.customFieldId === refId)?.value;
         for (const option of Array.from(select.options)) {
-          option.selected = Array.isArray(saved) ? saved.includes(option.value) : saved === option.value;
+          option.selected = saved === option.value;
         }
-        const useSelected = el("button", { type: "button" }, multiple ? "Use selected values" : "Use selected value");
+        const useSelected = el("button", { type: "button" }, "Use selected value");
         useSelected.addEventListener("click", () => {
-          if (multiple) {
-            const values = Array.from(select.options).filter((option) => option.selected).map((option) => option.value);
-            if (values.length > 0) setInput(values);
-          } else if (select.value !== "") {
+          if (select.value !== "") {
             setInput(select.value);
           }
         });
@@ -345,6 +377,7 @@ function renderCustomFieldItem(
     ctx,
     () => fieldsPromise,
     (fields) => {
+      if (!controls.isConnected) return;
       const field = fields.find((candidate) => candidate.id === refId);
       if (!field) {
         controls.replaceChildren(unavailable());
@@ -355,7 +388,7 @@ function renderCustomFieldItem(
       if (field.type === "CHECKBOX") {
         const select = el(
           "select",
-          { "aria-label": field.name },
+          { "aria-label": field.name, "data-focus-key": `custom-field-${refId}` },
           el("option", { value: "" }, "Choose a value…"),
           el("option", { value: "true" }, "Checked"),
           el("option", { value: "false" }, "Not checked"),
@@ -372,22 +405,23 @@ function renderCustomFieldItem(
 
       if (field.type === "DROPDOWN_SINGLE" || field.type === "DROPDOWN_MULTIPLE") {
         const multiple = field.type === "DROPDOWN_MULTIPLE";
+        const saved = choices.customFieldInputs?.find((candidate) => candidate.customFieldId === refId)?.value;
+        if (multiple) {
+          controls.replaceChildren(renderCheckboxGroup(field.name, (field.allowedValues ?? []).map((value) => ({ id: value, name: value })), Array.isArray(saved) ? saved.filter((value): value is string => typeof value === "string") : [], "Save values", (values) => setInput(values)));
+          return;
+        }
         const select = el(
           "select",
-          multiple ? { multiple: "multiple", "aria-label": field.name } : { "aria-label": field.name },
-          multiple ? null : el("option", { value: "" }, "Choose a value…"),
+          { "aria-label": field.name, "data-focus-key": `custom-field-${refId}` },
+          el("option", { value: "" }, "Choose a value…"),
           ...(field.allowedValues ?? []).map((value) => el("option", { value }, value)),
         );
-        const saved = choices.customFieldInputs?.find((candidate) => candidate.customFieldId === refId)?.value;
         for (const option of Array.from(select.options)) {
-          option.selected = Array.isArray(saved) ? saved.includes(option.value) : saved === option.value;
+          option.selected = saved === option.value;
         }
-        const save = el("button", { type: "button" }, multiple ? "Save values" : "Save value");
+        const save = el("button", { type: "button" }, "Save value");
         save.addEventListener("click", () => {
-          if (multiple) {
-            const values = Array.from(select.options).filter((option) => option.selected).map((option) => option.value);
-            if (values.length > 0) setInput(values);
-          } else if (select.value !== "") {
+          if (select.value !== "") {
             setInput(select.value);
           }
         });
@@ -395,7 +429,7 @@ function renderCustomFieldItem(
         return;
       }
 
-      const input = el("input", { type: field.type === "NUMBER" ? "number" : "text", "aria-label": field.name });
+      const input = el("input", { type: field.type === "NUMBER" ? "number" : "text", "aria-label": field.name, "data-focus-key": `custom-field-${refId}` });
       const saved = choices.customFieldInputs?.find((candidate) => candidate.customFieldId === refId)?.value;
       if (saved !== undefined && saved !== null) input.value = String(saved);
       const save = el("button", { type: "button" }, "Save value");

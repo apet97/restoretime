@@ -15,6 +15,31 @@ import type {
   RecreationPlan,
 } from "./types.js";
 
+export interface UiSessionState {
+  readonly list: {
+    userName: string;
+    projectName: string;
+    from: string;
+    to: string;
+    status: string;
+    search: string;
+    dismissed: boolean;
+    bulkMode: boolean;
+  };
+  readonly selectedEntryIds: Set<string>;
+  bulkReviewRows: readonly BulkPreflightRow[] | null;
+}
+
+export function createUiSessionState(): UiSessionState {
+  return {
+    list: { userName: "", projectName: "", from: "", to: "", status: "", search: "", dismissed: false, bulkMode: false },
+    selectedEntryIds: new Set(),
+    bulkReviewRows: null,
+  };
+}
+
+export type ReturnTarget = "list" | "bulk-review";
+
 /** Browser-only labels retained while a user edits a plan. Persisted and reopened plans use the
  * server's `plan.presentation`; these labels only bridge the current selection round-trip. */
 export interface ChoiceLabels {
@@ -40,6 +65,7 @@ export type ViewState =
        * this, the result view's own "Try again" button would just redisplay the same failure. */
       readonly forceResolve?: boolean;
       readonly draft?: ResolutionDraft;
+      readonly returnTo?: ReturnTarget;
     }
   | {
       readonly kind: "confirm";
@@ -48,14 +74,16 @@ export type ViewState =
       readonly source: DeletedTimeEntry;
       readonly disabled?: boolean;
       readonly draft?: ResolutionDraft;
+      readonly returnTo?: ReturnTarget;
     }
   | {
       readonly kind: "result";
       readonly entryId: string;
       readonly plan: RecreationPlan;
       readonly result: AttemptRecreationResult;
+      readonly returnTo?: ReturnTarget;
     }
-  | { readonly kind: "bulk-review"; readonly rows: readonly BulkPreflightRow[] }
+  | { readonly kind: "bulk-review"; readonly rows: readonly BulkPreflightRow[]; readonly refresh?: boolean }
   | { readonly kind: "bulk-results"; readonly rows: readonly BulkRecreateRow[]; readonly reviewRows?: readonly BulkPreflightRow[] }
   | { readonly kind: "session-expired" };
 
@@ -66,8 +94,11 @@ export interface Ctx {
   /** Verified-claim display fields (docs/04 §Component verification) — never the token. */
   readonly locale: string;
   readonly isAdminRole: boolean;
+  readonly session: UiSessionState;
   /** Changes before each view transition. Async work uses this value to avoid replacing a newer
    * view after the user navigates away. */
   getNavigationVersion(): number;
   navigate(state: ViewState): void;
+  announce(message: string): void;
+  reload(): void;
 }

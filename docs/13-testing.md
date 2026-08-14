@@ -257,6 +257,23 @@ success/result) through the real `boot()` source path (the built `dist/static/ap
 `tests/e2e/component-flow.test.ts`), asserting no `img`/`svg`/`script`/`iframe`
 element is ever created from stored Clockify text.
 
+The following developer-end-state tests defend the component contracts. They are local proof. They
+do not prove a live Clockify installation or a deployed candidate.
+
+| ID | Subject | Defends |
+|---|---|---|
+| E2E-UI-01 | `tests/e2e/views.test.ts`, `tests/unit/server.test.ts`: persistent shell, screen heading focus, and live announcement | One product H1 remains mounted. Each complete screen focuses and announces its H2. |
+| E2E-UI-02 | `tests/e2e/views.test.ts`, `tests/e2e/bulk-not-actionable.test.ts`: busy actions | Two immediate activations make one request. The visible busy label, disabled state, and `aria-busy` state remain available. |
+| E2E-UI-03 | `tests/e2e/component-flow.test.ts`, `tests/e2e/bulk-not-actionable.test.ts`: session-local list and bulk state | Detail round trips preserve filters and selection. Filter and mode changes clear hidden selection. Bulk return refreshes preflight. |
+| E2E-UI-04 | `tests/e2e/views.test.ts`, `tests/e2e/ambiguous-result-refresh.test.ts`: inline errors and return paths | Action errors keep context. Each error gives one explicit safe next action. Result and session-expired screens give a usable return action. |
+| E2E-UI-05 | `tests/e2e/ambiguous-result-refresh.test.ts`, `tests/e2e/xss-proof.test.ts`: human result and ambiguous-match presentation | Buttons do not use raw IDs. Technical references remain closed and text-safe. Result differences do not expose JSON, internal keys, or IDs. |
+| E2E-UI-06 | `tests/e2e/ui-layout.test.ts`, `tests/e2e/ui-css.test.ts`, `tests/e2e/custom-field-resolution-widgets.test.ts`: responsive and keyboard contracts | Chrome fixtures contain document layout at required widths. The table keeps local scrolling. Native checkbox groups keep labels and keyboard behavior. |
+| E2E-SHUTDOWN-01 | `tests/e2e/server-shutdown.test.ts`: child process shutdown | `SIGTERM` closes the HTTP listener and SQLite database. The process exits 0 within five seconds and database integrity remains `ok`. |
+
+On the final local run dated 2026-08-14, `npm run test` passed 44 files and 441 tests. `npm run
+test:e2e` passed 12 files and 77 tests. These results are local evidence only. They do not prove a
+deployed candidate or a Clockify developer installation.
+
 ## Commands
 
 ```bash

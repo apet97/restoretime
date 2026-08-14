@@ -7,7 +7,7 @@ term per concept, explicit conditions.
 ## Terms used in the UI
 
 Deleted entry · New entry · Recreate · Recreated · Ready · Needs your input · Blocked · Recreating ·
-Unknown result · Failed · Dismissed. Never: restore, undelete, original entry.
+Result uncertain · Failed · Dismissed. Never: restore, undelete, original entry.
 
 ## 1. List view (regular user)
 
@@ -24,7 +24,7 @@ Status: Ready to recreate
 ```
 
 - Status text comes from the latest preflight summary or lifecycle state: `Ready to recreate`,
-  `Needs your input`, `Blocked`, `Recreating…`, `Unknown result`, `Failed`, `Recreated`.
+  `Needs your input`, `Blocked`, `Recreating…`, `Result uncertain`, `Failed`, `Recreated`.
 - "Detected" is the receipt time (W14). The UI never says "Deleted at".
 - Empty state: "No deleted time entries. When you delete a time entry in Clockify, it appears
   here."
@@ -75,6 +75,19 @@ too. Neither may produce `lifecycle_state = 'FAILED' AND lifecycle_state = 'DISM
 matches nothing and reads to an admin as "no such entries exist" — the same lie the route already
 refuses to tell for an unrecognized `status` (docs/09).
 
+### Session-local list state
+
+The component keeps list filters, bulk mode, and selected deleted-entry IDs for one component
+session. It does not put this state in the URL, storage, or the server.
+
+- List → detail → Back keeps the filters, bulk mode, and selection.
+- Applying a different filter, changing the dismissed toggle, or turning bulk mode off clears the
+  selection. The component announces that change.
+- Bulk review uses the same selected-ID set as the list. Returning from detail runs bulk preflight
+  again before it enables recreation.
+- The browser never treats retained list data as current Clockify fact. It reads preflight and
+  lifecycle facts from the server again when an action needs them.
+
 ## 3. Detail view
 
 Two columns of fact, then differences.
@@ -122,7 +135,7 @@ sent.
 |---|---|
 | Project gone / required | Select: current projects by name, with the archived flag when applicable. Extra option "No project" only when the workspace does not require projects |
 | Task gone | Select: current tasks of the effective project, plus "No task" when tasks are optional |
-| Tag gone | Checkbox per missing tag: "Remove tag ‹name›". Multi-select of current tags to add, when wanted |
+| Tag gone | Checkbox per missing tag: "Remove tag ‹name›". A labeled checkbox group of current tags to add, when wanted |
 | Description required | Text input with the original description prefilled only if it was non-empty; otherwise empty |
 | Custom field option invalid | Select: the field's current options, or "Drop this value" |
 | Custom field required | Text/number input per field type |
@@ -132,14 +145,25 @@ sent.
 | Locked period (regular user) | Warning, not a block: "This entry's date may be in a locked period. An admin can recreate it, or unlock the period." |
 | Blocked (owner gone) | No widget. Explanation text and what to do next |
 
-Every selection re-runs preflight (`POST /api/entries/preflight` with `{entryId, choices}`). The confirm
-button activates only when the plan has no blockers and no open ACTION_REQUIRED items.
+Every selection re-runs preflight (`POST /api/entries/preflight` with `{entryId, choices}`). The
+component updates only the plan region. It keeps the detail heading and deleted-entry facts mounted.
+It moves focus to the equivalent resolution control, or to the first unresolved control if the old
+control no longer exists. The confirm button activates only when the server plan has no blockers and
+no open ACTION_REQUIRED items.
+
+Current tags and `DROPDOWN_MULTIPLE` custom-field values use native labeled checkboxes in a bounded
+vertical list. The list shows a selected-value summary. Single-value fields keep native selects.
 
 ## 5. Confirm view
 
 - The exact planned values (as in the detail view's NEW ENTRY column).
 - Warnings and differences.
 - Fidelity badge: **Complete** (FULL) / **Adjusted** (ADJUSTED) / **Partial** (PARTIAL).
+- FULL means: "All supported values from the deleted entry are included." ADJUSTED means: "The new
+  entry includes the choices you made during review." PARTIAL means: "Some values from the deleted
+  entry cannot be included. Review the differences below."
+- Before the primary action, the view says: "RestoreTime will create one new time entry in Clockify
+  with these values. The deleted entry's history stays unchanged."
 - Primary action: **Recreate entry**. Every confirm revalidates the plan server-side (docs/07 §7),
   regardless of the plan's age (not visible). There is no age threshold.
 
@@ -149,8 +173,9 @@ Success:
 
 ```text
 Time entry recreated.
+This is a new entry. It does not share the deleted entry's historical identity.
 Fidelity: Adjusted.
-Differences: …
+Clockify saved a different start time: …
 [Open in Clockify tracker]  (bridge navigate)   [Back to deleted entries]
 ```
 
@@ -159,11 +184,11 @@ Failed (nothing was created):
 ```text
 Clockify did not create the entry.
 Reason: The project "Legacy API" no longer belongs to this workspace.
-Nothing was created. You can change your selections and try again.
-[Try again]
+Nothing was created. Review a new plan before you recreate the entry.
+[Review a new plan] [Back to entry] [Back to deleted entries]
 ```
 
-Unknown result (AMBIGUOUS):
+Result uncertain (AMBIGUOUS):
 
 ```text
 We do not know whether Clockify created this entry. The recreation might have reached Clockify,
@@ -180,6 +205,16 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
 [It exists — let me pick it]   [It was not created]
 ```
 
+When a bounded check finds possible matches, each card is named `Possible match N`. It shows the
+planned description, start, end, project, and task when available. It says: "This entry matched the
+planned recreation during the last check." The card can show a short technical reference. A closed
+`Show full technical reference` disclosure contains the full ID. The primary action is `Use this
+match`.
+
+Manual recovery remains available. The view explains where to find the entry ID in Clockify before
+it shows a labeled manual-ID field. The field is not stored by the browser. The server still checks
+the fingerprint, baseline, owner, state, and uniqueness before it accepts the ID.
+
 ## 7. Bulk flow (admin)
 
 1. Select rows → **Review selected** (max 50).
@@ -187,7 +222,7 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
    Blocked, with the reason.
 3. Entries needing input are excluded and keep their state; the admin can handle them one by one.
 4. **Recreate N entries** confirms once. Each entry is claimed and executed independently. Results
-   list per entry: Recreated / Failed (reason) / Unknown result. There is no cross-entry
+   list per entry: Recreated / Failed (reason) / Result uncertain. There is no cross-entry
    transaction; each row shows its own outcome.
    The request executes entries sequentially to stay within Clockify's request rate.
 
@@ -208,6 +243,21 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
   via `applyClockifyTheme`/`applyClockifyLanguage` from the verified claims.
 - The iframe bridge is created with `parentOrigin` from `CLOCKIFY_PARENT_ORIGIN` (fact 12).
 - Every failure view answers: what happened, whether anything was created, what to do next (N8).
+- The persistent shell has one product H1, `RestoreTime`. Each complete screen has one H2. A polite
+  live region announces the loaded screen. The component focuses the H2 after a complete screen
+  change. Plan-region changes keep focus in the current control group.
+- Button actions use visible progress labels and `aria-busy`. They reject a second immediate
+  activation. The labels are `Dismissing…`, `Undismissing…`, `Preparing review…`, `Recreating…`,
+  `Recreating entries…`, `Checking…`, `Updating status…`, and `Linking entry…`. A plan-region
+  choice uses `Checking choices…`.
+- Button-action errors stay in the current screen. Each error has alert semantics and an explicit
+  safe next action such as `Reload list`, `Recheck entry`, `Check choices again`, or `Reload
+  review`. Error text never exposes an HTTP status or an arbitrary response body.
+- Status pills contain text. Blockers use danger treatment, warnings use warning treatment,
+  system differences use information treatment, and confirmed success uses success treatment.
+  Color never carries the meaning by itself.
+- The document must not scroll horizontally. User-controlled text wraps. The comparison table keeps
+  its labeled local horizontal scroll wrapper. Action groups stack below 600 px.
 - Token refresh **(proactive half verified live, evidence "Live run 12")**: the dispatch fires at
   25 minutes and the session keeps working past the original token's expiry — a call 106 s after
   expiry still succeeded. The **reactive** half (a 401 mid-call triggering one retry, and the
@@ -220,10 +270,10 @@ If you can see the entry in Clockify, select "It exists". Otherwise select "It w
   (verified on the developer environment, evidence "Live run 10") — so a user cannot navigate to the
   notice. It covers the iframe that was already open when the status changed. The protection that
   matters is the server-side `actionGuard` refusal, because that stale iframe can still POST.
-- Broken installation (401 code 4017, docs/03 §6): the list view shows a notice — "RestoreTime's
-  Clockify connection was rejected. Reinstall the addon from the Clockify Marketplace." — from the
-  `broken` flag on `GET /api/entries` (`broken_at` read back, IT-08 records it). The rows stay
-  readable: a rejected token blocks Clockify calls, not stored data. On every other surface the
-  4017 maps to the reinstall guidance server-side: preflight, confirm revalidation, bulk preflight,
-  and `/api/options` return the same "Reinstall the addon" message that a missing installation
-  does, never "try again in a moment" — a rejected token does not recover on its own.
+- Broken installation (401 code 4017, docs/03 §6): the list view shows a notice — "RestoreTime is
+  no longer connected to this workspace. Ask a workspace admin to reinstall this add-on, then reload
+  RestoreTime." — from the `broken` flag on `GET /api/entries` (`broken_at` read back, IT-08 records
+  it). The rows stay readable: a rejected token blocks Clockify calls, not stored data. Broken,
+  disabled, and currently unavailable installations show stored facts but no Clockify-dependent
+  action. On every other surface the 4017 maps to the same reinstall guidance. It never says to try
+  again in a moment because a rejected token does not recover on its own.

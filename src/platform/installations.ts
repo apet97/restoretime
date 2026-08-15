@@ -76,9 +76,7 @@ export function createSqliteInstallationStore(db: Database.Database): ClockifyIn
       api_url       = excluded.api_url,
       auth_token    = excluded.auth_token,
       webhooks_json = excluded.webhooks_json,
-      installed_at  = excluded.installed_at,
-      -- A reinstall carries a fresh token, so whatever made the old one broken is resolved.
-      broken_at     = NULL
+      installed_at  = excluded.installed_at
   `);
   // status is deliberately absent from the DO UPDATE SET list above: it never travels through
   // ClockifyInstallationContext (the SDK contract has no status field), so a redelivered
@@ -153,6 +151,24 @@ export function markInstallationBroken(
        WHERE workspace_id = ? AND addon_id = ? AND installed_at = ? AND broken_at IS NULL`,
     )
     .run(at, workspaceId, addonId, expectedInstalledAt);
+  return result.changes > 0;
+}
+
+/** Clears an invalid-token notice only if the installation row is still the expected generation.
+ * The verified INSTALLED handler calls this after it saves a changed plaintext token. A delayed
+ * older delivery cannot clear the notice for a newer connection. */
+export function clearInstallationBroken(
+  db: Database.Database,
+  workspaceId: string,
+  addonId: string,
+  expectedInstalledAt: number,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE installations SET broken_at = NULL
+       WHERE workspace_id = ? AND addon_id = ? AND installed_at = ? AND broken_at IS NOT NULL`,
+    )
+    .run(workspaceId, addonId, expectedInstalledAt);
   return result.changes > 0;
 }
 

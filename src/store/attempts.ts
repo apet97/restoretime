@@ -100,45 +100,22 @@ export function startForClaim(
   return renewAndStart.immediate();
 }
 
-export function finish(
-  db: Database.Database,
-  input: {
-    id: string;
-    finishedAt: string;
-    outcome: AttemptOutcome;
-    newEntryId: string | null;
-    errorStatus: number | null;
-    errorCode: string | null;
-    errorMessage: string | null;
-    diffs: readonly VerificationDiff[] | null;
-  },
-): boolean {
-  const result = db.prepare(
-    `UPDATE recreation_attempts
-     SET finished_at=@finishedAt, outcome=@outcome, new_entry_id=@newEntryId,
-         error_status=@errorStatus, error_code=@errorCode, error_message=@errorMessage,
-         diff_json=@diffJson,
-         baseline_json=CASE WHEN @outcome='AMBIGUOUS' THEN baseline_json ELSE NULL END,
-         reconcile_json=CASE WHEN @outcome='AMBIGUOUS' THEN reconcile_json ELSE NULL END
-     WHERE id=@id`,
-  ).run({
-    id: input.id,
-    finishedAt: input.finishedAt,
-    outcome: input.outcome,
-    newEntryId: input.newEntryId,
-    errorStatus: input.errorStatus,
-    errorCode: input.errorCode,
-    errorMessage: input.errorMessage,
-    diffJson: input.diffs === null ? null : JSON.stringify(input.diffs),
-  });
-  return result.changes === 1;
+interface FirstOutcomeInput {
+  readonly id: string;
+  readonly finishedAt: string;
+  readonly outcome: AttemptOutcome;
+  readonly newEntryId: string | null;
+  readonly errorStatus: number | null;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly diffs: readonly VerificationDiff[] | null;
 }
 
 /** Records the first outcome only. The caller uses this inside the same transaction as the
  * fenced entry-state change, so neither half can commit alone. */
 export function finishUnfinished(
   db: Database.Database,
-  input: Parameters<typeof finish>[1],
+  input: FirstOutcomeInput,
 ): boolean {
   const result = db.prepare(
     `UPDATE recreation_attempts
@@ -158,6 +135,26 @@ export function finishUnfinished(
     errorMessage: input.errorMessage,
     diffJson: input.diffs === null ? null : JSON.stringify(input.diffs),
   });
+  return result.changes === 1;
+}
+
+/** The sole completed-outcome transition: verified adoption changes AMBIGUOUS to SUCCESS. */
+export function finishAmbiguousAsSuccess(
+  db: Database.Database,
+  input: {
+    readonly id: string;
+    readonly finishedAt: string;
+    readonly newEntryId: string;
+    readonly diffs: readonly VerificationDiff[];
+  },
+): boolean {
+  const result = db.prepare(
+    `UPDATE recreation_attempts
+     SET outcome='SUCCESS', finished_at=@finishedAt, new_entry_id=@newEntryId, diff_json=@diffJson,
+         error_status=NULL, error_code=NULL, error_message=NULL,
+         baseline_json=NULL, reconcile_json=NULL
+     WHERE id=@id AND outcome='AMBIGUOUS'`,
+  ).run({ ...input, diffJson: JSON.stringify(input.diffs) });
   return result.changes === 1;
 }
 

@@ -19,8 +19,10 @@ Everything the application relies on. Each item names the exact SDK method. Evid
   Normalization input rules:
   - `id`, `workspaceId`, `userId`, `description`, `billable`, `projectId`, `type`,
     `currentlyRunning` — top level. `isLocked` can be present, but the normalizer does not store it.
-  - `timeInterval.start` (required valid timestamp), `timeInterval.end` (valid timestamp, or null
-    when running), `timeInterval.timeZone`. A stopped entry must have an end timestamp.
+  - `timeInterval.start` (required strict UTC ISO timestamp), `timeInterval.end`, and
+    `timeInterval.timeZone` are required properties. A running entry has `end:null`. A stopped
+    entry has a strict UTC ISO `end` timestamp. `timeZone` is a non-empty string or null. A present
+    timestamp fraction has one to nine digits. The normalizer preserves accepted source strings.
     `zonedStart`/`zonedEnd` (display only).
   - `project.name`, `project.clientName`; `project.archived` can be present, but the normalizer does
     not store it. `task.id`, `task.name` (or `task:null`);
@@ -139,8 +141,8 @@ Notes:
 
 | Event | Path | Handling |
 |---|---|---|
-| `INSTALLED` | `/lifecycle/installed` | Verify (`withClockifyVerifiedLifecycleRequest` family), persist installation context encrypted (S3), including per-webhook tokens. |
-| `STATUS_CHANGED` | `/lifecycle/status-changed` | Persist status. INACTIVE installations keep data; the component shows a disabled notice. |
+| `INSTALLED` | `/lifecycle/installed` | Verify (`withClockifyVerifiedLifecycleRequest` family), load the prior decrypted context, then persist the new context encrypted (S3), including per-webhook tokens. `STATUS_CHANGED` remains the only status writer. A same-token redelivery preserves `broken_at`. A changed plaintext token clears `broken_at` only when the saved row still has that new generation. The token comparison stays in memory. |
+| `STATUS_CHANGED` | `/lifecycle/status-changed` | Persist status only. INACTIVE installations keep data; the component shows a disabled notice. Re-enabling does not clear `broken_at`: re-enable and reinstall have different remedies. |
 | `DELETED` | `/lifecycle/deleted` | Verify, then hard-delete the installation and all workspace data (F17, docs/08). |
 | `SETTINGS_UPDATED` | not declared | The addon declares no custom settings in v1. |
 
@@ -167,7 +169,7 @@ Notes:
 
 | Method | Exact path | Request | Response |
 |---|---|---|---|
-| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (validated; never widen workspace scope). `dismissed` is available to every viewer so an owner can undo a dismissal; non-admin results remain owner-scoped. The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — `broken` is `broken_at` read back (§6: reinstall notice) |
+| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (validated; never widen workspace scope). `from` and `to` follow the list-bound rule below. `dismissed` is available to every viewer so an owner can undo a dismissal; non-admin results remain owner-scoped. The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — rows sort by `detected_at DESC, id DESC`; `broken` is `broken_at` read back (§6: reinstall notice) |
 | GET | `/api/entries/detail` | query: `id` (entry id) | full detail (source, state, latest plan, attempts, lineage) |
 | POST | `/api/entries/preflight` | body: `{ entryId, choices? }` | plan or `{ actionRequired: [...] }` or `{ blockers: [...] }` |
 | POST | `/api/entries/recreate` | body: `{ entryId, planId }` | attempt result (RECREATED/FAILED/AMBIGUOUS) |
@@ -178,6 +180,35 @@ Notes:
 | POST | `/api/entries/bulk-preflight` | body: `{ ids }` (max 50) | per-entry preflight lines; admin-only route |
 | POST | `/api/entries/bulk-recreate` | body: `{ planIds }` (max 50) | per-entry outcomes; admin-only route |
 | GET | `/api/options` | query: `kind=projects\|users\|tasks\|tags\|customFields`, `projectId?` | current workspace entities for pickers and filter suggestions. Replacement task results include only active tasks. Replacement tag results omit archived tags. `kind=users` is admin-only (docs/09) and returns `{id, name}` for every member including deactivated ones (`status: "ALL"`) |
+
+### List, bulk, picker, and choice rules
+
+- `dismissed` enables dismissed rows only when its value is the exact string `true`. Other values do
+  not enable it.
+- A list bound is a strict UTC ISO timestamp with seconds or one to three fractional digits. An
+  invalid, over-precise, or reversed list bound returns 400 before the row query.
+- `limit` is the maximum number of database rows in the list response. The current limit is 50.
+  `truncated: true` means older matching database rows exist beyond that limit. It is a list
+  paging signal, not a Clockify result.
+- Clockify pagination truncation is different. It aborts preflight and options processing because
+  a partial Clockify result is unsafe. It is never returned as the list `truncated` flag.
+- Bulk `ids` and `planIds` must each be unique, non-empty arrays with at most 50 items. Bulk
+  recreation accepts only individually safe FULL plans. Adjusted and partial plans need individual
+  review.
+- Detail lineage omits a parent or child when the viewer cannot read that related row.
+- The replacement task picker includes only `ACTIVE` tasks. A non-active task is unavailable for
+  recreation.
+- Route validation accepts only the supported serializable custom-field input shape. The preflight
+  domain rules validate field types, current definitions, and user guidance.
+
+For a preflight choice, `null` removes the source value and an omitted property keeps it. For
+example:
+
+```json
+{ "projectId": null }
+```
+
+removes the project. `{}` keeps the source project.
 
 - Static: `GET /static/app.js` (UI bundle), `GET /icon.svg` (manifest icon), `GET /healthz`
   (no auth, docs/14). All exact paths.
@@ -218,6 +249,8 @@ Notes:
   error.
 - Compare the normalized code against string literals (`"4030"`, `"1003"`, `"501"`, `"4017"`,
   `"4005"`). Message text is never parsed for classification (R6: messages are generic).
+- The generic code `"501"` result does not infer a cause. It tells the user to open the entry
+  again to review its current values.
 - Auth errors: 401 code `"4017"` (addon token invalid) → installation is marked broken; component
   shows a reinstall notice. 401 code `"1000"` requires both or no authentication methods. The
   SDK prevents that configuration (R11), so the app has no handling for it.

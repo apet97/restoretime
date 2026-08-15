@@ -4,6 +4,7 @@
 
 export function looselyEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
+  if (a === null || a === undefined || b === null || b === undefined) return false;
   if (typeof a === "object" || typeof b === "object") return JSON.stringify(a) === JSON.stringify(b);
   const na = typeof a === "number" ? a : typeof a === "string" && a.trim() !== "" ? Number(a) : NaN;
   const nb = typeof b === "number" ? b : typeof b === "string" && b.trim() !== "" ? Number(b) : NaN;

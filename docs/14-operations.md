@@ -5,7 +5,8 @@ Proportional to a single-process addon. No observability platform.
 ## Health
 
 - `GET /healthz` → 200 with `{status:"ok", db:"ok"}` after a `SELECT 1`. No auth. Used by the
-  deploy target's liveness check.
+  deploy target's liveness check. It proves only HTTP and SQLite. It is not a usable Clockify
+  component check.
 
 ## Logging
 
@@ -39,7 +40,7 @@ documented migration path in the release notes.
 ## Deployment
 
 - Single Node 22 process behind TLS. `PUBLIC_BASE_URL` is the public origin.
-- Environment: the seven variables from the docs/05 §Configuration table. The deploy target is operator choice (a VM, a
+- Environment: the seven variables from the canonical docs/05 §Configuration table. The deploy target is operator choice (a VM, a
   container, or a PaaS all satisfy the shape); the release workflow (docs/15) builds one container
   image as the reference artifact.
 - Database file on a persistent, encrypted volume. The image runs as UID/GID 1000. A mounted

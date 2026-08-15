@@ -119,17 +119,19 @@ src/
 
 ## Configuration
 
-Environment variables (no config files):
+Environment variables are the canonical runtime configuration. There is no configuration-file
+loader. For local preparation, Node can read a developer-owned ignored `.env` file with
+`node --env-file=.env`; start from `.env.example` and never commit the filled file.
 
-| Variable | Purpose |
-|---|---|
-| `PORT` | HTTP listen port |
-| `PUBLIC_BASE_URL` | Addon public HTTPS origin (manifest `baseUrl`, CSP) |
-| `CLOCKIFY_PARENT_ORIGIN` | Clockify app origin of the environment (production `https://app.clockify.me`, developer `https://developer.clockify.me`). Feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin` |
-| `DATABASE_PATH` | SQLite file path |
-| `ADDON_KEY` | Manifest key; JWT `sub` check |
-| `TOKEN_ENCRYPTION_KEY` | 32-byte key for the installation token codec |
-| `LOG_LEVEL` | `info` default |
+| Variable | Required | Purpose and valid value |
+|---|---|---|
+| `PORT` | No | HTTP listen port. Default: `8080`. |
+| `PUBLIC_BASE_URL` | Yes | Add-on public HTTPS origin for the manifest base URL and CSP. A raw local HTTP URL cannot be installed in Clockify. |
+| `CLOCKIFY_PARENT_ORIGIN` | Yes | Clockify app origin: `https://developer.clockify.me` for developer or `https://app.clockify.me` for production. Feeds CSP `frame-ancestors` and the iframe bridge `parentOrigin`. |
+| `DATABASE_PATH` | Yes | SQLite file path. Its parent directory must exist and be writable. |
+| `ADDON_KEY` | Yes | Manifest key and verified JWT `sub` value. |
+| `TOKEN_ENCRYPTION_KEY` | Yes | Exactly 64 hexadecimal characters: a 32-byte key for the installation token codec. Generate one with `openssl rand -hex 32`. |
+| `LOG_LEVEL` | No | `debug`, `info`, `warn`, or `error`. Default: `info`. |
 
 No secrets beyond the encryption key. Installation tokens arrive at runtime and are stored
 encrypted.

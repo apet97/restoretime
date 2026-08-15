@@ -22,6 +22,7 @@ import {
 } from "@apet97/clockify-addon-sdk/testing";
 import { createServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
+import * as entries from "../../src/store/entries.js";
 
 const ADDON_KEY = "restoretime-test";
 const WORKSPACE_ID = "ws-1";
@@ -219,6 +220,46 @@ describe("filtering the admin list by name (docs/10 §2)", () => {
     // the `userId` case in permission-negatives.test.ts: the param is silently ignored.
     expect(await descriptions(seeded, seeded.memberToken, { userName: "Lovelace" })).toEqual(["current work"]);
     expect(await descriptions(seeded, seeded.memberToken)).toEqual(["current work"]);
+  });
+});
+
+describe("strict UTC bounds on the deleted-entry list", () => {
+  it("accepts seconds through milliseconds and keeps exact millisecond bounds inclusive", async () => {
+    const seeded = await seed();
+    seeded.server.db
+      .prepare("UPDATE recoverable_entries SET detected_at = CASE source_entry_id WHEN 'entry-gone' THEN ? ELSE ? END")
+      .run("2026-08-08T10:00:00.000Z", "2026-08-08T11:00:00.000Z");
+
+    for (const [from, to] of [
+      ["2026-08-08T10:00:00Z", "2026-08-08T11:00:00Z"],
+      ["2026-08-08T10:00:00.0Z", "2026-08-08T11:00:00.0Z"],
+      ["2026-08-08T10:00:00.00Z", "2026-08-08T11:00:00.00Z"],
+      ["2026-08-08T10:00:00.000Z", "2026-08-08T11:00:00.000Z"],
+    ] as const) {
+      expect(await descriptions(seeded, seeded.adminToken, { from, to })).toEqual([
+        "current work",
+        "legacy work",
+      ]);
+    }
+  });
+
+  it("rejects invalid, over-precise, and reversed bounds before querying rows", async () => {
+    const seeded = await seed();
+    const list = vi.spyOn(entries, "list");
+    const rejectedQueries: ReadonlyArray<readonly [Record<string, string>, string]> = [
+      [{ from: "2026-08-08T10:00:00.000000001Z" }, "from must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ to: "2026-08-08T10:00:00.000000001Z" }, "to must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ from: "2026-08-08T10:00:00.1234Z" }, "from must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ to: "2026-08-08T10:00:00.1234Z" }, "to must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ from: "2026/08/08 10:00:00" }, "from must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ to: "2026-08-08T11:00:00+01:00" }, "to must be a UTC ISO timestamp with at most millisecond precision"],
+      [{ from: "2026-08-08T12:00:00Z", to: "2026-08-08T11:00:00Z" }, "from must not be after to"],
+    ];
+    for (const [query, error] of rejectedQueries) {
+      const response = await get(seeded, seeded.adminToken, "/api/entries", query);
+      expect(response).toMatchObject({ status: 400, body: { error } });
+    }
+    expect(list).not.toHaveBeenCalled();
   });
 });
 

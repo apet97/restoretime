@@ -104,6 +104,14 @@ the plan to the UI.
 - blockers non-empty → fidelity IMPOSSIBLE; the UI shows blockers, no confirm action.
 - ACTION_REQUIRED outcomes → the UI renders the exact choices; re-preflight with `choices`.
 
+### Cumulative editable controls
+
+The plan presentation contains the union of the current editable controls and controls retained
+from the prior plan. The dedupe key is `(ruleId, refId)`. Current controls come first. A retained
+control lets the user revise an earlier choice. It is presentation only, not stale-plan input:
+revalidation compares the current planned request, resolution, labels, warnings, blockers, and
+action-required items, while it ignores only the editable-control list.
+
 ## 6. Duplicate prevention and claiming
 
 ```sql

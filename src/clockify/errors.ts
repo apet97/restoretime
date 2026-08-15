@@ -61,7 +61,7 @@ export function describeClockifyCreateFailure(status: number | undefined, code: 
     return "The entry's date is in a locked period. An admin can recreate this entry, or unlock the period.";
   }
   if (code === "501") {
-    return "Clockify rejected the request: a required field is missing, or the value is invalid.";
+    return "Clockify rejected the request: a required field is missing, or the value is invalid. Open this entry again to review its current values.";
   }
   if (code === "4017") {
     return "The addon's Clockify connection was rejected. Reinstall the addon.";

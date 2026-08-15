@@ -314,6 +314,44 @@ describe("N8 error-message sweep", () => {
     ]);
   });
 
+  it.each([
+    { status: 401, code: 4017, expectBroken: true },
+    { status: 400, code: 4005, expectBroken: false },
+  ])("handles a per-entry Clockify read failure without hiding the list", async ({ status, code, expectBroken }) => {
+    const { server, token, entryId } = await setup();
+    const entry = entries.getById(server.db, WORKSPACE_ID, entryId);
+    if (!entry) throw new Error("expected seeded entry");
+    server.db
+      .prepare("UPDATE recoverable_entries SET source_json=? WHERE id=?")
+      .run(JSON.stringify({ ...entry.source, projectId: "project-read", projectName: "Current project" }), entryId);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (input, init) => {
+        if (methodOf(input, init) === "GET" && pathOf(input).endsWith("/projects/project-read")) {
+          return jsonResponse({ message: "project read rejected", code }, status);
+        }
+        return stableClockifyStub()(input, init);
+      }) as typeof fetch,
+    );
+
+    const response = await server.addon.handle({
+      method: "GET",
+      path: "/api/entries",
+      query: new URLSearchParams(),
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect((response.body as { entries: { preflightSummary: unknown }[] }).entries[0]?.preflightSummary).toBeNull();
+    expect((response.body as { clockifyUnavailable: boolean }).clockifyUnavailable).toBe(expectBroken);
+    expect((response.body as { broken: boolean }).broken).toBe(expectBroken);
+    const installation = server.db
+      .prepare("SELECT broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get(WORKSPACE_ID, ADDON_ID) as { broken_at: string | null };
+    expect(installation.broken_at === null).toBe(!expectBroken);
+  });
+
   it("a rejected addon token (401 code 4017) on preflight: says reinstall — not 'try again' — and the list reports broken", async () => {
     const { server, token, entryId } = await setup();
     // Every Clockify read now rejects the addon token — the exact state after Clockify revokes it.

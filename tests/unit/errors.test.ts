@@ -80,7 +80,9 @@ describe("UT-M01 describeClockifyCreateFailure — user-facing reasons", () => {
   });
 
   it("501 -> domain validation reason", () => {
-    expect(describeClockifyCreateFailure(400, "501")).toMatch(/rejected/i);
+    expect(describeClockifyCreateFailure(400, "501")).toBe(
+      "Clockify rejected the request: a required field is missing, or the value is invalid. Open this entry again to review its current values.",
+    );
   });
 
   it("code-absent 404 -> status-only reason naming the route problem", () => {

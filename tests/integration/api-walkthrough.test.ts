@@ -254,8 +254,80 @@ describe("scripted walkthrough: webhook -> list -> preflight -> confirm -> RECRE
   });
 });
 
+describe("bulk preflight installation-wide token failures", () => {
+  it("stops after a per-entry 4017, preserves earlier plans, and marks the installation broken", async () => {
+    const server = await boot();
+    const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
+    await install(server, webhookToken);
+    const token = await componentToken("admin");
+    for (const [id, projectId] of [["bulk-first", "project-first"], ["bulk-invalid", "project-invalid"], ["bulk-later", "project-later"]] as const) {
+      entries.ingestDeletedEntry(server.db, {
+        id,
+        workspaceId: WORKSPACE_ID,
+        sourceEntryId: `source-${id}`,
+        ownerId: OWNER_ID,
+        detectedAt: "2026-08-08T09:00:00Z",
+        source: {
+          workspaceId: WORKSPACE_ID,
+          entryId: `source-${id}`,
+          ownerId: OWNER_ID,
+          ownerName: "User One",
+          description: id,
+          billable: false,
+          start: "2026-08-08T10:00:00Z",
+          end: "2026-08-08T11:00:00Z",
+          wasRunning: false,
+          type: "REGULAR",
+          timeZone: "UTC",
+          projectId,
+          projectName: projectId,
+          clientName: null,
+          taskId: null,
+          taskName: null,
+          tags: [],
+          customFieldValues: [],
+        },
+      });
+    }
+
+    const projectReads: string[] = [];
+    let writes = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async (input, init) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method !== "GET") writes++;
+        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) return jsonResponse({ id: WORKSPACE_ID, workspaceSettings: {} });
+        if (method === "GET" && path.endsWith("/users")) return jsonResponse([{ id: OWNER_ID, email: "a@b.com", name: "User One", status: "ACTIVE" }]);
+        if (method === "GET" && (path.endsWith("/tags") || path.endsWith("/custom-fields"))) return jsonResponse([]);
+        if (method === "GET" && path.includes("/projects/")) {
+          const projectId = path.split("/").at(-1) ?? "";
+          projectReads.push(projectId);
+          if (projectId === "project-invalid") return jsonResponse({ message: "Addon token invalid", code: 4017 }, 401);
+          return jsonResponse({ id: projectId, archived: false });
+        }
+        return jsonResponse({ message: "unstubbed", code: 0 }, 404);
+      }) as typeof fetch,
+    );
+
+    const response = await server.addon.handle({
+      method: "POST",
+      path: "/api/entries/bulk-preflight",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: { ids: ["bulk-first", "bulk-invalid", "bulk-later"] },
+    });
+
+    expect(response).toMatchObject({ status: 503, body: { error: expect.stringContaining("Reinstall") } });
+    expect(projectReads).toEqual(["project-first", "project-invalid"]);
+    expect(writes).toBe(0);
+    expect(server.db.prepare("SELECT COUNT(*) AS n FROM recreation_plans").get()).toEqual({ n: 1 });
+    expect(server.db.prepare("SELECT broken_at FROM installations WHERE workspace_id=? AND addon_id=?").get(WORKSPACE_ID, ADDON_ID)).toMatchObject({ broken_at: expect.any(String) });
+  });
+});
+
 describe("saved resolution presentation", () => {
-  it("keeps exact editable controls when Try again starts from a consumed plan", async () => {
+  it("keeps cumulative editable controls through two resolution rounds", async () => {
     const server = await boot();
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, {
       workspaceId: WORKSPACE_ID,
@@ -276,12 +348,12 @@ describe("saved resolution presentation", () => {
         description: "hello",
         billable: true,
         start: "2026-08-08T10:00:00Z",
-        end: "2026-08-08T11:00:00Z",
-        wasRunning: false,
+        end: null,
+        wasRunning: true,
         type: "REGULAR",
         timeZone: "UTC",
-        projectId: "project-gone",
-        projectName: "Old project",
+        projectId: null,
+        projectName: null,
         clientName: null,
         taskId: null,
         taskName: null,
@@ -289,7 +361,24 @@ describe("saved resolution presentation", () => {
         customFieldValues: [],
       },
     }).entry;
-    vi.stubGlobal("fetch", baseStub());
+    vi.stubGlobal(
+      "fetch",
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const path = pathOf(input);
+        const method = methodOf(input, init);
+        if (method === "GET" && /\/workspaces\/[^/]+$/.test(path)) {
+          return jsonResponse({ id: WORKSPACE_ID, workspaceSettings: { forceProjects: true } });
+        }
+        if (method === "GET" && path.endsWith("/users")) {
+          return jsonResponse([{ id: OWNER_ID, email: "a@b.com", name: "User One", status: "ACTIVE" }]);
+        }
+        if (method === "GET" && (path.endsWith("/tags") || path.endsWith("/custom-fields"))) return jsonResponse([]);
+        if (method === "GET" && path.endsWith("/projects/project-replacement")) {
+          return jsonResponse({ id: "project-replacement", name: "Replacement project", archived: false });
+        }
+        return jsonResponse({ message: "unstubbed", code: 0 }, 404);
+      }) as typeof fetch,
+    );
     const token = await componentToken();
     const preflight = (choices: Record<string, unknown>) => server.addon.handle({
       method: "POST",
@@ -298,24 +387,43 @@ describe("saved resolution presentation", () => {
       body: { entryId: entry.id, choices },
     });
 
-    const unresolved = await preflight({});
-    expect(unresolved.status).toBe(200);
-    expect((unresolved.body as { plan: { actionRequired: Array<{ ruleId: string }> } }).plan.actionRequired)
-      .toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
+    const first = await preflight({});
+    expect(first.status).toBe(200);
+    expect((first.body as { plan: { actionRequired: Array<{ ruleId: string }> } }).plan.actionRequired)
+      .toEqual([expect.objectContaining({ ruleId: "P-RUN" })]);
 
-    const resolved = await preflight({ projectId: null });
+    const second = await preflight({ runningMode: "completed", completedEnd: "2026-08-08T11:00:00Z" });
+    expect(second.status).toBe(200);
+    const secondPlan = (second.body as {
+      plan: { actionRequired: Array<{ ruleId: string }>; presentation: { editable: Array<{ ruleId: string; refId?: string }> } };
+    }).plan;
+    expect(secondPlan.actionRequired).toEqual([expect.objectContaining({ ruleId: "P-PROJ-REQ" })]);
+    expect(secondPlan.presentation.editable.map((item) => item.ruleId)).toEqual(["P-PROJ-REQ", "P-RUN"]);
+
+    const resolved = await preflight({
+      runningMode: "completed",
+      completedEnd: "2026-08-08T11:00:00Z",
+      projectId: "project-replacement",
+    });
+    expect(resolved.status).toBe(200);
     const resolvedPlan = (resolved.body as {
-      plan: { id: string; actionRequired: unknown[]; presentation: { editable: Array<{ ruleId: string }> } };
+      plan: { id: string; actionRequired: unknown[]; presentation: { editable: Array<{ ruleId: string; refId?: string }> } };
     }).plan;
     expect(resolvedPlan.actionRequired).toHaveLength(0);
-    expect(resolvedPlan.presentation.editable).toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
-    server.db.prepare("UPDATE recreation_plans SET status='CONSUMED' WHERE id=?").run(resolvedPlan.id);
+    expect(resolvedPlan.presentation.editable.map((item) => item.ruleId)).toEqual(["P-PROJ-REQ", "P-RUN"]);
+    expect(new Set(resolvedPlan.presentation.editable.map((item) => `${item.ruleId}\u0000${item.refId ?? ""}`)).size)
+      .toBe(resolvedPlan.presentation.editable.length);
 
-    const retried = await preflight({ projectId: null });
+    server.db.prepare("UPDATE recreation_plans SET status='CONSUMED' WHERE id=?").run(resolvedPlan.id);
+    const retried = await preflight({
+      runningMode: "completed",
+      completedEnd: "2026-08-08T11:00:00Z",
+      projectId: "project-replacement",
+    });
     const retriedPlan = (retried.body as {
       plan: { presentation: { editable: Array<{ ruleId: string }> } };
     }).plan;
-    expect(retriedPlan.presentation.editable).toContainEqual(expect.objectContaining({ ruleId: "P-PROJ-GONE" }));
+    expect(retriedPlan.presentation.editable.map((item) => item.ruleId)).toEqual(["P-PROJ-REQ", "P-RUN"]);
   });
 });
 

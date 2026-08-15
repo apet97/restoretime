@@ -2,6 +2,8 @@
 
 RestoreTime is a Clockify Marketplace add-on. It helps users recreate deleted time entries.
 
+Use Node 22.13 or later within major version 22.
+
 When a user deletes a time entry in Clockify, RestoreTime keeps the entry's data. The user can then
 **recreate** the entry: RestoreTime creates a **new** time entry with the same description, time,
 project, task, tags, billable flag, and custom-field values.
@@ -34,14 +36,96 @@ can recreate entries for other users.
 - When Clockify delivers the uninstall lifecycle call, RestoreTime hard-deletes the workspace data
   it holds.
 
+## Local quickstart
+
+### Offline first success
+
+This path needs no Clockify credentials.
+
+```bash
+nvm use
+npm ci
+npm run typecheck
+npm run lint
+npm run test
+npm run test:e2e
+```
+
+Success means all tests pass with zero skips. It proves the local source, database contracts, API
+behavior with signed test fixtures, and bundled UI journeys. It does not prove a developer
+installation, live Clockify, production, Marketplace, Railway, backup, or restore.
+
+### Local server preparation
+
+The canonical runtime-variable table is in [docs/05-architecture.md](docs/05-architecture.md).
+
+1. Create `.env` only if it does not exist. This command keeps an existing file or symlink.
+
+```bash
+if [ ! -e .env ] && [ ! -L .env ]; then
+  cp .env.example .env
+fi
+```
+
+2. Create the local database directory.
+
+```bash
+mkdir -p var
+```
+
+3. Generate a 64-character hexadecimal encryption key.
+
+```bash
+openssl rand -hex 32
+```
+
+4. Paste the generated key into `TOKEN_ENCRYPTION_KEY` in `.env`. Do this before you start the
+   server. Do not commit `.env`.
+
+5. Build the app.
+
+```bash
+npm run build
+```
+
+6. In terminal 1, start the server.
+
+```bash
+node --env-file=.env dist/server.js
+```
+
+7. In terminal 2, check the server health.
+
+```bash
+curl http://127.0.0.1:8080/healthz
+```
+
+`/healthz` proves HTTP and SQLite only. It does not prove live Clockify, a developer installation,
+Railway, production, Marketplace, backup, or restore. The component and `/api/*` need a verified
+Clockify component token and a developer add-on installation at a public HTTPS origin.
+
+Do not send an unsigned webhook request. Use the SDK-signed fixtures in
+`tests/integration/webhook-ingestion.test.ts`. For the live process, see `docs/13-testing.md`.
+
+### Troubleshooting
+
+| Problem | Next action |
+|---|---|
+| Wrong Node major or native binding ABI mismatch | Run `nvm use`, then run `npm ci` again. |
+| Missing environment variable | Add the required value to `.env`. See the docs/05 configuration table. |
+| Invalid 64-hex encryption key | Generate a replacement with `openssl rand -hex 32` and paste the full value into `.env`. |
+| Database directory is missing or not writable | Create `var` or set `DATABASE_PATH` to a writable directory. |
+| Static bundle is missing | Run `npm run build` before starting the server. |
+| Component token is expired or absent | Reload the installed Clockify component. Do not invent a token. |
+| Wrong Clockify parent origin | Use `https://developer.clockify.me` for developer or `https://app.clockify.me` for production. |
+| Live or developer smoke checks are blocked | Verify the installed developer add-on and its authorized prerequisites. Do not treat a blocked check as live proof. |
+
 ## Status
 
-This repository contains the implemented add-on, its tests, its evidence, and its operating docs.
-Run the local gates in `IMPLEMENTER.md` before you change the product. The Marketplace text package
-is prepared in `implementation/marketplace/`. Live run 16 in `evidence/live-release-run.md` is
-historical proof for `v1.0.0-rc.10`. It is not proof for later worktree changes. The strict live
-gate in `docs/13-testing.md` requires new receipts for the exact release candidate. Production
-`app.clockify.me` proof and Marketplace release inputs remain separate release work.
+RC.12 receipts apply only to `d2c50d26392d511592a9cfb3f8fce1ae5d102ceb`. Any later commit needs
+new candidate-bound proof. Production, Marketplace, backup/PITR, isolated restore, and stable
+`v1.0.0` remain unproven. The corrected uncommitted tree is not an RC.13 candidate. It must be
+committed, independently reviewed, and merged before an authorized release workflow can start.
 
 ## Documentation map
 
@@ -51,6 +135,7 @@ gate in `docs/13-testing.md` requires new receipts for the exact release candida
 | `docs/00-product.md` | Product definition and terminology |
 | `docs/01-evidence-baseline.md` | Proven API/webhook facts |
 | `docs/05-architecture.md` | System design |
+| `docs/13-testing.md` | Local, developer, and release evidence boundaries |
 | `docs/07-recreation-preflight.md` | The core algorithm |
 | `implementation/ROADMAP.md` | Historical implementation pass sequence |
 | `evidence/` | Evidence index and validation |

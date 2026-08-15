@@ -21,9 +21,9 @@ before rows are written.
 | `api_url` | TEXT | per-installation API base |
 | `auth_token` | TEXT | encrypted by the SDK codec |
 | `webhooks_json` | TEXT | encrypted per-webhook tokens keyed by the SDK's `normalizeClockifyWebhookPath()` result (the SDK model has no event field; live INSTALLED payloads can carry `//webhooks/...`, evidence/install-capture-2026-08-08.md) |
-| `status` | TEXT | `ACTIVE`/`INACTIVE` (STATUS_CHANGED) |
+| `status` | TEXT | `ACTIVE`/`INACTIVE`, owned only by STATUS_CHANGED. A redelivered INSTALLED context does not overwrite it. |
 | `installed_at` | INTEGER | epoch **milliseconds** (the SDK `ClockifyInstallationContext.installedAt` type is `number`); the app sets it to `Date.now()` at INSTALLED receipt (`{...payload, installedAt: Date.now()}` — the payload itself has no generation) |
-| `broken_at` | TEXT | set when Clockify rejects the installation's token (401 code `4017`, docs/03 §6); distinct from `status` — different remedy (reinstall, not re-enable). Cleared by a reinstall (the upsert sets it back to NULL). Migration 0002 |
+| `broken_at` | TEXT | set when Clockify rejects the installation's token (401 code `4017`, docs/03 §6); distinct from `status` — different remedy (reinstall, not re-enable). A changed-token INSTALLED delivery clears it only when `installed_at` still matches that saved generation. Migration 0002 |
 
 Store methods mirror the SDK in-memory semantics exactly: `load` → SELECT;
 `save` → UPSERT that **skips** when the existing row's `installed_at` is strictly newer than the
@@ -32,6 +32,11 @@ incoming context's (`current.installedAt > context.installedAt`); `delete` → r
 from the row's. The lifecycle DELETED handler passes **no** `installedAt` (the DELETED payload
 carries no generation) → unconditional delete. The generation-guard behaviors are unit-tested at
 the store level (PASS-01), never via lifecycle payloads.
+
+`broken_at` records a rejected Clockify connection, not a disabled add-on. A same-token INSTALLED
+redelivery preserves it. A changed-token INSTALLED delivery can clear it only with an
+`installed_at`-matched update after the encrypted store saves that generation. `STATUS_CHANGED ->
+ACTIVE` leaves `broken_at` unchanged, because re-enable and reinstall have different remedies.
 
 ### `recoverable_entries`
 

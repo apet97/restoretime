@@ -113,6 +113,17 @@ describe("UT-S02 revalidation detects changed dependency -> STALE", () => {
     expect(outcomesDiffer(base, changed)).toBe(true);
   });
 
+  it("a changed presentation label -> stale", () => {
+    const changed = {
+      ...base,
+      presentation: {
+        ...base.presentation,
+        project: { id: "proj-1", name: "Renamed project", outcome: "kept" as const },
+      },
+    };
+    expect(outcomesDiffer(base, changed)).toBe(true);
+  });
+
   it("a changed action requirement -> stale", () => {
     const changed = {
       ...base,

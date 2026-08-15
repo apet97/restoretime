@@ -221,7 +221,7 @@ describe("double-adoption guard", () => {
     const rowB = getById(db, "ws-1", "re-b");
     expect(rowB?.lifecycleState).toBe("AMBIGUOUS");
     expect(rowB?.newEntryId).toBeNull();
-    expect(attempts.getById(db, "attempt-re-b")?.outcome).toBeNull();
+    expect(attempts.getById(db, "attempt-re-b")?.outcome).toBe("AMBIGUOUS");
   });
 
   it("allows the same new_entry_id in a different workspace", () => {
@@ -393,5 +393,44 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
     seedStates(db);
     expect(ids(db, { dismissed: false })).toEqual(["re-failed", "re-idle"]);
     expect(ids(db, { status: "FAILED", dismissed: false })).toEqual(["re-failed"]);
+  });
+});
+
+describe("list ordering", () => {
+  it("uses id as a deterministic descending tie-breaker without widening the page", () => {
+    const db = openDatabase(":memory:");
+    for (const id of ["re-a", "re-b", "re-c"]) {
+      ingestDeletedEntry(db, {
+        id,
+        workspaceId: "ws-1",
+        sourceEntryId: `source-${id}`,
+        ownerId: "user-1",
+        detectedAt: "2026-08-08T09:00:00.000Z",
+        source: source({ entryId: `source-${id}` }),
+      });
+    }
+    ingestDeletedEntry(db, {
+      id: "re-foreign-owner",
+      workspaceId: "ws-1",
+      sourceEntryId: "source-foreign-owner",
+      ownerId: "user-2",
+      detectedAt: "2026-08-08T09:00:00.000Z",
+      source: source({ entryId: "source-foreign-owner", ownerId: "user-2" }),
+    });
+    ingestDeletedEntry(db, {
+      id: "re-foreign-workspace",
+      workspaceId: "ws-2",
+      sourceEntryId: "source-foreign-workspace",
+      ownerId: "user-1",
+      detectedAt: "2026-08-08T09:00:00.000Z",
+      source: source({ entryId: "source-foreign-workspace", workspaceId: "ws-2" }),
+    });
+
+    expect(list(db, "ws-1", { ownerId: "user-1" }).rows.map((row) => row.id)).toEqual(["re-c", "re-b", "re-a"]);
+    const first = list(db, "ws-1", { ownerId: "user-1", limit: 2 });
+    const second = list(db, "ws-1", { ownerId: "user-1", limit: 2 });
+    expect(first.rows.map((row) => row.id)).toEqual(["re-c", "re-b"]);
+    expect(second).toEqual(first);
+    expect(first.truncated).toBe(true);
   });
 });

@@ -224,9 +224,11 @@ the fingerprint, baseline, owner, state, and uniqueness before it accepts the ID
 ## 7. Bulk flow (admin)
 
 1. Select rows → **Review selected** (max 50).
-2. The product runs preflight for each entry and shows one line per entry: Ready / Needs input /
-   Blocked, with the reason.
-3. Entries needing input are excluded and keep their state; the admin can handle them one by one.
+2. The product runs preflight for each entry. A row status is Ready, Needs your input, Needs
+   individual review, Blocked, Error, State changed, or Not found. Each row owns its status,
+   message, and available action.
+3. Only Ready rows can be recreated. Other rows keep their status. An admin can open a row when it
+   gives an **Open** action.
 4. **Recreate N entries** confirms once. Each entry is claimed and executed independently. Results
    list per entry: Recreated / Failed (reason) / Result uncertain. There is no cross-entry
    transaction; each row shows its own outcome.
@@ -235,9 +237,12 @@ the fingerprint, baseline, owner, state, and uniqueness before it accepts the ID
 The review gives one summary:
 
 - No selected rows: "No entries are selected. Select one or more ready entries to recreate."
-- Selected rows with none ready: "No selected entries are ready to recreate. Open each selected
-  entry that needs input or review. Resolve it, then return. The review refreshes when you return."
+- Selected rows with none ready: "No selected entries are ready to recreate. Review the status and
+  message for each selected entry below."
 - One or more ready rows: "N of M selected entries are ready to recreate."
+
+The review introduction is: "Ready entries can be recreated in this review. Review the status and
+message for each other entry."
 
 ## 8. General UI rules
 

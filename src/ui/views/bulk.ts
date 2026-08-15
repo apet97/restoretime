@@ -85,7 +85,7 @@ export function renderBulkReview(
       selectedCount === 0
         ? "No entries are selected. Select one or more ready entries to recreate."
         : count === 0
-          ? "No selected entries are ready to recreate. Open each selected entry that needs input or review. Resolve it, then return. The review refreshes when you return."
+          ? "No selected entries are ready to recreate. Review the status and message for each selected entry below."
           : `${count} of ${selectedCount} selected ${selectedCount === 1 ? "entry is" : "entries are"} ready to recreate.`;
     for (const checkbox of checkboxes) checkbox.disabled = busy || refreshing;
   };
@@ -181,7 +181,7 @@ export function renderBulkReview(
   mountView(
     ctx,
     el("h2", {}, "Review selected entries"),
-    el("p", {}, "Entries needing input or individual review are excluded. Open each one to resolve it, then try again."),
+    el("p", {}, "Ready entries can be recreated in this review. Review the status and message for each other entry."),
     summaryLine,
     errorRegion,
     el("ul", {}, ...listItems),

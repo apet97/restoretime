@@ -916,6 +916,42 @@ describe("bulk result view (docs/10 §7)", () => {
 });
 
 describe("bulk review view (docs/10 §7)", () => {
+  const nonReadyCases = [
+    ["needs-input", "Needs your input"],
+    ["needs-review", "Needs individual review"],
+    ["blocked", "Blocked"],
+    ["error", "Error"],
+    ["not-actionable", "State changed"],
+    ["not-found", "Not found"],
+  ] as const satisfies ReadonlyArray<readonly [Exclude<BulkPreflightRow["status"], "ready">, string]>;
+
+  for (const [status, label] of nonReadyCases) {
+    it(`gives truthful zero-ready guidance for a selected ${status} row`, () => {
+      const ctx = stubCtx();
+      const reason = `Reason for ${status}.`;
+      ctx.session.selectedEntryIds.add("re-1");
+      renderBulkReview(ctx, [{
+        entryId: "re-1",
+        status,
+        ...(status === "not-found" ? {} : { source: source() }),
+        message: reason,
+      }]);
+
+      const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 0 entries");
+      expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe(
+        "No selected entries are ready to recreate. Review the status and message for each selected entry below.",
+      );
+      expect(recreate?.disabled).toBe(true);
+      expect(recreate?.classList.contains("rt-primary")).toBe(false);
+      expect(ctx.root.textContent).toContain(label);
+      expect(ctx.root.textContent).toContain(reason);
+
+      if (status !== "not-found") {
+        expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Open");
+      }
+    });
+  }
+
   it("gives no-resolution guidance only when selected rows need it", () => {
     const ctx = stubCtx();
     const ready: BulkPreflightRow = { entryId: "re-1", status: "ready", source: source(), plan: plan() };
@@ -935,20 +971,6 @@ describe("bulk review view (docs/10 §7)", () => {
     expect(summary).not.toContain("needs input");
     expect(recreate?.disabled).toBe(true);
     expect(recreate?.classList.contains("rt-primary")).toBe(false);
-  });
-
-  it("keeps a zero-ready review readable without making the disabled action dominant", () => {
-    const ctx = stubCtx();
-    ctx.session.selectedEntryIds.add("re-1");
-    renderBulkReview(ctx, [{ entryId: "re-1", status: "needs-review", source: source(), message: "Open this entry and review its changes." }]);
-
-    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 0 entries");
-    expect(recreate?.disabled).toBe(true);
-    expect(recreate?.classList.contains("rt-primary")).toBe(false);
-    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe(
-      "No selected entries are ready to recreate. Open each selected entry that needs input or review. Resolve it, then return. The review refreshes when you return.",
-    );
-    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Open");
   });
 
   it("summarizes the ready selection, tones each row, and unmarks an unchecked row", () => {
@@ -975,7 +997,9 @@ describe("bulk review view (docs/10 §7)", () => {
     checkbox!.dispatchEvent(new Event("change"));
     expect(readyItem?.classList.contains("rt-review-row--selected")).toBe(false);
     expect(recreate?.classList.contains("rt-primary")).toBe(false);
-    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toContain("No selected entries are ready to recreate.");
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe(
+      "No selected entries are ready to recreate. Review the status and message for each selected entry below.",
+    );
   });
 
   it("keeps the ready summary aligned with 50 current selections", () => {

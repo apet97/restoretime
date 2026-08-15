@@ -1,8 +1,8 @@
-# 15 — RC.11 release
+# 15 — RC.12 release
 
-This workflow releases `v1.0.0-rc.11` for developer-environment evaluation. It does not deploy to
+This workflow releases `v1.0.0-rc.12` for developer-environment evaluation. It does not deploy to
 Clockify production and it does not submit the add-on to the Marketplace. Do not use a successful
-RC.11 run as proof for either boundary.
+RC.12 run as proof for either boundary.
 
 ## Repository
 
@@ -12,8 +12,8 @@ RC.11 run as proof for either boundary.
   inspect and record the current branch-protection or ruleset settings. Workflow files cannot
   prove this external setting. If the host does not enforce the required review, stop and apply
   the manual review policy before merge.
-- The RC.11 candidate is the exact merge commit on `main`, not the branch head before merge.
-- `v1.0.0-rc.11` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
+- The RC.12 candidate is the exact merge commit on `main`, not the branch head before merge.
+- `v1.0.0-rc.12` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
   Marketplace proof.
 
 ## CI gates (every PR)
@@ -26,11 +26,14 @@ RC.11 run as proof for either boundary.
 6. Secret scan of the CI change set (no tokens or API keys; see
    `AGENTS.md`).
 
-## RC.11 pipeline (manual, not tag-triggered)
+## RC.12 pipeline (manual, not tag-triggered)
 
-### RC.11 operator amendments
+### RC.12 operator authorization
 
-For RC.11 and later verification of this candidate, run the reachable-ref gitleaks scan with
+The repository operator authorized this RC in [issue 32](https://github.com/apet97/restoretime/issues/32)
+before review, merge, deployment, tagging, and publication.
+
+Run the reachable-ref gitleaks scan with
 `--all`, `--redact=100`, and a `300` second timeout. Do not reduce the scan scope, scan ignored
 `.env.live` files, or inspect a finding for a secret value. A finding blocks the release.
 
@@ -115,21 +118,21 @@ RC prerelease. It does not prove production disaster-recovery readiness.
    backup location. Keep the original backup and prior volume unchanged. Restore a copy to an
    isolated replacement volume in the same project and environment, boot the recorded candidate
    digest against it, and verify `/healthz`, the expected schema version, and one authenticated
-   component load. Retain the prior volume as the rollback target. This proves the RC.11 backup
+   component load. Retain the prior volume as the rollback target. This proves the RC.12 backup
    can be restored; it does not by itself prove that an older image can read a version-3 database.
    Record the separate local version-2 migration and rollback drill from step 3. A fresh Railway
    project has no prior remote database to use for that drill.
-   For RC.11, the operator amendment above waives this step as a blocking gate. Record it as
+   For RC.12, the operator authorization above waives this step as a blocking gate. Record it as
    `NOT PROVEN — deferred infrastructure capability`. Do not mark it as passed or claim that
    Railway backup, PITR, or disaster recovery was proved.
-9. Only after steps 1–7 and every non-waived gate pass, create `v1.0.0-rc.11` on the exact merged
+9. Only after steps 1–7 and every non-waived gate pass, create `v1.0.0-rc.12` on the exact merged
    `main` commit. Publish it as a GitHub prerelease. The notes must list the developer-only proof,
    image digest, live-test totals, cleanup result, the deferred Railway backup/PITR status, and the
    open production and Marketplace gaps.
 
 ## Future Marketplace submission prerequisites
 
-RC.11 does not satisfy or execute a Marketplace submission. The later submission must meet all of
+RC.12 does not satisfy or execute a Marketplace submission. The later submission must meet all of
 these conditions:
 
 - Manifest validated at boot (`createValidatedClockifyAddon`) and reviewable at `GET /manifest`.
@@ -157,13 +160,13 @@ If the new Railway project has no prior image or pre-migration database, record 
 case, deleting the candidate project is an environment rollback, not cross-version database
 rollback proof.
 
-## Explicit gaps after RC.11
+## Explicit gaps after RC.12
 
 - No deploy or smoke test uses `CLOCKIFY_PARENT_ORIGIN=https://app.clockify.me`.
 - No production Clockify workspace proves installation, signed component rendering, webhook
   delivery, or recreation for this commit.
 - No Marketplace review or installation has occurred.
-- Therefore RC.11 does not authorize the stable `v1.0.0` tag.
+- Therefore RC.12 does not authorize the stable `v1.0.0` tag.
 
 ## What a release is NOT
 

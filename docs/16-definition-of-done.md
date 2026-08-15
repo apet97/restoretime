@@ -163,5 +163,5 @@ below either describes a current static fact or identifies itself as historical 
       image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`.
 - [ ] Railway platform backup/PITR and isolated Railway platform restore are **NOT PROVEN — deferred
       infrastructure capability**. The available Railway plan requires Pro. The operator waived
-      these as blocking requirements for the RC.11 prerelease only. This waiver does not prove
+      these as blocking requirements for the RC.12 prerelease only. This waiver does not prove
       production disaster-recovery readiness and does not authorize a Railway plan upgrade.

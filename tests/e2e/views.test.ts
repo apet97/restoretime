@@ -180,6 +180,15 @@ describe("confirm view (docs/10 §5)", () => {
     expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Recreate entry");
   });
 
+  it("keeps the bulk-review return path when it checks a legacy plan", () => {
+    const ctx = stubCtx();
+    renderConfirm(ctx, "re-1", plan({ presentation: null }), source(), false, undefined, "bulk-review");
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check the plan again")?.click();
+
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: "detail", entryId: "re-1", forceResolve: true, returnTo: "bulk-review" });
+  });
+
   it("shows a kept custom-field value when Clockify will attach the current default", () => {
     const ctx = stubCtx();
     const sourceWithDefault = source({
@@ -493,6 +502,39 @@ describe("action lifecycle", () => {
     expect(rowCheckbox.getAttribute("aria-label")).toContain("Ana Markovic");
     expect(rowCheckbox.getAttribute("aria-label")).toContain("API investigation");
     expect(ctx.api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a saved bulk selection when the list becomes read-only", async () => {
+    const ctx = stubCtx();
+    ctx.session.list.bulkMode = true;
+    ctx.session.selectedEntryIds.add("re-1");
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => Promise.resolve(
+      path === "/api/entries"
+        ? {
+            entries: [{
+              id: "re-1",
+              lifecycleState: "IDLE",
+              detectedAt: "2026-08-07T12:00:00Z",
+              source: source(),
+              preflightSummary: null,
+            }],
+            disabled: false,
+            broken: false,
+            clockifyUnavailable: true,
+            truncated: false,
+            limit: 200,
+          }
+        : { items: [] },
+    ));
+
+    renderList(ctx);
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("This list is read-only until you reload it."));
+    expect(ctx.session.selectedEntryIds.size).toBe(0);
+    expect(ctx.announce).toHaveBeenCalledWith("Selection cleared.");
+    const review = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Review selected (0)");
+    expect(review?.disabled).toBe(true);
+    expect(ctx.api.post).not.toHaveBeenCalled();
   });
 
   it("ignores an older load that finishes after a newer load", async () => {

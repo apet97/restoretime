@@ -47,7 +47,9 @@ function load(ctx: Ctx, filters: ListFilterState): void {
 
 function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): void {
   const heading = el("h2", {}, "Deleted time entries");
-  const nodes: (Node | string)[] = [];
+  const nodes: (Node | string)[] = [
+    el("p", { class: "rt-page-intro" }, "RestoreTime recreates deleted time entries as new Clockify entries. Deleted-entry history stays unchanged."),
+  ];
   const actionsUnavailable = data.disabled || data.broken || data.clockifyUnavailable;
   // The list says it is read-only in each of these states. Do not retain a prior bulk selection
   // that could enable a review action after the row controls disappear.
@@ -76,6 +78,7 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   // reflow — the selection count is local UI state, not something that needs a fresh server read).
   let reviewButton: HTMLButtonElement | undefined;
   let reviewNote: HTMLElement | undefined;
+  let selectionSummary: HTMLElement | undefined;
   let reviewBusy = false;
   function syncReviewButton(): void {
     if (!reviewButton) return;
@@ -83,20 +86,11 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     reviewButton.textContent = `Review selected (${count})`;
     reviewButton.toggleAttribute("disabled", reviewBusy || count === 0 || count > 50);
     if (reviewNote) reviewNote.hidden = count <= 50;
+    if (selectionSummary) selectionSummary.textContent = `${count} ${count === 1 ? "entry" : "entries"} selected (maximum 50).`;
   }
 
   const rows = data.entries;
-  if (rows.length === 0) {
-    nodes.push(el("p", {}, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
-  } else {
-    nodes.push(el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton))));
-    // Say so when the server withheld older rows, rather than letting a full page read as "all".
-    if (data.truncated) {
-      nodes.push(
-        el("p", {}, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
-      );
-    }
-  }
+  const rowList = rows.length > 0 ? el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton))) : null;
 
   if (ctx.isAdminRole && filters.bulkMode) {
     reviewButton = el("button", { type: "button" }, "Review selected (0)");
@@ -123,8 +117,23 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     });
     reviewNote = el("p", { role: "alert" }, "Select at most 50 entries.");
     reviewNote.hidden = true;
-    nodes.push(el("div", { class: "rt-action-group" }, reviewButton, reviewNote));
+    // Selection state lives in one persistent bar above the rows, so it is visible before the
+    // admin scrolls and stays visible while scrolling (the bar sticks to the frame top).
+    selectionSummary = el("p", { class: "rt-selection-summary", role: "status" }, "");
+    nodes.push(el("div", { class: "rt-bulk-bar" }, selectionSummary, el("div", { class: "rt-action-group" }, reviewButton), reviewNote));
     syncReviewButton();
+  }
+
+  if (rowList) {
+    nodes.push(rowList);
+    // Say so when the server withheld older rows, rather than letting a full page read as "all".
+    if (data.truncated) {
+      nodes.push(
+        el("p", {}, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
+      );
+    }
+  } else {
+    nodes.push(el("p", {}, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
   }
 
   mountView(ctx, heading, ...nodes);
@@ -182,7 +191,7 @@ function renderDismissedControl(ctx: Ctx, filters: ListFilterState): HTMLElement
     clearSelection(ctx);
     load(ctx, filters);
   });
-  return el("section", { "aria-label": "List options" }, el("label", {}, toggle, " Show dismissed"));
+  return el("section", { "aria-label": "List options", class: "rt-list-options" }, el("label", {}, toggle, " Show dismissed"));
 }
 
 function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
@@ -230,6 +239,26 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     load(ctx, filters);
   });
 
+  const clearButton = el("button", { type: "button" }, "Clear filters");
+  clearButton.addEventListener("click", () => {
+    const hasAppliedFilters = Boolean(filters.userName || filters.projectName || filters.from || filters.to || filters.status || filters.search);
+    userInput.value = "";
+    projectInput.value = "";
+    fromInput.value = "";
+    toInput.value = "";
+    statusSelect.value = "";
+    searchInput.value = "";
+    if (!hasAppliedFilters) return;
+    filters.userName = "";
+    filters.projectName = "";
+    filters.from = "";
+    filters.to = "";
+    filters.status = "";
+    filters.search = "";
+    clearSelection(ctx);
+    load(ctx, filters);
+  });
+
   const bulkToggle = el("input", { type: "checkbox" });
   bulkToggle.checked = filters.bulkMode;
   bulkToggle.addEventListener("change", () => {
@@ -242,16 +271,33 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
   return el(
     "section",
     { "aria-label": "Filters" },
-    el("label", {}, "User", userInput),
-    userList,
-    el("label", {}, "Project", projectInput),
-    projectList,
-    el("label", {}, "From", fromInput),
-    el("label", {}, "To", toInput),
-    el("label", {}, "Status", statusSelect),
-    el("label", {}, "Search", searchInput),
-    applyButton,
-    bulkLabel,
+    el(
+      "div",
+      { class: "rt-filter-group", role: "group", "aria-label": "Search" },
+      el("label", {}, "User", userInput),
+      userList,
+      el("label", {}, "Project", projectInput),
+      projectList,
+      el("label", {}, "Search", searchInput),
+    ),
+    el(
+      "div",
+      { class: "rt-filter-group", role: "group", "aria-label": "Date range" },
+      el("label", {}, "From", fromInput),
+      el("label", {}, "To", toInput),
+    ),
+    el(
+      "div",
+      { class: "rt-filter-group", role: "group", "aria-label": "Status" },
+      el("label", {}, "Status", statusSelect),
+    ),
+    el(
+      "div",
+      { class: "rt-filter-group rt-filter-group--actions", role: "group", "aria-label": "Filter actions" },
+      applyButton,
+      clearButton,
+      bulkLabel,
+    ),
   );
 }
 
@@ -276,31 +322,47 @@ function renderRow(
   const openButton = el("button", { type: "button", class: "rt-title" }, header);
   openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
 
-  const lines = [
+  // Date and duration first, description second, then one metadata line with everything else.
+  const main = el(
+    "div",
+    { class: "rt-entry-main" },
     el("div", {}, openButton),
     el("div", { class: "rt-desc" }, source.description || "(no description)"),
-    ...(projectLine ? [el("div", { class: "rt-entry-value" }, projectLine)] : []),
-    el("div", { class: "rt-metadata" }, el("span", {}, `Tags: ${tagNames || "none"}`), el("span", {}, `Detected: ${detected}`)),
-    el("div", {}, "Status: ", renderStatusPill(status)),
-  ];
+    el(
+      "div",
+      { class: "rt-metadata" },
+      ...(projectLine ? [el("span", { class: "rt-entry-value" }, projectLine)] : []),
+      el("span", {}, `Tags: ${tagNames || "none"}`),
+      el("span", {}, `Detected: ${detected}`),
+      el("span", {}, "Status: ", renderStatusPill(status)),
+    ),
+  );
+
+  const li = el("li", { class: "rt-entry" }, main);
 
   if (actionable && !actionsUnavailable) {
     const recreateButton = el("button", { type: "button", class: "rt-primary" }, "Recreate");
     recreateButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
-    lines.push(el("div", {}, recreateButton));
+    li.append(el("div", { class: "rt-entry-side" }, recreateButton));
   }
 
   if (ctx.isAdminRole && filters.bulkMode && actionable && !actionsUnavailable) {
     const identity = `${source.ownerName}, ${header}, ${source.description || "no description"}`;
     const checkbox = el("input", { type: "checkbox", "aria-label": `Select ${identity}` });
     checkbox.checked = ctx.session.selectedEntryIds.has(row.id);
+    if (checkbox.checked) li.classList.add("rt-entry--selected");
     checkbox.addEventListener("change", () => {
-      if (checkbox.checked) ctx.session.selectedEntryIds.add(row.id);
-      else ctx.session.selectedEntryIds.delete(row.id);
+      if (checkbox.checked) {
+        ctx.session.selectedEntryIds.add(row.id);
+        li.classList.add("rt-entry--selected");
+      } else {
+        ctx.session.selectedEntryIds.delete(row.id);
+        li.classList.remove("rt-entry--selected");
+      }
       onSelectionChange();
     });
-    lines.unshift(el("div", {}, checkbox));
+    li.prepend(el("div", { class: "rt-entry-select" }, checkbox));
   }
 
-  return el("li", {}, ...lines);
+  return li;
 }

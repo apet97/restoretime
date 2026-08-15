@@ -26,16 +26,21 @@ export function renderConfirm(
   returnTo: ReturnTarget = "list",
 ): void {
   const heading = el("h2", {}, "Confirm recreation");
-  const nodes: (Node | string)[] = [
-    renderFactsTable(source, plan, ctx.locale, draft?.labels),
-    el("p", {}, el("strong", {}, "Fidelity: "), fidelityLabel(plan.fidelity)),
-    fidelityExplanation(plan.fidelity),
-    el("p", {}, "RestoreTime will create one new time entry in Clockify with these values. The deleted entry's history stays unchanged."),
-  ];
+  // Priority order: what changes (warnings) sits directly under the values it applies to, then
+  // the fidelity summary, then the routine system differences. The action area comes last.
+  const nodes: (Node | string)[] = [renderFactsTable(source, plan, ctx.locale, draft?.labels)];
 
   const warnings = renderWarningMessages(plan.warnings);
   if (warnings) nodes.push(el("section", {}, el("h3", {}, "Warnings"), warnings));
-  nodes.push(renderDifferences(plan));
+  nodes.push(
+    el(
+      "div",
+      { class: "rt-fidelity" },
+      el("p", {}, el("strong", {}, "Fidelity: "), fidelityLabel(plan.fidelity)),
+      fidelityExplanation(plan.fidelity),
+    ),
+    renderDifferences(plan),
+  );
 
   const backButton = el("button", { type: "button" }, returnTo === "bulk-review" ? "Back to review" : "Back to entry");
   backButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}), returnTo }));
@@ -77,7 +82,17 @@ export function renderConfirm(
     onError: (err) => handleConfirmError(ctx, entryId, plan, source, draft, returnTo, errorRegion, err),
   });
 
-  nodes.push(errorRegion, el("div", { class: "rt-action-group" }, confirmButton, backButton));
+  // The action area states exactly what the one click does — create one new entry, leave the
+  // deleted entry's history unchanged — immediately before the control that does it.
+  nodes.push(
+    el(
+      "div",
+      { class: "rt-action-bar" },
+      el("p", {}, "RestoreTime will create one new time entry in Clockify with these values. The deleted entry's history stays unchanged."),
+      errorRegion,
+      el("div", { class: "rt-action-group" }, confirmButton, backButton),
+    ),
+  );
   mountView(ctx, heading, ...nodes);
 }
 

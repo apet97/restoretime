@@ -27,6 +27,7 @@ import { createLogger, type Logger } from "./log.js";
 import { openDatabase } from "./store/db.js";
 import { uninstallWorkspace } from "./store/cascade.js";
 import {
+  clearInstallationBroken,
   createSqliteInstallationStore,
   importTokenEncryptionKey,
   updateInstallationStatus,
@@ -55,14 +56,12 @@ const ADDON_ICON_SVG =
   '<path d="M5 4v5h5" fill="none" stroke="#3fce8b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
   '<path d="M12 8.5V12l2.5 1.5" fill="none" stroke="#f7f9fc" stroke-width="2" stroke-linecap="round"/></svg>';
 
-/** Reads the esbuild-bundled shell script relative to the running module (dist/static/app.js in
- * production). Read per-request, not cached at createServer() time: this function is also invoked
- * by tests that build the server straight from src/ (no dist/), which never hit this route. */
+/** Reads the esbuild-bundled shell script for each request. */
 function loadAppBundle(): string | undefined {
   return loadStaticAsset("./static/app.js");
 }
 
-/** Same read-per-request contract as the bundle, for the stylesheet. */
+/** Reads the stylesheet for each request. */
 function loadAppStylesheet(): string | undefined {
   return loadStaticAsset("./static/app.css");
 }
@@ -134,7 +133,12 @@ export async function createServer(
   addon.registerLifecycleEvent(
     lifecycle.installed,
     withClockifyInstalledLifecycleRequest(parser, async (_request, payload, claims) => {
-      await installations.save({ ...payload, installedAt: Date.now() });
+      const previous = await installations.load(claims.workspaceId, claims.addonId);
+      const installedAt = Date.now();
+      await installations.save({ ...payload, installedAt });
+      if (previous !== null && previous.authToken !== payload.authToken) {
+        clearInstallationBroken(db, claims.workspaceId, claims.addonId, installedAt);
+      }
       logger.info("installation installed", {
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,

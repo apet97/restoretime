@@ -46,6 +46,13 @@ settings builders, express/fetch adapters (node adapter chosen), `exchangeUserTo
 webhook payload guard (body is `unknown`); HTML escaping; role-enforcement wrapper (the SDK ships
 the predicate only).
 
+`STATUS_CHANGED` is the only lifecycle path that owns `installations.status`. A redelivered
+`INSTALLED` context updates its installation data but does not overwrite that status. The app loads
+the encrypted store through the SDK wrapper, then compares the prior and new plaintext auth tokens
+in memory. A same-token redelivery preserves `broken_at`. A changed token clears `broken_at` only
+when the row still has the saved generation. Re-enabling an installation does not clear
+`broken_at`; re-enable and reinstall are different remedies.
+
 ## Clockify REST (`clockify-sdk-ts-115`)
 
 Client construction: `createClockifyClient({ addonToken: <installation authToken>, baseUrl })`.

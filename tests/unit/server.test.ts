@@ -10,6 +10,7 @@ import {
 } from "@apet97/clockify-addon-sdk/testing";
 import { validateClockifyManifest } from "@apet97/clockify-addon-sdk/clockify";
 import type { AppConfig } from "../../src/config.js";
+import { markInstallationBroken, updateInstallationStatus } from "../../src/platform/installations.js";
 import { createServer } from "../../src/server.js";
 
 const ADDON_KEY = "restoretime-test";
@@ -217,6 +218,55 @@ describe("lifecycle: INSTALLED", () => {
     const loaded = await server.installations.load(WORKSPACE_ID, ADDON_INSTALLATION_ID);
     expect(loaded?.authToken).toBe("the-real-installation-secret");
     expect(loaded?.webhooks?.[0]?.authToken).toBe("the-webhook-secret");
+  });
+
+  it("clears a broken installation only when the verified payload has a new token", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const server = await boot();
+      const token = await lifecycleToken();
+      const first = await server.addon.handle(
+        createTestLifecycleRequest(
+          token,
+          buildInstalledPayload({
+            workspaceId: WORKSPACE_ID,
+            addonId: ADDON_INSTALLATION_ID,
+            authToken: "token-a",
+          }),
+          { path: "/lifecycle/installed" },
+        ),
+      );
+      expect(first.status).toBe(204);
+      expect(updateInstallationStatus(server.db, WORKSPACE_ID, ADDON_INSTALLATION_ID, "INACTIVE")).toBe(true);
+      expect(
+        markInstallationBroken(server.db, WORKSPACE_ID, ADDON_INSTALLATION_ID, 1000, "2026-08-15T10:00:00.000Z"),
+      ).toBe(true);
+
+      now.mockReturnValue(2000);
+      const second = await server.addon.handle(
+        createTestLifecycleRequest(
+          token,
+          buildInstalledPayload({
+            workspaceId: WORKSPACE_ID,
+            addonId: ADDON_INSTALLATION_ID,
+            authToken: "token-b",
+          }),
+          { path: "/lifecycle/installed" },
+        ),
+      );
+      expect(second.status).toBe(204);
+
+      const row = server.db
+        .prepare("SELECT status, broken_at, installed_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+        .get(WORKSPACE_ID, ADDON_INSTALLATION_ID) as {
+        status: string;
+        broken_at: string | null;
+        installed_at: number;
+      };
+      expect(row).toEqual({ status: "INACTIVE", broken_at: null, installed_at: 2000 });
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 

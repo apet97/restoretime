@@ -5,6 +5,18 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Docker release source binding", () => {
+  it("pins the supported Node runtime across local and container setup", () => {
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      engines: { node: string };
+    };
+    const dockerfile = readFileSync(join(process.cwd(), "Dockerfile"), "utf8");
+
+    expect(readFileSync(join(process.cwd(), ".nvmrc"), "utf8").trim()).toBe("22");
+    expect(packageJson.engines.node).toBe(">=22.13.0 <23");
+    expect(readFileSync(join(process.cwd(), ".npmrc"), "utf8").trim()).toBe("engine-strict=true");
+    expect(dockerfile).toContain("node:22-bookworm-slim@");
+  });
+
   it("generates the application source fingerprint during the build and copies it into runtime", () => {
     const dockerfile = readFileSync(join(process.cwd(), "Dockerfile"), "utf8");
     const pinnedBase =

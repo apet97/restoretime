@@ -24,8 +24,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # .nvmrc is the single source of the Node version: better-sqlite3 ^11 ships no prebuild
-          # for Node 26 and its node-gyp fallback fails there, so local and CI must agree.
+          # .nvmrc selects the supported Node 22 major. Node 26 is not supported by
+          # better-sqlite3@11, so local and CI must agree.
           node-version-file: ".nvmrc"
           cache: "npm"
 

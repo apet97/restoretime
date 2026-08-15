@@ -229,7 +229,7 @@ export function list(
 
   const rows = db
     .prepare<Record<string, unknown>, EntryRow>(
-      `SELECT * FROM recoverable_entries WHERE ${clauses.join(" AND ")} ORDER BY detected_at DESC${limitSql}`,
+      `SELECT * FROM recoverable_entries WHERE ${clauses.join(" AND ")} ORDER BY detected_at DESC, id DESC${limitSql}`,
     )
     .all(params);
 
@@ -569,14 +569,10 @@ export function adopt(
     if (attempt?.recoverableEntryId !== input.id) {
       throw new Error("cannot adopt a recreated entry without the expected attempt");
     }
-    const finished = attempts.finish(db, {
+    const finished = attempts.finishAmbiguousAsSuccess(db, {
       id: attempt.id,
       finishedAt: input.recreatedAt,
-      outcome: "SUCCESS",
       newEntryId: input.newEntryId,
-      errorStatus: null,
-      errorCode: null,
-      errorMessage: null,
       diffs: input.diffs,
     });
     if (!finished) throw new Error("recreation attempt disappeared during adoption");

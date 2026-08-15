@@ -271,7 +271,7 @@ describe("expired recreation attempts", () => {
       startedAt: "2026-08-08T09:01:01Z",
       baseline: [],
     });
-    attempts.finish(db, {
+    attempts.finishUnfinished(db, {
       id: claimToken,
       finishedAt: "2026-08-08T09:01:02Z",
       outcome: "SUCCESS",
@@ -326,7 +326,7 @@ describe("expired recreation attempts", () => {
       startedAt: "2026-08-08T09:01:01Z",
       baseline: [],
     });
-    attempts.finish(db, {
+    attempts.finishUnfinished(db, {
       id: failedToken,
       finishedAt: "2026-08-08T09:01:02Z",
       outcome: "FAILED",

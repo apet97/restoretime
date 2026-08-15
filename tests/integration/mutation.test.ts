@@ -427,7 +427,7 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
     expect(row.status).toBe("ACTIVE");
   });
 
-  it("a reinstall clears the broken flag", async () => {
+  it("a raw installation-store save does not clear the broken flag", async () => {
     const db = freshDb();
     db.prepare(
       `INSERT INTO installations (workspace_id, addon_id, addon_user_id, as_user, api_url, auth_token, installed_at)
@@ -449,7 +449,7 @@ describe("IT-08 addon token rejected (401 code 4017)", () => {
     const row = db
       .prepare("SELECT broken_at FROM installations WHERE workspace_id = ?")
       .get(WORKSPACE_ID) as { broken_at: string | null };
-    expect(row.broken_at).toBeNull();
+    expect(row.broken_at).toBe("2026-08-08T09:02:00Z");
   });
 });
 
@@ -672,6 +672,16 @@ describe("IT-04 ambiguous protocol", () => {
           workspaceId: WORKSPACE_ID,
           claimToken: "attempt-b",
         });
+        expect(attempts.finishUnfinished(db, {
+          id: "attempt-b",
+          finishedAt: "2026-08-08T09:02:03Z",
+          outcome: "AMBIGUOUS",
+          newEntryId: null,
+          errorStatus: null,
+          errorCode: null,
+          errorMessage: null,
+          diffs: null,
+        })).toBe(true);
         return jsonResponse([candidateEntry()]);
       }
       return jsonResponse({ message: "unstubbed" }, 404);
@@ -707,7 +717,7 @@ describe("IT-04 ambiguous protocol", () => {
       lifecycleState: "AMBIGUOUS",
       newEntryId: null,
     });
-    expect(attempts.getById(db, "attempt-a")?.outcome).toBeNull();
-    expect(attempts.getById(db, "attempt-b")?.outcome).toBeNull();
+    expect(attempts.getById(db, "attempt-a")?.outcome).toBe("AMBIGUOUS");
+    expect(attempts.getById(db, "attempt-b")?.outcome).toBe("AMBIGUOUS");
   });
 });

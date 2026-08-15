@@ -3,7 +3,9 @@ import type Database from "better-sqlite3";
 import type { ClockifyInstallationContext } from "@apet97/clockify-addon-sdk/clockify";
 import { openDatabase } from "../../src/store/db.js";
 import {
+  clearInstallationBroken,
   createSqliteInstallationStore,
+  markInstallationBroken,
   updateInstallationStatus,
 } from "../../src/platform/installations.js";
 
@@ -129,5 +131,36 @@ describe("createSqliteInstallationStore — generation guard", () => {
       .prepare("SELECT status FROM installations WHERE workspace_id = ? AND addon_id = ?")
       .get("ws-1", "addon-1") as { status: string };
     expect(row.status).toBe("INACTIVE");
+  });
+
+  it("a same-token redelivery preserves the broken notice and status", async () => {
+    const store = createSqliteInstallationStore(db);
+    await store.save(context({ authToken: "token-a", installedAt: 1000 }));
+    expect(markInstallationBroken(db, "ws-1", "addon-1", 1000, "2026-08-15T10:00:00.000Z")).toBe(true);
+    expect(updateInstallationStatus(db, "ws-1", "addon-1", "INACTIVE")).toBe(true);
+
+    await store.save(context({ authToken: "token-a", installedAt: 2000, asUser: "user-2" }));
+
+    const row = db
+      .prepare("SELECT as_user, status, broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get("ws-1", "addon-1") as { as_user: string; status: string; broken_at: string | null };
+    expect(row).toEqual({
+      as_user: "user-2",
+      status: "INACTIVE",
+      broken_at: "2026-08-15T10:00:00.000Z",
+    });
+  });
+
+  it("does not clear a broken notice when a stale generation requests it", async () => {
+    const store = createSqliteInstallationStore(db);
+    await store.save(context({ authToken: "token-a", installedAt: 1000 }));
+    expect(markInstallationBroken(db, "ws-1", "addon-1", 1000, "2026-08-15T10:00:00.000Z")).toBe(true);
+    await store.save(context({ authToken: "token-b", installedAt: 2000 }));
+
+    expect(clearInstallationBroken(db, "ws-1", "addon-1", 1000)).toBe(false);
+    const row = db
+      .prepare("SELECT broken_at FROM installations WHERE workspace_id = ? AND addon_id = ?")
+      .get("ws-1", "addon-1") as { broken_at: string | null };
+    expect(row.broken_at).toBe("2026-08-15T10:00:00.000Z");
   });
 });

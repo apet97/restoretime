@@ -3,6 +3,7 @@
 // malformed body with a reason; normalize() only ever runs on a body the guard accepted.
 
 import type { DeletedTimeEntry } from "../domain/entry.js";
+import { isUtcIsoTimestamp } from "../domain/timestamps.js";
 
 interface RawTag {
   readonly id: string;
@@ -49,10 +50,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isTimestamp(value: unknown): value is string {
-  return isNonEmptyString(value) && Number.isFinite(Date.parse(value));
-}
-
 /** Rejects a body missing required fields or carrying the wrong type for one (UT-N01). Accepts
  * everything else — unknown extra fields are ignored, matching the webhook's "flat superset"
  * shape (W1). */
@@ -81,23 +78,21 @@ export function guardDeletedEntryPayload(body: unknown): GuardResult {
   }
 
   const timeInterval = body.timeInterval;
-  if (!isRecord(timeInterval) || !isTimestamp(timeInterval.start)) {
+  if (!isRecord(timeInterval) || !isUtcIsoTimestamp(timeInterval.start)) {
     return { ok: false, reason: "missing or invalid timeInterval.start" };
   }
-  if (
-    timeInterval.end !== null &&
-    timeInterval.end !== undefined &&
-    !isTimestamp(timeInterval.end)
-  ) {
+  if (!Object.hasOwn(timeInterval, "end")) {
+    return { ok: false, reason: "missing timeInterval.end" };
+  }
+  if (body.currentlyRunning ? timeInterval.end !== null : !isUtcIsoTimestamp(timeInterval.end)) {
     return { ok: false, reason: "invalid timeInterval.end" };
   }
-  if (!body.currentlyRunning && (timeInterval.end === null || timeInterval.end === undefined)) {
-    return { ok: false, reason: "a stopped entry needs timeInterval.end" };
+  if (!Object.hasOwn(timeInterval, "timeZone")) {
+    return { ok: false, reason: "missing timeInterval.timeZone" };
   }
   if (
     timeInterval.timeZone !== null &&
-    timeInterval.timeZone !== undefined &&
-    typeof timeInterval.timeZone !== "string"
+    (typeof timeInterval.timeZone !== "string" || timeInterval.timeZone.trim().length === 0)
   ) {
     return { ok: false, reason: "invalid timeInterval.timeZone" };
   }

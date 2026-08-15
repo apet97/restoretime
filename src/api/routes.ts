@@ -17,6 +17,7 @@ import { canAct, canRead, isAdmin } from "../domain/policy.js";
 import { runPreflight } from "../domain/preflight.js";
 import { classifyFidelity } from "../domain/fidelity.js";
 import { isPlanUsable, outcomesDiffer, sourceHash as computeSourceHash } from "../domain/plan.js";
+import { canonicalizeUtcIsoTimestamp, isUtcIsoListBound } from "../domain/timestamps.js";
 import type {
   ActionRequiredItem,
   PlanPresentation,
@@ -294,6 +295,18 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
   const status = query.get("status");
   const search = query.get("search");
 
+  if (from !== null && !isUtcIsoListBound(from)) {
+    return errorJson(400, "from must be a UTC ISO timestamp with at most millisecond precision");
+  }
+  if (to !== null && !isUtcIsoListBound(to)) {
+    return errorJson(400, "to must be a UTC ISO timestamp with at most millisecond precision");
+  }
+  const canonicalFrom = from === null ? null : canonicalizeUtcIsoTimestamp(from);
+  const canonicalTo = to === null ? null : canonicalizeUtcIsoTimestamp(to);
+  if (canonicalFrom !== null && canonicalTo !== null && canonicalFrom > canonicalTo) {
+    return errorJson(400, "from must not be after to");
+  }
+
   const filters: entries.ListFilters = {
     // non-admin: never widen the workspace scope — always the viewer's own entries.
     ...(!isAdmin(viewer) ? { ownerId: viewer.userId } : {}),
@@ -301,8 +314,8 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     ...(adminUserName ? { ownerName: adminUserName } : {}),
     ...(projectId ? { projectId } : {}),
     ...(projectName ? { projectName } : {}),
-    ...(from ? { from } : {}),
-    ...(to ? { to } : {}),
+    ...(canonicalFrom ? { from: canonicalFrom } : {}),
+    ...(canonicalTo ? { to: canonicalTo } : {}),
     ...(status && isLifecycleState(status) ? { status } : {}),
     ...(search ? { search } : {}),
     ...(query.get("dismissed") === "true" ? { dismissed: true } : {}),
@@ -342,7 +355,11 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
           const state = await fetchEntryWorkspaceState(clientResult.client, viewer.workspaceId, shared, row.source, {}, projectTaskCache);
           const result = runPreflight({ source: row.source, viewer, choices: {}, workspace: state, now: new Date() });
           summary = preflightSummary(result.fidelity, result.blockers.length, result.actionRequired.length);
-        } catch {
+        } catch (err) {
+          if (isAddonTokenInvalid(err)) {
+            markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+            clockifyUnavailable = true;
+          }
           summary = null;
         }
       }
@@ -946,6 +963,10 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
       // "Ready — " with nothing to review, which is the one thing that view exists to let an admin do.
       results.push({ entryId: id, status, plan, source: row.source });
     } catch (err) {
+      if (isAddonTokenInvalid(err)) {
+        markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
+        return errorJson(503, NO_CLIENT_MESSAGE);
+      }
       if (err instanceof plans.PlanEntryNotActionableError) {
         const current = entries.getById(deps.db, viewer.workspaceId, id);
         results.push(current

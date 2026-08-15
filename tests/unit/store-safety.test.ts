@@ -73,6 +73,81 @@ function seedAmbiguous() {
 }
 
 describe("reconcile run fencing", () => {
+  it("allows only AMBIGUOUS attempts to become successful after adoption", () => {
+    const { db, entry } = seedAmbiguous();
+    const firstOutcome = (id: string, outcome: "SUCCESS" | "FAILED" | "AMBIGUOUS") => {
+      insertAttemptFixture(db, {
+        id,
+        planId: "plan-1",
+        recoverableEntryId: entry.id,
+        startedAt: "2026-08-08T09:00:02Z",
+        baseline: ["private-baseline"],
+      });
+      expect(attempts.finishUnfinished(db, {
+        id,
+        finishedAt: "2026-08-08T09:00:03Z",
+        outcome,
+        newEntryId: outcome === "SUCCESS" ? `created-${id}` : null,
+        errorStatus: outcome === "FAILED" ? 400 : null,
+        errorCode: outcome === "FAILED" ? "501" : null,
+        errorMessage: outcome === "FAILED" ? "rejected" : null,
+        diffs: null,
+      })).toBe(true);
+    };
+
+    expect(attempts.finishAmbiguousAsSuccess(db, {
+      id: "attempt-1",
+      finishedAt: "2026-08-08T09:00:03Z",
+      newEntryId: "created-unfinished",
+      diffs: [],
+    })).toBe(false);
+
+    firstOutcome("attempt-failed", "FAILED");
+    firstOutcome("attempt-success", "SUCCESS");
+    expect(attempts.finishAmbiguousAsSuccess(db, {
+      id: "attempt-failed",
+      finishedAt: "2026-08-08T09:00:04Z",
+      newEntryId: "created-failed",
+      diffs: [],
+    })).toBe(false);
+    expect(attempts.finishAmbiguousAsSuccess(db, {
+      id: "attempt-success",
+      finishedAt: "2026-08-08T09:00:04Z",
+      newEntryId: "created-success",
+      diffs: [],
+    })).toBe(false);
+
+    firstOutcome("attempt-ambiguous", "AMBIGUOUS");
+    attempts.updateReconcile(db, "attempt-ambiguous", {
+      checkedAt: "2026-08-08T09:00:03Z",
+      checks: 1,
+      matchCount: 1,
+      candidateIds: ["created-ambiguous"],
+      truncated: false,
+    });
+    const adoption = {
+      id: "attempt-ambiguous",
+      finishedAt: "2026-08-08T09:00:04Z",
+      newEntryId: "created-ambiguous",
+      diffs: [{ field: "description", planned: "a", actual: "a" }],
+    };
+    expect(attempts.finishAmbiguousAsSuccess(db, adoption)).toBe(true);
+    expect(attempts.getById(db, "attempt-ambiguous")).toMatchObject({
+      outcome: "SUCCESS",
+      newEntryId: "created-ambiguous",
+      errorStatus: null,
+      errorCode: null,
+      errorMessage: null,
+      baseline: null,
+      reconcile: null,
+      diffs: adoption.diffs,
+    });
+    const adoptedAttempt = attempts.getById(db, "attempt-ambiguous");
+    expect(attempts.finishAmbiguousAsSuccess(db, adoption)).toBe(false);
+    expect(attempts.getById(db, "attempt-ambiguous")).toEqual(adoptedAttempt);
+    db.close();
+  });
+
   it("blocks a second and backward-clock run, permits takeover at 30 seconds, and rejects stale completion and adoption", () => {
     const { db, entry } = seedAmbiguous();
     const prior = {

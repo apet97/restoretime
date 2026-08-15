@@ -14,6 +14,15 @@
    codec; key from `TOKEN_ENCRYPTION_KEY`).
 4. **Tenant boundary** — every query is scoped by the claims' `workspaceId`.
 
+## Component token transport
+
+Clockify supplies the component JWT in `?auth_token`. The SDK and browser contract require that
+query value so a reload can receive the Clockify-supplied token. The server verifies the component
+request, sends the HTML shell with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`,
+keeps the token out of application logs and server responses, and accepts it on `/api/*` only in
+the `Authorization` header. Operators must redact query strings in reverse-proxy and platform
+access logs for the component route. Do not strip the query from browser history.
+
 ## Threat model
 
 | Threat | Boundary | Mitigation | Test |

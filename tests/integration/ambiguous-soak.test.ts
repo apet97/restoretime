@@ -96,6 +96,20 @@ function sourceFor(entryId: string, description: string): DeletedTimeEntry {
   };
 }
 
+function finishAmbiguousFixture(db: AppServer["db"], id: string): void {
+  const finished = attempts.finishUnfinished(db, {
+    id,
+    finishedAt: "2026-08-08T09:01:59Z",
+    outcome: "AMBIGUOUS",
+    newEntryId: null,
+    errorStatus: null,
+    errorCode: null,
+    errorMessage: null,
+    diffs: null,
+  });
+  if (!finished) throw new Error("could not record ambiguous attempt fixture");
+}
+
 function plannedFor(description: string): PlannedRequest {
   return { workspaceId: WORKSPACE_ID, userId: OWNER_ID, start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z", description, billable: true };
 }
@@ -177,6 +191,7 @@ function seedEligibleAmbiguous(
     startedAt: "2026-08-08T09:01:01Z",
     baseline: [],
   });
+  finishAmbiguousFixture(server.db, input.attemptId);
   entries.setAmbiguous(server.db, {
     id: entry.id,
     workspaceId: WORKSPACE_ID,
@@ -282,6 +297,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     entries.claim(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryB.id, workspaceId: WORKSPACE_ID, claimToken: "tok-b" });
     insertAttemptFixture(db, { id: "tok-b", planId: "plan-b", recoverableEntryId: entryB.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+    finishAmbiguousFixture(db, "tok-b");
 
     const runB = beginReconcileFixture(db, { recoverableEntryId: entryB.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-b" });
     const reconcileB = await runReconcile({
@@ -308,6 +324,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
     entries.claim(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c", now: new Date("2026-08-08T09:01:00Z") });
     entries.setAmbiguous(db, { id: entryC.id, workspaceId: WORKSPACE_ID, claimToken: "tok-c" });
     insertAttemptFixture(db, { id: "tok-c", planId: "plan-c", recoverableEntryId: entryC.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+    finishAmbiguousFixture(db, "tok-c");
 
     const runC = beginReconcileFixture(db, { recoverableEntryId: entryC.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-c" });
     const reconcileC = await runReconcile({
@@ -336,6 +353,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token, now: new Date("2026-08-08T09:01:00Z") });
       entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: token });
       insertAttemptFixture(db, { id: token, planId, recoverableEntryId: entry.id, startedAt: "2026-08-08T09:01:30Z", baseline: [] });
+      finishAmbiguousFixture(db, token);
     }
 
     const sharedClockifyId = "clockify-shared-de";
@@ -464,6 +482,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       startedAt: "2026-08-08T09:01:01Z",
       baseline: [],
     });
+    finishAmbiguousFixture(server.db, "attempt-billable-override");
     entries.setAmbiguous(server.db, {
       id: entry.id,
       workspaceId: WORKSPACE_ID,
@@ -873,6 +892,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       startedAt: "2026-08-08T09:01:01Z",
       baseline: [],
     });
+    finishAmbiguousFixture(db, "attempt-stale-a");
     entries.setAmbiguous(db, {
       id: entry.id,
       workspaceId: WORKSPACE_ID,
@@ -913,6 +933,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
           startedAt: "2026-08-08T09:02:02Z",
           baseline: [],
         });
+        finishAmbiguousFixture(db, "attempt-stale-b");
         entries.setAmbiguous(db, {
           id: entry.id,
           workspaceId: WORKSPACE_ID,
@@ -945,7 +966,7 @@ describe("AMBIGUOUS soak: one scripted sequence covering all four outcomes", () 
       lifecycleState: "AMBIGUOUS",
       newEntryId: null,
     });
-    expect(attempts.getById(db, "attempt-stale-a")?.outcome).toBeNull();
-    expect(attempts.getById(db, "attempt-stale-b")?.outcome).toBeNull();
+    expect(attempts.getById(db, "attempt-stale-a")?.outcome).toBe("AMBIGUOUS");
+    expect(attempts.getById(db, "attempt-stale-b")?.outcome).toBe("AMBIGUOUS");
   });
 });

@@ -110,6 +110,16 @@ describe("post-create verification diff (docs/07 §9)", () => {
     expect(diffs.some((d) => d.field.startsWith("customFields."))).toBe(false);
   });
 
+  it("reports a custom-field difference between null and the string null", () => {
+    const withCf: PlannedRequest = { ...PLANNED, customFields: [{ customFieldId: "cf-1", sourceType: "WORKSPACE", value: null }] };
+    const actual = candidate({ customFieldValues: [{ customFieldId: "cf-1", value: "null" }] });
+    expect(diffPlannedVsActual(withCf, actual)).toContainEqual({
+      field: "customFields.cf-1",
+      planned: null,
+      actual: "null",
+    });
+  });
+
   it("a verification-read failure records the fallback note as an informational diff entry", () => {
     const diffs = diffPlannedVsActual(PLANNED, candidate(), "verification read unavailable");
     expect(diffs.some((d) => d.field === "_verification" && d.actual === "verification read unavailable")).toBe(true);

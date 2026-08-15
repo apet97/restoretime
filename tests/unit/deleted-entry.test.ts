@@ -60,16 +60,79 @@ describe("UT-N01 guardDeletedEntryPayload", () => {
     ["start", "not-a-date"],
     ["end", ""],
     ["end", "not-a-date"],
+    ["start", "2026/08/08 10:00:00"],
+    ["start", "2026-08-08"],
+    ["start", "2026-08-08T10:00:00+01:00"],
+    ["start", "2026-02-30T10:00:00Z"],
+    ["start", "2026-08-08T10:00:00.1234567890Z"],
+    ["start", " 2026-08-08T10:00:00Z "],
   ] as const)("rejects an invalid timeInterval.%s timestamp", (field, value) => {
     const body = validBody();
     (body.timeInterval as Record<string, unknown>)[field] = value;
     expect(guardDeletedEntryPayload(body).ok).toBe(false);
   });
 
-  it("rejects a stopped entry without an end time", () => {
+  it.each(["", "   "])("rejects an empty time zone", (timeZone) => {
+    const body = validBody();
+    (body.timeInterval as Record<string, unknown>).timeZone = timeZone;
+    expect(guardDeletedEntryPayload(body)).toEqual({ ok: false, reason: "invalid timeInterval.timeZone" });
+  });
+
+  it("accepts UTC seconds and up to nine fractional digits without rewriting source strings", () => {
+    const body = validBody();
+    body.timeInterval = {
+      start: "2026-08-08T10:00:00.123456789Z",
+      end: "2026-08-08T11:00:00Z",
+      timeZone: "Europe/Belgrade",
+    };
+    const guarded = guardDeletedEntryPayload(body);
+    if (!guarded.ok) throw new Error("expected guard to accept");
+
+    expect(guarded.payload.timeInterval).toEqual(body.timeInterval);
+  });
+
+  it("accepts a running entry with an explicit null end", () => {
+    const body = validBody();
+    body.currentlyRunning = true;
+    (body.timeInterval as Record<string, unknown>).end = null;
+    expect(guardDeletedEntryPayload(body).ok).toBe(true);
+  });
+
+  it("rejects a running entry without an end property", () => {
+    const body = validBody();
+    body.currentlyRunning = true;
+    delete (body.timeInterval as Record<string, unknown>).end;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects a running entry with a timestamp end", () => {
+    const body = validBody();
+    body.currentlyRunning = true;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects a stopped entry without an end property", () => {
+    const body = validBody();
+    delete (body.timeInterval as Record<string, unknown>).end;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects a stopped entry with a null end", () => {
     const body = validBody();
     (body.timeInterval as Record<string, unknown>).end = null;
     expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("rejects a time interval without a time zone property", () => {
+    const body = validBody();
+    delete (body.timeInterval as Record<string, unknown>).timeZone;
+    expect(guardDeletedEntryPayload(body).ok).toBe(false);
+  });
+
+  it("accepts a null time zone", () => {
+    const body = validBody();
+    (body.timeInterval as Record<string, unknown>).timeZone = null;
+    expect(guardDeletedEntryPayload(body).ok).toBe(true);
   });
 
   it("rejects an empty projectId", () => {

@@ -68,9 +68,17 @@ probes. A bare **`fact N`** citation anywhere in this repo means row `N` of the 
 Make one focused change at a time. Run the applicable commands below. Use the historical pass files
 as evidence and rationale, not as unfinished implementation instructions.
 
+## Contributor setup
+
+Use Node 22.13 or later within major version 22. The canonical runtime-variable table is in
+`docs/05-architecture.md`. The credential-free first-success path and local server preparation are
+in `README.md`. A local health check does not prove a Clockify component. Live and developer-smoke
+commands need their documented prerequisites and explicit target authorization.
+
 ## Commands
 
-Use the Node 22 version in `.nvmrc`. After you switch Node versions, run `npm ci` before the gates.
+Use Node 22.13 or later within major version 22. `.nvmrc` selects Node 22. After you switch Node
+versions, run `npm ci` before the gates.
 
 ```bash
 npm ci

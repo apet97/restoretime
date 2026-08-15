@@ -15,6 +15,19 @@ RC.12 run as proof for either boundary.
 - The RC.12 candidate is the exact merge commit on `main`, not the branch head before merge.
 - `v1.0.0-rc.12` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
   Marketplace proof.
+- A clean checkout is an isolated clone or worktree at the exact candidate commit. Do not script a
+  destructive removal of a developer's modules or files to create one.
+
+## Later candidate authorization
+
+RC.12 evidence is historical and applies only to
+`d2c50d26392d511592a9cfb3f8fce1ae5d102ceb`. The corrected uncommitted tree is not an RC.13
+candidate. It becomes a candidate only after it is committed, independently reviewed, and merged.
+
+The RC.13 infrastructure gate is open. Do not reuse RC.12 issue 32, deployment proof, or waiver.
+Before publication, the operator must record an authorization that names the exact candidate scope,
+developer-only deployment, candidate release tag, a 300-second reachable-ref Gitleaks bound, and the
+backup and restore decision. Until then, do not create an RC.13 tag or GitHub release.
 
 ## CI gates (every PR)
 
@@ -42,6 +55,8 @@ infrastructure capability**. Railway requires Pro for this capability. The opera
 three gates only for this RC prerelease: platform backup/PITR, locked Railway backup, and isolated
 Railway platform restore. Do not purchase or enable Pro for this release. This waiver permits the
 RC prerelease. It does not prove production disaster-recovery readiness.
+
+A later candidate must have its own operator authorization and infrastructure-gate decision.
 
 1. Open the PR. Complete the required manual review and all PR CI gates. Do not merge first and
    review later.

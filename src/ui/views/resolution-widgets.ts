@@ -482,5 +482,7 @@ export function renderResolutionWidgets(
     renderDescriptionWidget(choices, reflow, actionRequired),
     renderCustomFieldsWidget(ctx, choices, labels, reflow, actionRequired, source),
   ].filter((w): w is HTMLElement => w !== null);
-  return el("section", { "aria-label": "Needs your input", class: "rt-notice" }, el("h3", {}, "Needs your input"), ...widgets);
+  // The info tone marks this as "you must act here", distinct from the plain facts above it and
+  // from the yellow warning boxes, which report values that cannot be kept.
+  return el("section", { "aria-label": "Needs your input", class: "rt-notice rt-notice--info" }, el("h3", {}, "Needs your input"), ...widgets);
 }

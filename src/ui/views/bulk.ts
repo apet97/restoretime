@@ -75,10 +75,21 @@ export function renderBulkReview(
    * silently did nothing. */
   const syncRecreateButton = () => {
     const count = readyPlanIds().length;
+    const selectedCount = rows.filter((row) => selected.has(row.entryId)).length;
     recreateButton.textContent = `Recreate ${count} ${count === 1 ? "entry" : "entries"}`;
     recreateButton.toggleAttribute("disabled", busy || refreshing || count === 0);
+    // With nothing to recreate the control stays for state truth, but it is not the page's
+    // dominant action — the primary styling belongs to a count that can act.
+    recreateButton.classList.toggle("rt-primary", count > 0);
+    summaryLine.textContent =
+      selectedCount === 0
+        ? "No entries are selected. Select one or more ready entries to recreate."
+        : count === 0
+          ? "No selected entries are ready to recreate. Open each selected entry that needs input or review. Resolve it, then return. The review refreshes when you return."
+          : `${count} of ${selectedCount} selected ${selectedCount === 1 ? "entry is" : "entries are"} ready to recreate.`;
     for (const checkbox of checkboxes) checkbox.disabled = busy || refreshing;
   };
+  const summaryLine = el("p", { class: "rt-selection-summary", role: "status" }, "");
 
   const listItems = rows.map((row) => {
     // A review view has to say what is being reviewed. A "ready" row carries no reason text, so
@@ -87,36 +98,46 @@ export function renderBulkReview(
     const label = row.source ? formatEntryHeader(row.source.start, row.source.end, ctx.locale) : "This entry";
     const description = row.source?.description ?? "";
     const reason = rowReason(row);
+    const presentation = bulkStatusPresentation(row.status);
+    const head = el("div", { class: "rt-review-head" }, renderStatusPill(presentation), el("strong", {}, label));
     const line = [
-      renderStatusPill(bulkStatusPresentation(row.status)),
-      ` — ${label}`,
+      head,
       ...(description ? [el("div", { class: "rt-entry-value" }, description)] : []),
       ...(reason ? [el("div", { class: "rt-entry-value" }, reason)] : []),
     ];
     if (row.status === "ready" && row.plan) {
-      line.push(el("div", { class: "rt-entry-value" }, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`));
-      line.push(el("div", {}, `Fidelity: ${fidelityLabel(row.plan.fidelity)}`));
-      if (row.source) line.push(renderFactsTable(row.source, row.plan, ctx.locale));
-      if (row.plan.warnings.length > 0) {
-        line.push(el("ul", {}, ...row.plan.warnings.map((warning) => el("li", {}, warning.message))));
-      }
+      const body = [
+        ...line,
+        el("div", { class: "rt-entry-value" }, `Owner: ${row.source?.ownerName ?? "Unknown owner"}`),
+        el("div", {}, `Fidelity: ${fidelityLabel(row.plan.fidelity)}`),
+        ...(row.source ? [renderFactsTable(row.source, row.plan, ctx.locale)] : []),
+        ...(row.plan.warnings.length > 0 ? [el("ul", {}, ...row.plan.warnings.map((warning) => el("li", {}, warning.message)))] : []),
+      ];
       // Named, so a screen reader announces which entry is being toggled rather than "checkbox".
       const identity = `${row.source?.ownerName ?? "Unknown owner"}, ${label}, ${description || "no description"}`;
       const checkbox = el("input", { type: "checkbox", "aria-label": `Recreate ${identity}` });
       checkbox.checked = selected.has(row.entryId);
       checkboxes.push(checkbox);
+      const item = el("li", { class: `rt-review-row rt-review-row--${presentation.tone}` }, el("div", { class: "rt-review-select" }, checkbox), ...body);
+      if (checkbox.checked) item.classList.add("rt-review-row--selected");
       checkbox.addEventListener("change", () => {
         if (busy) return;
-        if (checkbox.checked) selected.add(row.entryId);
-        else selected.delete(row.entryId);
+        if (checkbox.checked) {
+          selected.add(row.entryId);
+          item.classList.add("rt-review-row--selected");
+        } else {
+          selected.delete(row.entryId);
+          item.classList.remove("rt-review-row--selected");
+        }
         syncRecreateButton();
       });
-      return el("li", {}, checkbox, ...line);
+      return item;
     }
-    if (row.status === "not-found") return el("li", {}, ...line);
-    const openButton = el("button", { type: "button" }, "Open");
+    if (row.status === "not-found") return el("li", { class: `rt-review-row rt-review-row--${presentation.tone}` }, ...line);
+    const openButton = el("button", { type: "button", class: "rt-review-open" }, "Open");
     openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.entryId, returnTo: "bulk-review" }));
-    return el("li", {}, ...line, " ", openButton);
+    head.append(openButton);
+    return el("li", { class: `rt-review-row rt-review-row--${presentation.tone}` }, ...line);
   });
 
   syncRecreateButton();
@@ -161,9 +182,10 @@ export function renderBulkReview(
     ctx,
     el("h2", {}, "Review selected entries"),
     el("p", {}, "Entries needing input or individual review are excluded. Open each one to resolve it, then try again."),
+    summaryLine,
     errorRegion,
     el("ul", {}, ...listItems),
-    el("div", { class: "rt-action-group" }, recreateButton, backButton),
+    el("div", { class: "rt-action-bar" }, el("div", { class: "rt-action-group" }, recreateButton, backButton)),
   );
 }
 

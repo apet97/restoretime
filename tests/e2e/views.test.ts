@@ -9,7 +9,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderConfirm } from "../../src/ui/views/confirm.js";
-import { renderBulkResults } from "../../src/ui/views/bulk.js";
+import { renderBulkResults, renderBulkReview } from "../../src/ui/views/bulk.js";
 import { renderDetail } from "../../src/ui/views/detail.js";
 import { renderList } from "../../src/ui/views/list.js";
 import { renderResolutionWidgets, type MutableChoices } from "../../src/ui/views/resolution-widgets.js";
@@ -209,6 +209,194 @@ describe("confirm view (docs/10 §5)", () => {
     );
     expect(Array.from(row?.querySelectorAll("td") ?? []).map((cell) => cell.textContent)).toEqual(["Normal", "Normal"]);
   });
+
+  it("marks a substituted project when its current name stayed the same", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const sameNamePlan = plan({
+      plannedRequest: { ...base.plannedRequest, projectId: "project-new" },
+      presentation: {
+        ...base.presentation!,
+        project: { id: "project-new", name: "Operations", outcome: "substituted" },
+      },
+    });
+
+    renderConfirm(ctx, "re-1", sameNamePlan, source({ projectId: "project-old", projectName: "Operations" }));
+
+    const row = Array.from(ctx.root.querySelectorAll("tbody tr")).find((candidate) => candidate.querySelector("th")?.textContent === "Project");
+    const [deletedCell, plannedCell] = Array.from(row?.querySelectorAll("td") ?? []);
+    expect(deletedCell?.textContent).toBe("Operations");
+    expect(plannedCell?.textContent).toBe("Operations");
+    expect(plannedCell?.classList.contains("rt-cell--changed")).toBe(true);
+    expect(plannedCell?.getAttribute("aria-label")).toBe("Changed planned value: Operations");
+    expect(ctx.root.textContent).not.toContain("project-old");
+    expect(ctx.root.textContent).not.toContain("project-new");
+  });
+
+  it("marks kept project and task values when real names equal absence placeholders", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const keptPlan = plan({
+      plannedRequest: { ...base.plannedRequest, projectId: "project-1", taskId: "task-1" },
+      presentation: {
+        ...base.presentation!,
+        project: { id: "project-1", name: "— (no project)", outcome: "kept" },
+        task: { id: "task-1", name: "— (no task)", outcome: "kept" },
+      },
+    });
+
+    renderConfirm(ctx, "re-1", keptPlan, source({ projectId: "project-1", projectName: "—", taskId: "task-1", taskName: "—" }));
+
+    const rows = Array.from(ctx.root.querySelectorAll("tbody tr"));
+    const cells = (label: string) => Array.from(rows.find((candidate) => candidate.querySelector("th")?.textContent === label)?.querySelectorAll("td") ?? []);
+    const [deletedProject, plannedProject] = cells("Project");
+    const [deletedTask, plannedTask] = cells("Task");
+    expect(deletedProject?.textContent).toBe("—");
+    expect(plannedProject?.textContent).toBe("— (no project)");
+    expect(plannedProject?.classList.contains("rt-cell--changed")).toBe(true);
+    expect(plannedProject?.getAttribute("aria-label")).toBe("Changed planned value: — (no project)");
+    expect(deletedTask?.textContent).toBe("—");
+    expect(plannedTask?.textContent).toBe("— (no task)");
+    expect(plannedTask?.classList.contains("rt-cell--changed")).toBe(true);
+    expect(plannedTask?.getAttribute("aria-label")).toBe("Changed planned value: — (no task)");
+  });
+
+  it("does not mark truly absent projects or tasks as changed", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const { projectId: _projectId, taskId: _taskId, ...plannedRequest } = base.plannedRequest;
+    const absentPlan = plan({
+      plannedRequest,
+      presentation: { ...base.presentation!, project: null, task: null },
+    });
+
+    renderConfirm(ctx, "re-1", absentPlan, source({ projectId: null, projectName: null, taskId: null, taskName: null }));
+
+    const rows = Array.from(ctx.root.querySelectorAll("tbody tr"));
+    const plannedCell = (label: string) =>
+      Array.from(rows.find((candidate) => candidate.querySelector("th")?.textContent === label)?.querySelectorAll("td") ?? [])[1];
+    expect(plannedCell("Project")?.classList.contains("rt-cell--changed")).toBe(false);
+    expect(plannedCell("Task")?.classList.contains("rt-cell--changed")).toBe(false);
+  });
+
+  it("marks a kept custom-field default when its display text equals an absent source value", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const defaultPlan = plan({
+      presentation: {
+        ...base.presentation!,
+        customFields: [{ id: "cf-status", name: "Status", outcome: "kept", plannedValue: "not sent" }],
+      },
+    });
+
+    renderConfirm(ctx, "re-1", defaultPlan, source({ customFieldValues: [] }));
+
+    const row = Array.from(ctx.root.querySelectorAll("tbody tr")).find((candidate) => candidate.querySelector("th")?.textContent === "Custom field: Status");
+    const [deletedCell, plannedCell] = Array.from(row?.querySelectorAll("td") ?? []);
+    expect(deletedCell?.textContent).toBe("not sent");
+    expect(plannedCell?.textContent).toBe("not sent");
+    expect(plannedCell?.classList.contains("rt-cell--changed")).toBe(true);
+  });
+
+  it("marks a kept tag when its visible name changed", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const renamedTagPlan = plan({
+      presentation: {
+        ...base.presentation!,
+        tags: [{ id: "tag-1", name: "incident", outcome: "kept" }],
+      },
+    });
+
+    renderConfirm(ctx, "re-1", renamedTagPlan, source());
+
+    const row = Array.from(ctx.root.querySelectorAll("tbody tr")).find((candidate) => candidate.querySelector("th")?.textContent === "Tags");
+    const [deletedCell, plannedCell] = Array.from(row?.querySelectorAll("td") ?? []);
+    expect(deletedCell?.textContent).toBe("support");
+    expect(plannedCell?.textContent).toBe("incident");
+    expect(plannedCell?.classList.contains("rt-cell--changed")).toBe(true);
+  });
+
+  it("marks a legacy custom field when its type changes but its display text does not", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const legacyPlan = plan({
+      plannedRequest: {
+        ...base.plannedRequest,
+        customFields: [{ customFieldId: "cf-legacy", sourceType: "WORKSPACE", value: 1 }],
+      },
+      presentation: { ...base.presentation!, customFields: [] },
+    });
+
+    renderConfirm(ctx, "re-1", legacyPlan, source({ customFieldValues: [{ customFieldId: "cf-legacy", name: "Legacy value", value: "1" }] }));
+
+    const row = Array.from(ctx.root.querySelectorAll("tbody tr")).find((candidate) => candidate.querySelector("th")?.textContent === "Custom field: Legacy value");
+    const [deletedCell, plannedCell] = Array.from(row?.querySelectorAll("td") ?? []);
+    expect(deletedCell?.textContent).toBe("1");
+    expect(plannedCell?.textContent).toBe("1");
+    expect(plannedCell?.classList.contains("rt-cell--changed")).toBe(true);
+  });
+
+  it("marks a presented kept custom field when its type changes but its display text does not", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const presentedPlan = plan({
+      plannedRequest: {
+        ...base.plannedRequest,
+        customFields: [{ customFieldId: "cf-presented", sourceType: "WORKSPACE", value: "1" }],
+      },
+      presentation: {
+        ...base.presentation!,
+        customFields: [{ id: "cf-presented", name: "Presented value", outcome: "kept" }],
+      },
+    });
+
+    renderConfirm(ctx, "re-1", presentedPlan, source({ customFieldValues: [{ customFieldId: "cf-presented", name: "Presented value", value: 1 }] }));
+
+    const row = Array.from(ctx.root.querySelectorAll("tbody tr")).find((candidate) => candidate.querySelector("th")?.textContent === "Custom field: Presented value");
+    const [deletedCell, plannedCell] = Array.from(row?.querySelectorAll("td") ?? []);
+    expect(deletedCell?.textContent).toBe("1");
+    expect(plannedCell?.textContent).toBe("1");
+    expect(plannedCell?.classList.contains("rt-cell--changed")).toBe(true);
+  });
+
+  it("marks only planned values that differ, and treats em-dash placeholders as no change", () => {
+    const ctx = stubCtx();
+    const base = plan();
+    const changedPlan = plan({
+      presentation: {
+        ...base.presentation!,
+        customFields: [{ id: "cf-cost", name: "Cost code", outcome: "dropped" }],
+      },
+    });
+
+    renderConfirm(ctx, "re-1", changedPlan, source({ customFieldValues: [{ customFieldId: "cf-cost", name: "Cost code", value: "AZ-104" }] }));
+
+    const rows = Array.from(ctx.root.querySelectorAll("tbody tr"));
+    const plannedCell = (label: string) =>
+      Array.from(rows.find((candidate) => candidate.querySelector("th")?.textContent === label)?.querySelectorAll("td") ?? [])[1];
+    // Project is substituted and the custom field is dropped: real changes, marked on the planned
+    // cell only. Task compares "—" with "— (no task)" — the same no-value fact, so no mark.
+    expect(plannedCell("Custom field: Cost code")?.textContent).toBe("not sent");
+    expect(plannedCell("Custom field: Cost code")?.classList.contains("rt-cell--changed")).toBe(true);
+    expect(plannedCell("Project")?.classList.contains("rt-cell--changed")).toBe(true);
+    expect(plannedCell("Task")?.classList.contains("rt-cell--changed")).toBe(false);
+    expect(plannedCell("Date and time")?.classList.contains("rt-cell--changed")).toBe(false);
+    expect(plannedCell("Owner")?.classList.contains("rt-cell--changed")).toBe(false);
+  });
+
+  it("shows warnings ahead of the routine differences", () => {
+    const ctx = stubCtx();
+    renderConfirm(ctx, "re-1", plan({ warnings: [{ ruleId: "P-CF-GONE", code: "CUSTOM_FIELD_GONE", message: "The custom field is not sent." }] }), source());
+
+    const shown = ctx.root.textContent ?? "";
+    expect(shown.indexOf("Warnings")).toBeGreaterThanOrEqual(0);
+    expect(shown.indexOf("Warnings")).toBeLessThan(shown.indexOf("Differences"));
+    // The action area states what the one click does, directly before the buttons.
+    const bar = ctx.root.querySelector(".rt-action-bar");
+    expect(bar?.textContent).toContain("RestoreTime will create one new time entry in Clockify with these values.");
+    expect(bar?.querySelector("button.rt-primary")?.textContent).toBe("Recreate entry");
+  });
 });
 
 describe("action lifecycle", () => {
@@ -351,6 +539,35 @@ describe("action lifecycle", () => {
 
     Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Check choices again")?.click();
     await vi.waitFor(() => expect(ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]')?.disabled).toBe(false));
+  });
+
+  it("states why Continue to confirm is unavailable while required choices are open", async () => {
+    const ctx = stubCtx();
+    const initial = plan({
+      actionRequired: [{ ruleId: "P-DESC", message: "Enter a description." }],
+      presentation: { ...plan().presentation!, editable: [{ ruleId: "P-DESC", message: "Enter a description." }] },
+    });
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      entry: { id: "re-1", lifecycleState: "IDLE", source: source({ description: "" }) },
+      plan: initial,
+      attempts: [],
+      lineage: { parent: null, child: null },
+      disabled: false,
+      broken: false,
+      canMarkNotCreated: false,
+    } as unknown as DetailResponse);
+    (ctx.api.post as ReturnType<typeof vi.fn>).mockResolvedValue({ plan: initial });
+
+    renderDetail(ctx, "re-1");
+
+    const continueButton = await vi.waitFor(() => {
+      const button = ctx.root.querySelector<HTMLButtonElement>('button[data-focus-key="continue"]');
+      expect(button?.disabled).toBe(true);
+      return button!;
+    });
+    const reason = ctx.root.querySelector<HTMLElement>("#rt-continue-reason");
+    expect(reason?.textContent).toContain("unavailable until you make the required choices");
+    expect(continueButton.getAttribute("aria-describedby")).toBe("rt-continue-reason");
   });
 
   it("keeps a mutation single-flight and exposes its busy state", () => {
@@ -537,6 +754,109 @@ describe("action lifecycle", () => {
     expect(ctx.api.post).not.toHaveBeenCalled();
   });
 
+  it("shows a persistent selection summary and marks the selected row", async () => {
+    const ctx = stubCtx();
+    ctx.session.list.bulkMode = true;
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => Promise.resolve(
+      path === "/api/entries"
+        ? {
+            entries: [{
+              id: "re-1",
+              lifecycleState: "IDLE",
+              detectedAt: "2026-08-07T12:00:00Z",
+              source: source(),
+              preflightSummary: { blockerCount: 0, actionRequiredCount: 0 },
+            }],
+            disabled: false,
+            broken: false,
+            clockifyUnavailable: false,
+            truncated: false,
+            limit: 200,
+          }
+        : { items: [] },
+    ));
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("API investigation"));
+    const summary = ctx.root.querySelector(".rt-bulk-bar .rt-selection-summary");
+    expect(summary?.textContent).toBe("0 entries selected (maximum 50).");
+
+    const checkbox = ctx.root.querySelector<HTMLInputElement>('li input[type="checkbox"]');
+    const item = checkbox?.closest("li");
+    expect(item?.classList.contains("rt-entry--selected")).toBe(false);
+    checkbox!.checked = true;
+    checkbox!.dispatchEvent(new Event("change"));
+    expect(item?.classList.contains("rt-entry--selected")).toBe(true);
+    expect(summary?.textContent).toBe("1 entry selected (maximum 50).");
+
+    checkbox!.checked = false;
+    checkbox!.dispatchEvent(new Event("change"));
+    expect(item?.classList.contains("rt-entry--selected")).toBe(false);
+    expect(summary?.textContent).toBe("0 entries selected (maximum 50).");
+  });
+
+  it("clears applied filters without touching the list options", async () => {
+    const ctx = stubCtx();
+    ctx.session.list.search = "investigation";
+    ctx.session.list.projectName = "Legacy API";
+    ctx.session.list.bulkMode = true;
+    const queries: (Record<string, string> | undefined)[] = [];
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
+      if (path === "/api/entries") {
+        queries.push(query);
+        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, truncated: false, limit: 200 });
+      }
+      return Promise.resolve({ items: [] });
+    });
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("No deleted time entries"));
+    expect(queries[0]).toMatchObject({ search: "investigation", projectName: "Legacy API" });
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Clear filters")?.click();
+    await vi.waitFor(() => expect(queries).toHaveLength(2));
+    expect(queries[1] ?? {}).not.toHaveProperty("search");
+    expect(queries[1] ?? {}).not.toHaveProperty("projectName");
+    expect(ctx.session.list.bulkMode).toBe(true);
+  });
+
+  it("clears unsaved filter input without loading entries or clearing the current selection", async () => {
+    const ctx = stubCtx();
+    ctx.session.list.bulkMode = true;
+    ctx.session.selectedEntryIds.add("re-1");
+    let entryReads = 0;
+    let optionReads = 0;
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path === "/api/entries") {
+        entryReads += 1;
+        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, truncated: false, limit: 200 });
+      }
+      if (path === "/api/options") {
+        optionReads += 1;
+        return Promise.resolve({ items: [] });
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(entryReads).toBe(1));
+    await vi.waitFor(() => expect(optionReads).toBe(2));
+    const userInput = ctx.root.querySelector<HTMLInputElement>('input[placeholder="User name"]');
+    const searchInput = ctx.root.querySelector<HTMLInputElement>('input[placeholder="Search description"]');
+    userInput!.value = "Ana";
+    searchInput!.value = "investigation";
+
+    Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Clear filters")?.click();
+
+    expect(userInput?.value).toBe("");
+    expect(searchInput?.value).toBe("");
+    expect(entryReads).toBe(1);
+    expect(optionReads).toBe(2);
+    expect(ctx.session.list.bulkMode).toBe(true);
+    expect(ctx.session.list.dismissed).toBe(false);
+    expect(ctx.session.selectedEntryIds).toEqual(new Set(["re-1"]));
+  });
+
   it("ignores an older load that finishes after a newer load", async () => {
     const ctx = stubCtx();
     let finishFirst: ((value: string) => void) | undefined;
@@ -592,6 +912,98 @@ describe("bulk result view (docs/10 §7)", () => {
 
     expect(ctx.root.textContent).toContain("Do not recreate this entry again.");
     expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Recreate");
+  });
+});
+
+describe("bulk review view (docs/10 §7)", () => {
+  it("gives no-resolution guidance only when selected rows need it", () => {
+    const ctx = stubCtx();
+    const ready: BulkPreflightRow = { entryId: "re-1", status: "ready", source: source(), plan: plan() };
+    ctx.session.selectedEntryIds.add(ready.entryId);
+
+    renderBulkReview(ctx, [ready]);
+
+    const checkbox = ctx.root.querySelector<HTMLInputElement>('li input[type="checkbox"]');
+    checkbox!.checked = false;
+    checkbox!.dispatchEvent(new Event("change"));
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 0 entries");
+    const summary = ctx.root.querySelector(".rt-selection-summary")?.textContent ?? "";
+    expect(ctx.session.selectedEntryIds.size).toBe(0);
+    expect(summary).toBe("No entries are selected. Select one or more ready entries to recreate.");
+    expect(summary).not.toContain("resolve");
+    expect(summary).not.toContain("needs input");
+    expect(recreate?.disabled).toBe(true);
+    expect(recreate?.classList.contains("rt-primary")).toBe(false);
+  });
+
+  it("keeps a zero-ready review readable without making the disabled action dominant", () => {
+    const ctx = stubCtx();
+    ctx.session.selectedEntryIds.add("re-1");
+    renderBulkReview(ctx, [{ entryId: "re-1", status: "needs-review", source: source(), message: "Open this entry and review its changes." }]);
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 0 entries");
+    expect(recreate?.disabled).toBe(true);
+    expect(recreate?.classList.contains("rt-primary")).toBe(false);
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe(
+      "No selected entries are ready to recreate. Open each selected entry that needs input or review. Resolve it, then return. The review refreshes when you return.",
+    );
+    expect(Array.from(ctx.root.querySelectorAll("button")).map((button) => button.textContent)).toContain("Open");
+  });
+
+  it("summarizes the ready selection, tones each row, and unmarks an unchecked row", () => {
+    const ctx = stubCtx();
+    const ready: BulkPreflightRow = { entryId: "re-1", status: "ready", source: source(), plan: plan() };
+    const needsReview: BulkPreflightRow = { entryId: "re-2", status: "needs-review", source: source({ description: "Second entry" }) };
+    ctx.session.selectedEntryIds.add("re-1");
+    ctx.session.selectedEntryIds.add("re-2");
+
+    renderBulkReview(ctx, [ready, needsReview]);
+
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe("1 of 2 selected entries are ready to recreate.");
+    const items = Array.from(ctx.root.querySelectorAll("li"));
+    expect(items.some((item) => item.classList.contains("rt-review-row--success"))).toBe(true);
+    expect(items.some((item) => item.classList.contains("rt-review-row--warning"))).toBe(true);
+
+    const recreate = Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 1 entry");
+    expect(recreate?.classList.contains("rt-primary")).toBe(true);
+
+    const checkbox = ctx.root.querySelector<HTMLInputElement>('li input[type="checkbox"]');
+    const readyItem = checkbox?.closest("li");
+    expect(readyItem?.classList.contains("rt-review-row--selected")).toBe(true);
+    checkbox!.checked = false;
+    checkbox!.dispatchEvent(new Event("change"));
+    expect(readyItem?.classList.contains("rt-review-row--selected")).toBe(false);
+    expect(recreate?.classList.contains("rt-primary")).toBe(false);
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toContain("No selected entries are ready to recreate.");
+  });
+
+  it("keeps the ready summary aligned with 50 current selections", () => {
+    const ctx = stubCtx();
+    const rows = Array.from({ length: 50 }, (_, index): BulkPreflightRow => {
+      const entryId = `re-${index + 1}`;
+      ctx.session.selectedEntryIds.add(entryId);
+      return {
+        entryId,
+        status: "ready",
+        source: source({ entryId: `entry-${index + 1}` }),
+        plan: plan({ id: `plan-${index + 1}`, recoverableEntryId: entryId }),
+      };
+    });
+
+    renderBulkReview(ctx, rows);
+
+    const checkboxes = Array.from(ctx.root.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]'));
+    expect(checkboxes).toHaveLength(50);
+    expect(Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 50 entries")).toBeDefined();
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe("50 of 50 selected entries are ready to recreate.");
+
+    checkboxes[0]!.checked = false;
+    checkboxes[0]!.dispatchEvent(new Event("change"));
+
+    expect(ctx.session.selectedEntryIds.size).toBe(49);
+    expect(Array.from(ctx.root.querySelectorAll("button")).find((button) => button.textContent === "Recreate 49 entries")).toBeDefined();
+    expect(ctx.root.querySelector(".rt-selection-summary")?.textContent).toBe("49 of 49 selected entries are ready to recreate.");
   });
 });
 

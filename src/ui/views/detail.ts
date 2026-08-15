@@ -321,7 +321,22 @@ function displayValue(value: unknown): string {
   return rendered === undefined ? String(value) : rendered;
 }
 
-function customFieldRows(source: DeletedTimeEntry, plan: RecreationPlan, labels?: ChoiceLabels): [string, string, string][] {
+interface FactsRow {
+  readonly label: string;
+  readonly deletedValue: string;
+  readonly plannedValue: string;
+  readonly changed: boolean;
+}
+
+function sameStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function sameRawValue(left: unknown, right: unknown): boolean {
+  return typeof left === typeof right && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function customFieldRows(source: DeletedTimeEntry, plan: RecreationPlan, labels?: ChoiceLabels): FactsRow[] {
   const presented = plan.presentation?.customFields ?? [];
   const plannedById = new Map((plan.plannedRequest.customFields ?? []).map((field) => [field.customFieldId, field.value]));
   const ids = new Set([...source.customFieldValues.map((field) => field.customFieldId), ...presented.map((field) => field.id), ...plannedById.keys()]);
@@ -329,27 +344,80 @@ function customFieldRows(source: DeletedTimeEntry, plan: RecreationPlan, labels?
     const sourceField = source.customFieldValues.find((field) => field.customFieldId === id);
     const presentation = presented.find((field) => field.id === id);
     const name = presentation?.name ?? labels?.customFields[id] ?? sourceField?.name ?? "Unnamed custom field";
+    const presentationHasPlannedValue = presentation !== undefined && Object.hasOwn(presentation, "plannedValue");
     const plannedValue = plannedById.has(id)
       ? plannedById.get(id)
-      : presentation && "plannedValue" in presentation
+      : presentationHasPlannedValue
         ? presentation.plannedValue
         : presentation?.outcome === "kept"
           ? sourceField?.value
           : undefined;
-    return [`Custom field: ${name}`, displayValue(sourceField?.value), displayValue(plannedValue)];
+    const deletedValue = displayValue(sourceField?.value);
+    const plannedDisplayValue = displayValue(plannedValue);
+    const hasSourceValue = sourceField !== undefined;
+    const hasPlannedValue = plannedById.has(id);
+    const requestValueChanged = hasSourceValue !== hasPlannedValue
+      || (hasSourceValue && hasPlannedValue && !sameRawValue(sourceField.value, plannedById.get(id)));
+    const changed = presentation !== undefined
+      ? presentation.outcome !== "kept" || presentationHasPlannedValue || (hasPlannedValue && requestValueChanged)
+      : requestValueChanged;
+    return { label: `Custom field: ${name}`, deletedValue, plannedValue: plannedDisplayValue, changed };
   });
 }
 
 export function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan, locale: string, labels?: ChoiceLabels): HTMLElement {
   const planned = plan.plannedRequest;
-  const rows: [string, string, string][] = [
-    ["Date and time", formatEntryHeader(source.start, source.end, locale), formatEntryHeader(planned.start, planned.end ?? null, locale, "planned")],
-    ["Description", source.description, planned.description ?? source.description],
-    ["Project", source.projectName ?? "—", projectCell(source, plan, labels)],
-    ["Task", source.taskName ?? "—", taskCell(source, plan, labels)],
-    ["Tags", source.tags.map((t) => t.name).join(", ") || "none", tagsCell(source, plan, labels)],
-    ["Billable", source.billable ? "yes" : "no", (planned.billable ?? source.billable) ? "yes" : "no"],
-    ["Owner", source.ownerName, source.ownerName],
+  const deletedProjectValue = source.projectName ?? "—";
+  const plannedProjectValue = projectCell(source, plan, labels);
+  const deletedTaskValue = source.taskName ?? "—";
+  const plannedTaskValue = taskCell(source, plan, labels);
+  const deletedTagValue = source.tags.map((tag) => tag.name).join(", ") || "none";
+  const plannedTagValue = tagsCell(source, plan, labels);
+  const rows: FactsRow[] = [
+    {
+      label: "Date and time",
+      deletedValue: formatEntryHeader(source.start, source.end, locale),
+      plannedValue: formatEntryHeader(planned.start, planned.end ?? null, locale, "planned"),
+      changed: source.start !== planned.start || (source.end ?? null) !== (planned.end ?? null),
+    },
+    {
+      label: "Description",
+      deletedValue: source.description,
+      plannedValue: planned.description ?? source.description,
+      changed: source.description !== (planned.description ?? source.description),
+    },
+    {
+      label: "Project",
+      deletedValue: deletedProjectValue,
+      plannedValue: plannedProjectValue,
+      changed: !(source.projectId === null && planned.projectId === undefined)
+        && (source.projectId !== (planned.projectId ?? null) || deletedProjectValue !== plannedProjectValue),
+    },
+    {
+      label: "Task",
+      deletedValue: deletedTaskValue,
+      plannedValue: plannedTaskValue,
+      changed: !(source.taskId === null && planned.taskId === undefined)
+        && (source.taskId !== (planned.taskId ?? null) || deletedTaskValue !== plannedTaskValue),
+    },
+    {
+      label: "Tags",
+      deletedValue: deletedTagValue,
+      plannedValue: plannedTagValue,
+      changed: !sameStringSets(new Set(source.tags.map((tag) => tag.id)), new Set(planned.tagIds ?? [])) || deletedTagValue !== plannedTagValue,
+    },
+    {
+      label: "Billable",
+      deletedValue: source.billable ? "yes" : "no",
+      plannedValue: (planned.billable ?? source.billable) ? "yes" : "no",
+      changed: source.billable !== (planned.billable ?? source.billable),
+    },
+    {
+      label: "Owner",
+      deletedValue: source.ownerName,
+      plannedValue: source.ownerName,
+      changed: source.ownerId !== planned.userId,
+    },
   ];
   rows.push(...customFieldRows(source, plan, labels));
   return el(
@@ -360,7 +428,19 @@ export function renderFactsTable(source: DeletedTimeEntry, plan: RecreationPlan,
       {},
       el("caption", {}, "Deleted entry compared with the new entry RestoreTime plans to create"),
       el("thead", {}, el("tr", {}, el("th", {}, "Field"), el("th", {}, "Deleted entry"), el("th", {}, "New entry (planned)"))),
-      el("tbody", {}, ...rows.map(([label, left, right]) => el("tr", {}, el("th", {}, label), el("td", {}, left), el("td", {}, right)))),
+      el(
+        "tbody",
+        {},
+        ...rows.map((row) => {
+          return el(
+            "tr",
+            {},
+            el("th", {}, row.label),
+            el("td", {}, row.deletedValue),
+            el("td", row.changed ? { class: "rt-cell--changed", "aria-label": `Changed planned value: ${row.plannedValue}` } : {}, row.plannedValue),
+          );
+        }),
+      ),
     ),
   );
 }
@@ -511,7 +591,16 @@ function renderPlanRegion(
   const continueButton = el("button", { type: "button", class: "rt-primary", "data-focus-key": "continue" }, "Continue to confirm");
   continueButton.disabled = !canConfirm;
   continueButton.addEventListener("click", () => ctx.navigate({ kind: "confirm", entryId, plan, source, disabled, draft: draftFor(choices, knownActionRequired, labels), returnTo }));
-  if (plan.presentation === null) shell.planRegion.append(renderNotice("warning", "This plan needs a new check before you can confirm it."));
+  if (plan.presentation === null) {
+    shell.planRegion.append(renderNotice("warning", "This plan needs a new check before you can confirm it."));
+  } else if (!canConfirm && plan.blockers.length === 0 && plan.actionRequired.length > 0) {
+    // A disabled control must say why. Blockers already say it in the danger box above; open
+    // required choices say it here, next to the button.
+    continueButton.setAttribute("aria-describedby", "rt-continue-reason");
+    shell.planRegion.append(
+      el("p", { class: "rt-action-reason", id: "rt-continue-reason" }, "Continue to confirm is unavailable until you make the required choices above."),
+    );
+  }
   shell.planRegion.append(el("div", { class: "rt-action-group" }, continueButton));
 
   const target = focusKey

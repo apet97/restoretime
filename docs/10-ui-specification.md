@@ -83,6 +83,9 @@ session. It does not put this state in the URL, storage, or the server.
 - List → detail → Back keeps the filters, bulk mode, and selection.
 - Applying a different filter, changing the dismissed toggle, or turning bulk mode off clears the
   selection. The component announces that change.
+- **Clear filters** clears the user, project, date, status, and description-search filters. It does
+  not change **Show dismissed** or bulk mode. It clears the selection only when it changes an
+  applied filter.
 - Bulk review uses the same selected-ID set as the list. Returning from detail runs bulk preflight
   again before it enables recreation.
 - The browser never treats retained list data as current Clockify fact. It reads preflight and
@@ -102,6 +105,9 @@ Tags: support, api                     Tags: support, api
 Billable: yes                          Billable: yes
 Owner: Ana Markovic                    Owner: Ana Markovic
 ```
+
+The planned cell has a visible changed marker when structured facts differ. Its accessible label
+says that the planned value changed. Placeholder text never determines absence.
 
 A **Dismiss** action sits beside "Continue to confirm" (docs/06: IDLE/FAILED → DISMISSED). Without
 it the "Show dismissed" toggle in §2 has nothing to reveal and a list can only ever grow. The
@@ -225,6 +231,13 @@ the fingerprint, baseline, owner, state, and uniqueness before it accepts the ID
    list per entry: Recreated / Failed (reason) / Result uncertain. There is no cross-entry
    transaction; each row shows its own outcome.
    The request executes entries sequentially to stay within Clockify's request rate.
+
+The review gives one summary:
+
+- No selected rows: "No entries are selected. Select one or more ready entries to recreate."
+- Selected rows with none ready: "No selected entries are ready to recreate. Open each selected
+  entry that needs input or review. Resolve it, then return. The review refreshes when you return."
+- One or more ready rows: "N of M selected entries are ready to recreate."
 
 ## 8. General UI rules
 

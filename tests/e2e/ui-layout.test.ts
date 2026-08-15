@@ -22,11 +22,13 @@ interface LayoutMetrics {
   readonly overflowX: string | null;
   readonly controlRight: number | null;
   readonly controlWidth: number | null;
+  readonly selectedStylesDiffer: boolean | null;
 }
 
 interface Fixture {
   readonly name: string;
   readonly widths: readonly number[];
+  readonly theme?: "dark";
   readonly content?: string;
   readonly render?: () => string | Promise<string>;
 }
@@ -160,6 +162,17 @@ const fixtures: readonly Fixture[] = [
     widths: [360, 480, 860],
     content: `<div class="rt-action-group"><button class="rt-primary" data-layout-control>Recreate entry</button><button>Back to entry</button><button>Open in Clockify tracker</button></div>`,
   },
+  {
+    name: "selected-styles-default",
+    widths: [480],
+    content: `<ul><li class="rt-entry rt-entry--selected" data-selected-row="entry">Selected entry</li><li class="rt-entry" data-normal-row="entry">Normal entry</li><li class="rt-review-row rt-review-row--selected" data-selected-row="review">Selected review</li><li class="rt-review-row" data-normal-row="review">Normal review</li></ul>`,
+  },
+  {
+    name: "selected-styles-dark",
+    widths: [480],
+    theme: "dark",
+    content: `<ul><li class="rt-entry rt-entry--selected" data-selected-row="entry">Selected entry</li><li class="rt-entry" data-normal-row="entry">Normal entry</li><li class="rt-review-row rt-review-row--selected" data-selected-row="review">Selected review</li><li class="rt-review-row" data-normal-row="review">Normal review</li></ul>`,
+  },
 ];
 
 function findChrome(): string {
@@ -177,8 +190,9 @@ function findChrome(): string {
   return found;
 }
 
-function componentHtml(css: string, content: string): string {
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>${css}</style></head><body><main id="app"><h2>Layout fixture</h2>${content}</main></body></html>`;
+function componentHtml(css: string, content: string, theme?: "dark"): string {
+  const themeAttribute = theme === undefined ? "" : ` data-clockify-theme="${theme}"`;
+  return `<!doctype html><html${themeAttribute}><head><meta name="viewport" content="width=device-width"><style>${css}</style></head><body><main id="app"><h2>Layout fixture</h2>${content}</main></body></html>`;
 }
 
 async function pageHtml(css: string): Promise<string> {
@@ -186,7 +200,7 @@ async function pageHtml(css: string): Promise<string> {
   for (const fixture of fixtures) {
     const content = fixture.render ? await fixture.render() : fixture.content;
     if (content === undefined) throw new Error(`Fixture ${fixture.name} has no content.`);
-    for (const width of fixture.widths) cases.push({ fixture: fixture.name, width, html: componentHtml(css, content) });
+    for (const width of fixture.widths) cases.push({ fixture: fixture.name, width, html: componentHtml(css, content, fixture.theme) });
   }
   return `<!doctype html><html><body><output id="metrics"></output><script>
 const cases=${JSON.stringify(cases)};
@@ -201,6 +215,15 @@ for (const item of cases) {
   const control=doc.querySelector("[data-layout-control]");
   const wrapperRect=wrapper?.getBoundingClientRect();
   const controlRect=control?.getBoundingClientRect();
+  const selectionKinds=["entry","review"];
+  const hasSelectedStylePairs=selectionKinds.every((kind)=>doc.querySelector('[data-selected-row="'+kind+'"]')&&doc.querySelector('[data-normal-row="'+kind+'"]'));
+  const selectedStylesDiffer=hasSelectedStylePairs&&selectionKinds.every((kind)=>{
+    const selected=doc.querySelector('[data-selected-row="'+kind+'"]');
+    const normal=doc.querySelector('[data-normal-row="'+kind+'"]');
+    const selectedStyle=frame.contentWindow.getComputedStyle(selected);
+    const normalStyle=frame.contentWindow.getComputedStyle(normal);
+    return selectedStyle.backgroundColor!==normalStyle.backgroundColor&&selectedStyle.borderTopColor!==normalStyle.borderTopColor;
+  });
   metrics.push({
     fixture:item.fixture,
     frameWidth:frame.getBoundingClientRect().width,
@@ -212,6 +235,7 @@ for (const item of cases) {
     overflowX:wrapper ? frame.contentWindow.getComputedStyle(wrapper).overflowX : null,
     controlRight:controlRect?.right ?? null,
     controlWidth:controlRect?.width ?? null,
+    selectedStylesDiffer:hasSelectedStylePairs ? selectedStylesDiffer : null,
   });
 }
 document.getElementById("metrics").textContent=JSON.stringify(metrics);
@@ -307,6 +331,10 @@ describe("component layout in Chrome", () => {
         expect(metric.wrapperScrollWidth).not.toBeNull();
         expect(metric.wrapperScrollWidth!).toBeGreaterThan(metric.wrapperClientWidth!);
         expect(metric.overflowX).toBe("auto");
+      }
+
+      for (const metric of metrics.filter((item) => item.fixture === "selected-styles-default" || item.fixture === "selected-styles-dark")) {
+        expect(metric.selectedStylesDiffer, `${metric.fixture} selected styles`).toBe(true);
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -71,20 +71,27 @@ body {
 
 body {
   margin: 0;
-  padding: 16px;
+  padding: 14px 16px;
   background: var(--rt-bg);
   color: var(--rt-text);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 h2 {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   font-size: 20px;
 }
 
 .rt-shell-header h1 {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   font-size: 24px;
+}
+
+/* One short purpose statement under the list heading — what this screen is for, nothing more. */
+.rt-page-intro {
+  margin: -4px 0 14px;
+  color: var(--rt-muted);
+  max-width: 70ch;
 }
 
 #app,
@@ -108,7 +115,7 @@ fieldset {
 }
 
 h3 {
-  margin: 20px 0 8px;
+  margin: 16px 0 6px;
   font-size: 15px;
 }
 
@@ -122,13 +129,43 @@ section[aria-label="Filters"],
 fieldset {
   border: 1px solid var(--rt-border);
   border-radius: 6px;
-  padding: 12px;
-  margin: 0 0 16px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
   background: var(--rt-surface);
   display: flex;
   flex-wrap: wrap;
   gap: 10px 14px;
   align-items: end;
+}
+
+/* The toolbar is one section, but its controls answer four different questions — text search,
+ * date range, lifecycle status, and the apply/bulk actions. Each gets its own visual group so the
+ * bar reads as four clusters, not ten loose controls. */
+section[aria-label="Filters"] {
+  gap: 10px 20px;
+}
+
+.rt-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: end;
+}
+
+/* The apply/clear/bulk group sits apart from the inputs it acts on. */
+.rt-filter-group--actions {
+  margin-left: auto;
+}
+
+/* "Show dismissed" is a list option, not a filter: it lives outside the filter box, in body text,
+ * so it cannot be mistaken for a sixth filter next to the status dropdown it replaces. */
+.rt-list-options {
+  margin: 0 0 10px;
+}
+
+.rt-list-options > label {
+  color: var(--rt-text);
+  font-weight: 500;
 }
 
 legend {
@@ -209,6 +246,7 @@ button[disabled] {
   background: var(--rt-accent);
   border-color: var(--rt-accent);
   color: var(--rt-accent-text);
+  font-weight: 600;
 }
 
 .rt-primary[disabled] {
@@ -243,10 +281,16 @@ ul {
 #app > ul > li {
   border: 1px solid var(--rt-border);
   border-radius: 6px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
   background: var(--rt-surface);
   list-style: none;
+}
+
+#app > ul > li.rt-entry--selected,
+#app > ul > li.rt-review-row--selected {
+  border-color: var(--rt-accent);
+  background: var(--rt-notice-info-bg);
 }
 
 /* Nested lists stay ordinary bulleted prose. */
@@ -277,10 +321,73 @@ li > div {
   font-size: 13px;
 }
 
-.rt-metadata {
+/* One entry row: selection control, then the entry content, then its action. The date/duration
+ * header and the description come first; everything else is one wrapping metadata line. */
+.rt-entry {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
+  align-items: flex-start;
+}
+
+.rt-entry-select {
+  padding-top: 3px;
+}
+
+.rt-entry-select > input[type="checkbox"],
+.rt-review-select > input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+}
+
+.rt-entry-main {
+  flex: 1 1 28ch;
+  display: grid;
+  gap: 2px;
+}
+
+/* The row's one action keeps the same corner on every actionable row. */
+.rt-entry-side {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.rt-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+/* Bulk selection state is read from one persistent bar, not inferred from the checkboxes. It
+ * sticks to the top of the frame so it survives scrolling through a full page of rows. */
+.rt-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+  border: 1px solid var(--rt-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+  background: var(--rt-surface);
+}
+
+.rt-selection-summary {
+  margin: 0;
+  font-weight: 600;
+  color: var(--rt-text);
+}
+
+.rt-bulk-bar > .rt-action-group {
+  margin-left: auto;
+}
+
+.rt-bulk-bar > [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .rt-metadata > span,
@@ -360,6 +467,15 @@ tbody th {
   white-space: nowrap;
 }
 
+/* A planned value that differs from the deleted entry. Colour is never the only signal: the cell
+ * is also bold and carries an inset marker bar. The view uses presentation facts and rendered
+ * values — never the table position — to apply this class. */
+.rt-cell--changed {
+  background: var(--rt-pill-warning-bg);
+  box-shadow: inset 3px 0 0 var(--rt-warn);
+  font-weight: 600;
+}
+
 /* Notices ------------------------------------------------------------------------------------ */
 
 [role="alert"] {
@@ -416,6 +532,60 @@ tbody th {
 .rt-status-pill--progress { background: var(--rt-pill-progress-bg); color: var(--rt-progress); }
 .rt-status-pill--neutral { background: var(--rt-pill-neutral-bg); color: var(--rt-muted); }
 
+/* Fidelity sits directly under the comparison it summarizes: a quiet marker, not another notice
+ * box — the view already has exactly one warning box for what needs attention. */
+.rt-fidelity {
+  border-left: 3px solid var(--rt-accent);
+  padding-left: 10px;
+  margin: 12px 0;
+}
+
+.rt-fidelity > p {
+  margin: 2px 0;
+}
+
+/* The one place a mutation starts. A top border separates "review this" from "do this". */
+.rt-action-bar {
+  border-top: 1px solid var(--rt-border);
+  margin-top: 18px;
+  padding-top: 12px;
+}
+
+.rt-action-bar > p {
+  margin-top: 0;
+}
+
+/* Why an action is unavailable, stated next to the action itself. */
+.rt-action-reason {
+  margin: 4px 0 0;
+  color: var(--rt-muted);
+  font-size: 13px;
+}
+
+/* Bulk review rows: the status pill carries the word; the left edge repeats it at a glance. The
+ * class names are the same tones the pills use — one status→tone mapping serves both. */
+.rt-review-row--success { box-shadow: inset 3px 0 0 var(--rt-ok); }
+.rt-review-row--warning { box-shadow: inset 3px 0 0 var(--rt-warn); }
+.rt-review-row--danger { box-shadow: inset 3px 0 0 var(--rt-danger); }
+.rt-review-row--neutral { box-shadow: inset 3px 0 0 var(--rt-muted); }
+
+.rt-review-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: center;
+  color: var(--rt-text);
+  font-size: 14px;
+}
+
+.rt-review-open {
+  margin-left: auto;
+}
+
+.rt-review-select {
+  margin-top: 4px;
+}
+
 .rt-inline-error:empty {
   display: none;
 }
@@ -432,6 +602,19 @@ tbody th {
   .rt-action-group {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  /* The row action drops under the entry content and keeps the row's right edge. */
+  .rt-entry-side {
+    flex-basis: 100%;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Filter groups and the bulk bar use the full width instead of squeezing into clusters. */
+  .rt-filter-group--actions,
+  .rt-bulk-bar > .rt-action-group {
+    margin-left: 0;
   }
 }
 

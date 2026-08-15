@@ -10,8 +10,8 @@ inspected separately.
 | `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 5.1.0 | 5.1.0 tag source `94fe318f473daa9eda7b3cfc038a51429c3dee14` | remote `main` matched the tag at the release audit |
 
 The published-source commit, not the newer docs or branch head, binds each registry package to
-source. Developer-environment proof for the 1.3.0/5.1.0 pair is in
-`evidence/live-release-run.md` "Live run 16". Production proof is still open.
+source. `v1.0.0-rc.13` has candidate-bound developer-environment proof for the 1.3.0/5.1.0 pair.
+The release receipt is in `docs/15-release.md`. Production proof is still open.
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work
 around a defect in the app — fix upstream first (AGENTS.md).
@@ -64,7 +64,7 @@ normalized by the addon SDK `resolveClockifyApiBaseUrl`.
 | Recreate entry | `timeEntries.createForUser` | `POST /workspaces/{ws}/user/{uid}/time-entries` | `CreateForUserTimeEntriesRequestFlattened` (the request type is a **union** with a `{body: …}` envelope — always build the flattened variant) | `TimeEntry` | Live-verified route (R1). `customFields` sent per P-CF rules (R5) — this is the only SDK create method that models the field |
 | Post-create fetch | `timeEntries.get` | `GET /workspaces/{ws}/time-entries/{id}` | — | `TimeEntry` | Verification diff input (F12) |
 | Ambiguity reconcile | `timeEntries.listForUser` | `GET /workspaces/{ws}/user/{uid}/time-entries` | query `description` (never `start`/`end` windows — proved laggy for fresh entries, R10) | `TimeEntry[]` | Baseline-delta matching (docs/07 §8) |
-| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `UserDtoV1[]` | Exact request: `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `paginatedList(...).collect()`. `"include-roles"` is REQUIRED by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
+| Owner check | `users.list` | `GET /workspaces/{ws}/users` | `{ workspaceId, status: "ALL", "include-roles": false, "page-size": 200 }` + `paginatedList(...).collect()` | `UserDtoV1[]` | `"include-roles"` is required by the generated type. On this route the user's `status` field carries the workspace **membership** status (PENDING/ACTIVE/DECLINED/INACTIVE) while the SDK types it as account-level `AccountStatus` — known typing drift, recorded for upstream; the app only compares `status === "ACTIVE"` |
 | Project check/options | `projects.get` / `projects.list` | `GET …/projects[/{id}]` | — | `Project` | gone = 404 **or** 400 body code `501` ("Project doesn't belong to Workspace") — live-probed on a genuinely deleted project, evidence/error-shapes-2026-08-08.md; `archived` flag present |
 | Task check/options | `tasks.get` / `tasks.list` | `GET …/projects/{pid}/tasks[/{id}]` | — | `Task` | `status` field |
 | Tag check/options | `tags.list` | `GET /workspaces/{ws}/tags` | — | `Tag[]` | `archived` flag present |

@@ -53,7 +53,7 @@ npm run test:e2e
 
 Success means all tests pass with zero skips. It proves the local source, database contracts, API
 behavior with signed test fixtures, and bundled UI journeys. It does not prove a developer
-installation, live Clockify, production, Marketplace, Railway, backup, or restore.
+installation, live Clockify, production, Marketplace, Railway, backup, or database recovery.
 
 ### Local server preparation
 
@@ -101,8 +101,8 @@ curl http://127.0.0.1:8080/healthz
 ```
 
 `/healthz` proves HTTP and SQLite only. It does not prove live Clockify, a developer installation,
-Railway, production, Marketplace, backup, or restore. The component and `/api/*` need a verified
-Clockify component token and a developer add-on installation at a public HTTPS origin.
+Railway, production, Marketplace, backup, or database recovery. The component and `/api/*` need a
+verified Clockify component token and a developer add-on installation at a public HTTPS origin.
 
 Do not send an unsigned webhook request. Use the SDK-signed fixtures in
 `tests/integration/webhook-ingestion.test.ts`. For the live process, see `docs/13-testing.md`.
@@ -122,10 +122,11 @@ Do not send an unsigned webhook request. Use the SDK-signed fixtures in
 
 ## Status
 
-RC.12 receipts apply only to `d2c50d26392d511592a9cfb3f8fce1ae5d102ceb`. Any later commit needs
-new candidate-bound proof. Production, Marketplace, backup/PITR, isolated restore, and stable
-`v1.0.0` remain unproven. The corrected uncommitted tree is not an RC.13 candidate. It must be
-committed, independently reviewed, and merged before an authorized release workflow can start.
+The `v1.0.0-rc.13` developer prerelease points to
+`6e66cc302b904704ae6973ccbb3e023d6f77db9f`. Its local, strict-live, deployment, and cleanup
+receipts apply only to that commit. Railway backup creation, backup locking, and isolated database
+recovery are **NOT PROVEN — explicitly waived for RC.13**. Production, Marketplace, stable-release,
+and disaster-recovery readiness remain unproven. Any later commit needs new candidate-bound proof.
 
 ## Documentation map
 

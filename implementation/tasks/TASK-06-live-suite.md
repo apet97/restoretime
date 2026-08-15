@@ -1,8 +1,8 @@
 # TASK-06 — Live release suite
 
-Historical task: the production goal below is the original implementation brief. RC.11 runs only
-against the explicit developer environment and requires the split A/B receipts and strict cleanup
-defined in `docs/13-testing.md` and `docs/15-release.md`.
+Historical task: the production goal below is the original implementation brief. A current
+developer-candidate run uses only the explicit developer environment and requires the split A/B
+receipts and strict cleanup defined in `docs/13-testing.md` and `docs/15-release.md`.
 
 - Pass: PASS-05
 - Goal: LV-01…LV-10 against the production build on the sacrificial workspace.

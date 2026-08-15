@@ -4,7 +4,7 @@
 `Addon.PATH_MANIFEST`, no auth) — validated at boot by `createValidatedClockifyAddon`
 (`src/server.ts`), so the process refuses to start on an invalid manifest. Every field below is
 read from `buildManifest()` (`src/manifest.ts`); `<future production>` marks the one value that a
-later production deployment must supply. The RC.11 developer URL is not a Marketplace URL.
+later production deployment must supply. The developer-environment URL is not a Marketplace URL.
 
 | Field | Value | Source |
 |---|---|---|

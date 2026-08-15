@@ -21,7 +21,10 @@ describe("Docker release source binding", () => {
     const dockerfile = readFileSync(join(process.cwd(), "Dockerfile"), "utf8");
     const pinnedBase =
       "node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436";
-    expect(dockerfile.match(new RegExp(`FROM ${pinnedBase}`, "g"))).toHaveLength(3);
+    expect(dockerfile.match(new RegExp(`FROM ${pinnedBase}`, "g"))).toHaveLength(2);
+    expect(dockerfile).toContain("apt-get install -y --no-install-recommends python3 make g++");
+    expect(dockerfile).toContain("RUN npm prune --omit=dev");
+    expect(dockerfile).toContain("COPY --from=builder /app/node_modules ./node_modules");
     expect(dockerfile).toContain("COPY scripts/source-fingerprint.mjs ./scripts/source-fingerprint.mjs");
     expect(dockerfile).toContain("RUN node scripts/source-fingerprint.mjs > /tmp/restoretime-source-fingerprint");
     expect(dockerfile).toContain(

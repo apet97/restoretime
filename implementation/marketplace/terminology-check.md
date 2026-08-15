@@ -42,19 +42,19 @@ $ grep -rniE "\brecreat(e|ed|ion|ing)\b" \
     README.md src \
     implementation/marketplace/listing-copy.md implementation/marketplace/privacy-policy.md \
     implementation/marketplace/scope-justification.md | wc -l
-164
+175
 $ grep -rniE "\bdeleted entry\b|\bnew entry\b" \
     README.md src \
     implementation/marketplace/listing-copy.md implementation/marketplace/privacy-policy.md \
     implementation/marketplace/scope-justification.md | wc -l
-36
+47
 ```
 
 ## Result
 
 Zero forbidden-term matches across the scanned user-facing surfaces. The mandated terms are in
-active use: 164 matching lines for recreate/recreation/recreated and 36 matching lines for deleted
-entry/new entry. These counts were recorded on 2026-08-13 after the RC.11 documentation update.
+active use: 175 matching lines for recreate/recreation/recreated and 47 matching lines for deleted
+entry/new entry. These counts were rechecked on 2026-08-16 after the RC.13 documentation update.
 Rerun the commands after a later user-facing text change.
 
 ## Whole-source check (informational)

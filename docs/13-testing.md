@@ -163,7 +163,7 @@ and `CK_LIVE_CANDIDATE_ID`. Old receipts do not prove a new candidate.
 | LV-02A | Trigger-only command: create and delete one probe and print its exact `sourceEntryId`. This file is excluded from diagnostic and release collection. |
 | LV-02B | Receipt: Railway webhook logs correlate the deployed candidate to the exact `CK_LIVE_LV02_SOURCE_ID` printed by LV-02A, and direct inspection of remote SQLite finds the persisted source row with that ID. The strict run creates no second trigger. |
 | LV-03 | Own-entry recreation end-to-end (plan → confirm → RECREATED; entry visible in Clockify; a non-default custom-field value is preserved on the new entry — R5 write path) |
-| LV-04 | Admin recreates another user's entry (createForUser add-on-token success path — confirms the operator-stated API-key/add-on-token equivalence, R11). The same scenario passed on the developer environment on 2026-08-08 with the add-on token: users.list, projects.list, createForUser for another user → 201, get, delete. A production recheck is a future production-only gap; it is not an RC.11 gate. |
+| LV-04 | Admin recreates another user's entry (createForUser add-on-token success path — confirms the operator-stated API-key/add-on-token equivalence, R11). The same scenario passed on the developer environment on 2026-08-08 with the add-on token: users.list, projects.list, createForUser for another user → 201, get, delete. A production recheck is a future production-only gap; it is not a developer-candidate gate. |
 | LV-05 | Missing project → ACTION_REQUIRED → substitute → success; archived-tag rejection surfaced correctly (behavior proved by probe A4, R18 — confirmed here on the addon-token path) |
 | LV-06 | ~~Archived-tag create behavior~~ merged into LV-05 (offline proof: A4). No `tests/live/` file exists for this row |
 | LV-07 | `onlyAdminsCanChangeBillableStatus` behavior for a regular viewer (closes R12 unknown) |
@@ -270,9 +270,9 @@ do not prove a live Clockify installation or a deployed candidate.
 | E2E-UI-06 | `tests/e2e/ui-layout.test.ts`, `tests/e2e/ui-css.test.ts`, `tests/e2e/custom-field-resolution-widgets.test.ts`: responsive and keyboard contracts | Chrome fixtures contain document layout at required widths. The table keeps local scrolling. Native checkbox groups keep labels and keyboard behavior. |
 | E2E-SHUTDOWN-01 | `tests/e2e/server-shutdown.test.ts`: child process shutdown | `SIGTERM` closes the HTTP listener and SQLite database. The process exits 0 within five seconds and database integrity remains `ok`. |
 
-On the final local run dated 2026-08-14, `npm run test` passed 44 files and 442 tests. `npm run
-test:e2e` passed 12 files and 80 tests. These results are local evidence only. They do not prove a
-deployed candidate or a Clockify developer installation.
+For `v1.0.0-rc.13`, `npm run test` passed 44 files and 472 tests. `npm run test:e2e` passed 12
+files and 104 tests. These results are local evidence only. They do not prove a deployed candidate
+or a Clockify developer installation.
 
 ## Commands
 

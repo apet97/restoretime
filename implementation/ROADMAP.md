@@ -1,7 +1,7 @@
 # Implementation roadmap
 
 Historical record: these five passes describe the original implementation sequence. They are not
-the RC.11 release procedure. Use `docs/15-release.md` for the current developer-only candidate.
+the current release procedure. Use `docs/15-release.md` for the developer-only candidate workflow.
 
 Five passes. Each is a standalone agent prompt in `passes/`. Execute in order; each pass's gates
 must be green before the next begins.

@@ -284,7 +284,8 @@ Sources: webhook campaign (`WH`), recreation campaign (`RC`), live addendum (`LI
   and `timeEntries.delete` all succeeded.
 - EVIDENCE: RC addon-token-matrix; operator statement; evidence/install-capture-2026-08-08.md.
 - CONFIDENCE: PROVED (developer environment, 2026-08-08); operator-stated equivalence additionally
-  confirmed. A production recheck is a future production-only gap. It is not an RC.11 gate.
+  confirmed. A production recheck is a future production-only gap. It is not a developer-candidate
+  gate.
 - CONSEQUENCE: The REST client sends exactly one auth mode: the installation `authToken` as
   `X-Addon-Token`. LV-04 confirms the real add-on path on the developer environment by recreating
   another user's entry. Production confirmation remains separate future work.

@@ -3,8 +3,8 @@
 Complete dependency policy. If it is not listed here, it is not installed.
 
 The list is closed: it changes only by a recorded decision that names what the addition buys, what
-was rejected instead, and which pass report carries the rationale. One such amendment exists so
-far — `happy-dom`, at PASS-03.
+was rejected instead, and where the rationale is recorded. Two amendments exist: `happy-dom` at
+PASS-03 and the 2026-08-16 `better-sqlite3` maintenance update below.
 
 ## Runtime dependencies (3)
 
@@ -12,9 +12,23 @@ far — `happy-dom`, at PASS-03.
 |---|---|---|
 | `@apet97/clockify-addon-sdk` | ^1.3.0 | Addon platform: manifest, verification, lifecycle, installation-store contract, encryption codec, webhook-path normalization, node adapter, iframe bridge, secure responses. Published from `64e668afd7bf330be4908c58d8671bdd27951608`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/addon-ts-sdk`. |
 | `clockify-sdk-ts-115` | ^5.1.0 | Clockify REST: `createForUser`, reads for preflight, error model, retry policy. The 5.1.0 tag source is `94fe318f473daa9eda7b3cfc038a51429c3dee14`; read-only source: `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk`. |
-| `better-sqlite3` | ^11 | Durable store. Synchronous prepared statements; no ORM. |
+| `better-sqlite3` | ^13.0.3 | Durable store. Synchronous prepared statements; no ORM. Requires Node 22 or later. |
 
 Transitive: `jose` (via the addon SDK). Never imported directly by app code.
+
+### 2026-08-16 database-driver maintenance decision
+
+Update `better-sqlite3` from 11.10.0 to 13.0.3. Version 13 supports the repository's Node 22
+runtime and removes the deprecated `prebuild-install` transitive dependency. Keep the synchronous
+prepared-statement API and the existing SQLite architecture. Reject these alternatives:
+
+- Keep version 11 and accept a deprecated native-build helper. This leaves a known maintenance
+  warning in every clean install.
+- Add an app workaround or replace SQLite. Neither action addresses the dependency warning at its
+  owning boundary.
+
+The Node 22 typecheck, lint, build, migration, rollback, shutdown, unit, integration, E2E, and audit
+gates verify this update. No application abstraction or new direct dependency is added.
 
 ## Development dependencies
 

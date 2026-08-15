@@ -136,7 +136,7 @@ loader. For local preparation, Node can read a developer-owned ignored `.env` fi
 No secrets beyond the encryption key. Installation tokens arrive at runtime and are stored
 encrypted.
 
-The RC.11 Railway deployment also sets `RESTORETIME_CANDIDATE_ID` to the full 40-character merged
+The developer Railway deployment sets `RESTORETIME_CANDIDATE_ID` to the full 40-character merged
 Git commit. This value is non-secret platform metadata. It also sets `RAILWAY_RUN_UID=1000` as
 non-secret runtime configuration. This setting controls the main process privilege. `loadConfig()`
 does not read either value. The candidate-bound live handoff reads the candidate ID only through

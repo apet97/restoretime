@@ -2,8 +2,9 @@
 
 Historical report: every command, result, credential gap, production reference, and proposed
 `v1.0.0` tag below describes the original PASS-05 snapshot. It is not current worktree proof and
-is not an RC.11 instruction. Use `docs/15-release.md` and `docs/16-definition-of-done.md` for the
-current developer-only candidate and its open production and Marketplace gaps.
+is not a current release instruction. Use `docs/15-release.md` and
+`docs/16-definition-of-done.md` for the current developer-only candidate and its open production
+and Marketplace gaps.
 
 Status: **BLOCKED ON OPERATOR INPUT** (as designed — see the pass brief). Every part of this pass
 that could be built and executed without a live production credential was built and executed for

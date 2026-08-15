@@ -2,8 +2,8 @@
 //
 // Purpose: serve the FINAL addon manifest over a public tunnel so the operator can install the
 // addon once, verify lifecycle + webhook deliveries with the real addon platform, and record the
-// installation (encrypted on disk) for evidence probes. PASS-01 builds the real server; this
-// tool then becomes obsolete.
+// installation (encrypted on disk) for evidence probes. The product does not run this tool. Keep
+// it as the reproducible source for the recorded install-capture evidence.
 //
 // Env: PUBLIC_BASE_URL (required, tunnel URL) · PORT (default 8791)
 //      CLOCKIFY_PARENT_ORIGIN (default https://app.clockify.me) · VAR_DIR (default ./var)

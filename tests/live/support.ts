@@ -1,6 +1,7 @@
 // Shared support for tests/live/* (docs/13 "Live suite"). Runs LV-01…LV-10 against the sacrificial
-// workspace on the explicit Clockify environment named by `CK_LIVE_TARGET`. RC.11 accepts only
-// `developer`: the suite mutates real entries, and an implicit production default is unsafe.
+// workspace on the explicit Clockify environment named by `CK_LIVE_TARGET`. A developer-candidate
+// run accepts only `developer`: the suite mutates real entries, and an implicit production default
+// is unsafe.
 // Nothing here is a simulation: every Clockify call leaves this machine. `npm run test:live` is a
 // diagnostic command, so a missing prerequisite is reported as BLOCKED. `npm run
 // test:live:release` sets `CK_LIVE_STRICT=1`; the same condition throws and fails the release gate.

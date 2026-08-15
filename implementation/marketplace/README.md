@@ -32,8 +32,8 @@ These counts and the paste-ready values are in `listing-copy.md`.
 
 ## Release-proof boundary
 
-The 1.3.0/5.1.0 pair in `v1.0.0-rc.10` has historical developer-environment proof in
-`evidence/live-release-run.md` "Live run 16". Later worktree changes need new strict receipts for
-the exact candidate. Production `app.clockify.me` proof is still open. Do not use these Markdown
-files, generated assets, or a workflow definition as proof that a candidate was approved or
-submitted. Track those gates in `docs/16-definition-of-done.md`.
+The 1.3.0/5.1.0 pair in `v1.0.0-rc.13` has candidate-bound developer-environment proof. Later
+worktree changes need new strict receipts for the exact candidate. Production `app.clockify.me`
+proof is still open. Do not use these Markdown files, generated assets, or a workflow definition
+as proof that a candidate was approved or submitted. Track those gates in
+`docs/16-definition-of-done.md`.

@@ -1,8 +1,8 @@
-# 15 — RC.12 release
+# 15 — RC.13 release
 
-This workflow releases `v1.0.0-rc.12` for developer-environment evaluation. It does not deploy to
+This workflow releases `v1.0.0-rc.13` for developer-environment evaluation. It does not deploy to
 Clockify production and it does not submit the add-on to the Marketplace. Do not use a successful
-RC.12 run as proof for either boundary.
+RC.13 run as proof for either boundary.
 
 ## Repository
 
@@ -12,22 +12,22 @@ RC.12 run as proof for either boundary.
   inspect and record the current branch-protection or ruleset settings. Workflow files cannot
   prove this external setting. If the host does not enforce the required review, stop and apply
   the manual review policy before merge.
-- The RC.12 candidate is the exact merge commit on `main`, not the branch head before merge.
-- `v1.0.0-rc.12` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
+- The RC.13 candidate is the exact merge commit on `main`, not the branch head before merge.
+- `v1.0.0-rc.13` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
   Marketplace proof.
 - A clean checkout is an isolated clone or worktree at the exact candidate commit. Do not script a
   destructive removal of a developer's modules or files to create one.
 
-## Later candidate authorization
+## RC.13 release receipt
 
-RC.12 evidence is historical and applies only to
-`d2c50d26392d511592a9cfb3f8fce1ae5d102ceb`. The corrected uncommitted tree is not an RC.13
-candidate. It becomes a candidate only after it is committed, independently reviewed, and merged.
+RC.13 applies only to `6e66cc302b904704ae6973ccbb3e023d6f77db9f`. Pull request 35 merged the
+reviewed candidate to `main`. The exact-commit CI run passed. Issue 36 records the operator's
+developer-only authorization and explicit backup waiver. The annotated `v1.0.0-rc.13` tag peels to
+the exact candidate, and GitHub published it as a prerelease.
 
-The RC.13 infrastructure gate is open. Do not reuse RC.12 issue 32, deployment proof, or waiver.
-Before publication, the operator must record an authorization that names the exact candidate scope,
-developer-only deployment, candidate release tag, a 300-second reachable-ref Gitleaks bound, and the
-backup and restore decision. Until then, do not create an RC.13 tag or GitHub release.
+The developer deployment is `0f3ccdcb-4bad-459e-bf64-9def41b86cf1`. Railway backup creation,
+backup locking, and an isolated restore are **NOT PROVEN — explicitly waived for RC.13**. This
+waiver does not prove production, Marketplace, stable-release, or disaster-recovery readiness.
 
 ## CI gates (every PR)
 
@@ -39,22 +39,22 @@ backup and restore decision. Until then, do not create an RC.13 tag or GitHub re
 6. Secret scan of the CI change set (no tokens or API keys; see
    `AGENTS.md`).
 
-## RC.12 pipeline (manual, not tag-triggered)
+## Candidate pipeline (manual, not tag-triggered)
 
-### RC.12 operator authorization
+### RC.13 operator authorization
 
-The repository operator authorized this RC in [issue 32](https://github.com/apet97/restoretime/issues/32)
-before review, merge, deployment, tagging, and publication.
+[Issue 36](https://github.com/apet97/restoretime/issues/36) records the pre-publication backup
+decision. The operator explicitly waived the RC.13 backup gates before tagging and publication.
 
 Run the reachable-ref gitleaks scan with
 `--all`, `--redact=100`, and a `300` second timeout. Do not reduce the scan scope, scan ignored
 `.env.live` files, or inspect a finding for a secret value. A finding blocks the release.
 
-Railway platform backup/PITR and an isolated Railway platform restore are **NOT PROVEN — deferred
-infrastructure capability**. Railway requires Pro for this capability. The operator waived these
-three gates only for this RC prerelease: platform backup/PITR, locked Railway backup, and isolated
-Railway platform restore. Do not purchase or enable Pro for this release. This waiver permits the
-RC prerelease. It does not prove production disaster-recovery readiness.
+Railway backup creation, backup locking, and an isolated Railway restore are **NOT PROVEN —
+explicitly waived for RC.13**. Railway rejected backup creation on the current Hobby plan. The
+operator waived these three gates only for this RC prerelease. Do not purchase or enable Pro for
+this release. This waiver permits the RC prerelease. It does not prove production
+disaster-recovery readiness.
 
 A later candidate must have its own operator authorization and infrastructure-gate decision.
 
@@ -133,21 +133,21 @@ A later candidate must have its own operator authorization and infrastructure-ga
    backup location. Keep the original backup and prior volume unchanged. Restore a copy to an
    isolated replacement volume in the same project and environment, boot the recorded candidate
    digest against it, and verify `/healthz`, the expected schema version, and one authenticated
-   component load. Retain the prior volume as the rollback target. This proves the RC.12 backup
+   component load. Retain the prior volume as the rollback target. This proves the candidate backup
    can be restored; it does not by itself prove that an older image can read a version-3 database.
    Record the separate local version-2 migration and rollback drill from step 3. A fresh Railway
    project has no prior remote database to use for that drill.
-   For RC.12, the operator authorization above waives this step as a blocking gate. Record it as
-   `NOT PROVEN — deferred infrastructure capability`. Do not mark it as passed or claim that
+   For RC.13, the operator authorization above waives this step as a blocking gate. Record it as
+   `NOT PROVEN — explicitly waived for RC.13`. Do not mark it as passed or claim that
    Railway backup, PITR, or disaster recovery was proved.
-9. Only after steps 1–7 and every non-waived gate pass, create `v1.0.0-rc.12` on the exact merged
+9. Only after steps 1–7 and every non-waived gate pass, create `v1.0.0-rc.13` on the exact merged
    `main` commit. Publish it as a GitHub prerelease. The notes must list the developer-only proof,
-   image digest, live-test totals, cleanup result, the deferred Railway backup/PITR status, and the
-   open production and Marketplace gaps.
+   image digest, live-test totals, cleanup result, the explicitly waived Railway backup status,
+   and the open production and Marketplace gaps.
 
 ## Future Marketplace submission prerequisites
 
-RC.12 does not satisfy or execute a Marketplace submission. The later submission must meet all of
+RC.13 does not satisfy or execute a Marketplace submission. The later submission must meet all of
 these conditions:
 
 - Manifest validated at boot (`createValidatedClockifyAddon`) and reviewable at `GET /manifest`.
@@ -175,13 +175,13 @@ If the new Railway project has no prior image or pre-migration database, record 
 case, deleting the candidate project is an environment rollback, not cross-version database
 rollback proof.
 
-## Explicit gaps after RC.12
+## Explicit gaps after RC.13
 
 - No deploy or smoke test uses `CLOCKIFY_PARENT_ORIGIN=https://app.clockify.me`.
 - No production Clockify workspace proves installation, signed component rendering, webhook
   delivery, or recreation for this commit.
 - No Marketplace review or installation has occurred.
-- Therefore RC.12 does not authorize the stable `v1.0.0` tag.
+- Therefore RC.13 does not authorize the stable `v1.0.0` tag.
 
 ## What a release is NOT
 

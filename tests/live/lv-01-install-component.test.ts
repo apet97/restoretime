@@ -16,8 +16,8 @@
 // the verified-claims boundary (401 without a token) rather than being open or crashing. What it
 // CANNOT prove without a human (or Clockify-side) browser session holding a real signed component
 // token: that a genuine developer load renders the working list with the correct icon, CSP, and
-// browser-error state. The LV-01B operator receipt proves that RC.11 boundary. A later production
-// check remains a separate gap.
+// browser-error state. The candidate-bound LV-01B operator receipt proves that developer boundary.
+// A later production check remains a separate gap.
 import { describe, expect, it } from "vitest";
 import {
   assertLiveTargetIdentity,

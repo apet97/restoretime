@@ -2,7 +2,7 @@
 // confirms the operator-stated API-key/addon-token equivalence, R11) (the same scenario passed on
 // the developer environment 2026-08-08 with the addon token — users.list, projects.list,
 // createForUser for another user → 201, get, delete). A production recheck is separate future
-// work; it is not an RC.11 gate.
+// work; it is not a developer-candidate gate.
 //
 // The "admin" half of this scenario is an app-internal authorization decision (`domain/policy.ts`
 // `isAdmin`), driven entirely by the verified component JWT's `workspaceRole` claim — proved

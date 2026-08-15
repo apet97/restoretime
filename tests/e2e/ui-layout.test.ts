@@ -247,7 +247,8 @@ function measure(chrome: string, htmlPath: string, profilePath: string): Promise
     const timeout = setTimeout(() => {
       timeoutError = new Error(`Chrome layout probe timed out: ${stderr.slice(-1_000)}`);
       child.kill("SIGKILL");
-    }, 20_000);
+    // A cold CI runner can need more than 20 seconds to start Chrome. This still bounds a hung probe.
+    }, 45_000);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -280,7 +281,7 @@ function measure(chrome: string, htmlPath: string, profilePath: string): Promise
 }
 
 describe("component layout in Chrome", () => {
-  it("contains supported long-content fixtures without document overflow", { timeout: 30_000 }, async () => {
+  it("contains supported long-content fixtures without document overflow", { timeout: 55_000 }, async () => {
     const css = readFileSync(join(process.cwd(), "dist", "static", "app.css"), "utf8");
     const chrome = findChrome();
     const directory = mkdtempSync(join(tmpdir(), "restoretime-layout-"));

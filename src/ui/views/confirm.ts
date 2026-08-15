@@ -50,7 +50,7 @@ export function renderConfirm(
 
   if (plan.presentation === null) {
     const refresh = el("button", { type: "button", class: "rt-primary" }, "Check the plan again");
-    refresh.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}) }));
+    refresh.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId, forceResolve: true, ...(draft ? { draft } : {}), returnTo }));
     nodes.push(renderNotice("warning", "This saved plan does not have the details needed for confirmation."), refresh, backButton);
     mountView(ctx, heading, ...nodes);
     return;

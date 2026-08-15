@@ -49,6 +49,9 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
   const heading = el("h2", {}, "Deleted time entries");
   const nodes: (Node | string)[] = [];
   const actionsUnavailable = data.disabled || data.broken || data.clockifyUnavailable;
+  // The list says it is read-only in each of these states. Do not retain a prior bulk selection
+  // that could enable a review action after the row controls disappear.
+  if (actionsUnavailable) clearSelection(ctx);
   const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "List error" });
   nodes.push(errorRegion);
 

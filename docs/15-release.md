@@ -1,8 +1,8 @@
-# 15 — RC.13 release
+# 15 — Release process and RC.14 receipt
 
-This workflow releases `v1.0.0-rc.13` for developer-environment evaluation. It does not deploy to
+This document records `v1.0.0-rc.14` for developer-environment evaluation. It does not deploy to
 Clockify production and it does not submit the add-on to the Marketplace. Do not use a successful
-RC.13 run as proof for either boundary.
+RC.14 run as proof for either boundary.
 
 ## Repository
 
@@ -12,22 +12,33 @@ RC.13 run as proof for either boundary.
   inspect and record the current branch-protection or ruleset settings. Workflow files cannot
   prove this external setting. If the host does not enforce the required review, stop and apply
   the manual review policy before merge.
-- The RC.13 candidate is the exact merge commit on `main`, not the branch head before merge.
-- `v1.0.0-rc.13` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
+- The RC.14 candidate is the exact merge commit on `main`, not the branch head before merge.
+- `v1.0.0-rc.14` is a prerelease tag. A stable `v1.0.0` remains blocked by production and
   Marketplace proof.
 - A clean checkout is an isolated clone or worktree at the exact candidate commit. Do not script a
   destructive removal of a developer's modules or files to create one.
 
-## RC.13 release receipt
+## RC.14 release receipt
 
-RC.13 applies only to `6e66cc302b904704ae6973ccbb3e023d6f77db9f`. Pull request 35 merged the
-reviewed candidate to `main`. The exact-commit CI run passed. Issue 36 records the operator's
-developer-only authorization and explicit backup waiver. The annotated `v1.0.0-rc.13` tag peels to
+RC.14 applies only to `2d5e7fbf3507d520456d60f69f70e29e78d9edb9`. Pull request
+[37](https://github.com/apet97/restoretime/pull/37) merged the reviewed candidate to `main`.
+[Main CI run 31914913974](https://github.com/apet97/restoretime/actions/runs/31914913974) passed
+for that commit. [Issue 38](https://github.com/apet97/restoretime/issues/38) recorded the
+developer-only authorization and explicit backup waiver. The annotated `v1.0.0-rc.14` tag peels to
 the exact candidate, and GitHub published it as a prerelease.
 
-The developer deployment is `0f3ccdcb-4bad-459e-bf64-9def41b86cf1`. Railway backup creation,
-backup locking, and an isolated restore are **NOT PROVEN — explicitly waived for RC.13**. This
-waiver does not prove production, Marketplace, stable-release, or disaster-recovery readiness.
+The developer deployment is `5b8d235f-4d3f-468f-be5b-1426cbed80a0`. Its instance is
+`c3e2dcfe-66f5-4778-8441-026e96306317`. Its image digest is
+`sha256:760176c2d1bdc791db941a0aef8df0d81901bdde02979378bb872b2ec80ccd2a`, and its source
+fingerprint is `7bc7fe441e72324eee10b0f4c08ffa07a32fe3efec23148290a3f188783d94c3`. Local gates
+passed 44 files and 472 tests. E2E gates passed 12 files and 104 tests. Strict live gates passed
+13 files and 45 tests with zero skips. Final cleanup found zero `RT-PROBE-` entries, tags, and
+custom fields.
+
+Railway backup creation, backup locking, and an isolated restore are **NOT PROVEN — explicitly
+waived for RC.14**. This waiver does not prove production, Marketplace, stable-release, or
+disaster-recovery readiness. The later documentation receipt commit is not the RC.14 application
+candidate. Do not redeploy or retag RC.14 because this documentation moves after publication.
 
 ## CI gates (every PR)
 
@@ -39,7 +50,7 @@ waiver does not prove production, Marketplace, stable-release, or disaster-recov
 6. Secret scan of the CI change set (no tokens or API keys; see
    `AGENTS.md`).
 
-## Candidate pipeline (manual, not tag-triggered)
+## Historical RC.13 candidate pipeline (manual, not tag-triggered)
 
 ### RC.13 operator authorization
 
@@ -175,7 +186,7 @@ If the new Railway project has no prior image or pre-migration database, record 
 case, deleting the candidate project is an environment rollback, not cross-version database
 rollback proof.
 
-## Explicit gaps after RC.13
+## Historical gaps after RC.13
 
 - No deploy or smoke test uses `CLOCKIFY_PARENT_ORIGIN=https://app.clockify.me`.
 - No production Clockify workspace proves installation, signed component rendering, webhook

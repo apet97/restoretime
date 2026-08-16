@@ -10,7 +10,7 @@ inspected separately.
 | `/Users/15x/Downloads/WORKING/addons-me/clockify-ts-sdk` (`wrapper/` workspace) | `clockify-sdk-ts-115` | 5.1.0 | 5.1.0 tag source `94fe318f473daa9eda7b3cfc038a51429c3dee14` | remote `main` matched the tag at the release audit |
 
 The published-source commit, not the newer docs or branch head, binds each registry package to
-source. `v1.0.0-rc.13` has candidate-bound developer-environment proof for the 1.3.0/5.1.0 pair.
+source. `v1.0.0-rc.14` has candidate-bound developer-environment proof for the 1.3.0/5.1.0 pair.
 The release receipt is in `docs/15-release.md`. Production proof is still open.
 
 Node `>=22.13.0` for both. Rule: use the SDK for its responsibility; never duplicate it; never work

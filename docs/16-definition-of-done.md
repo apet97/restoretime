@@ -2,7 +2,7 @@
 
 The product is done when every current-candidate statement is true and verified. Checked evidence
 below is historical unless the item names the exact current candidate. Worktree changes after
-`v1.0.0-rc.13` require new local gates, strict live receipts, and cleanup evidence.
+`v1.0.0-rc.14` require new local gates, strict live receipts, and cleanup evidence.
 
 PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
 uses `@apet97/clockify-addon-sdk` 1.3.0, `clockify-sdk-ts-115` 5.1.0, and `better-sqlite3` 13.0.3.
@@ -54,10 +54,10 @@ evidence.
 
 ## Quality bars
 
-- [x] `v1.0.0-rc.13` at `6e66cc302b904704ae6973ccbb3e023d6f77db9f` passed Node 22
+- [x] `v1.0.0-rc.14` at `2d5e7fbf3507d520456d60f69f70e29e78d9edb9` passed Node 22
       typecheck, strict lint, build, 472 non-E2E tests, and 104 E2E tests. Both npm audits reported
       zero vulnerabilities. The candidate-bound release evidence also records the image, secret,
-      migration, rollback, and live checks.
+      local migration and rollback, and live checks.
 - [x] Historical `v1.0.0-rc.10` candidate passed `npm run typecheck`, `lint`, `test`, `build`, and E2E.
       Verified 2026-08-11 with Node 22.23.1: typecheck, lint, and build passed; 37 files and 381
       non-E2E tests passed; 8 files and 42 E2E tests passed; `git diff --check` passed. Root and
@@ -73,7 +73,7 @@ evidence.
       (`implementation/passes/PASS-05-release.md` "Git requirements": PR review and merge precede
       the tag).
 - [x] No dependency beyond `implementation/DEPENDENCIES.md`; no dead code; no TODO/FIXME in `src/`
-      (`grep -rn "TODO\|FIXME" src/` → no matches, re-verified for RC.13; strict lint reports
+      (`grep -rn "TODO\|FIXME" src/` → no matches, re-verified for RC.14; strict lint reports
       unused locals and parameters; every declared dependency has a source, test, typecheck, or
       build use).
 - [x] Every user-facing string follows docs/10 terminology (recreate, never restore)
@@ -154,12 +154,13 @@ evidence.
       GitHub published the release as a prerelease. Its notes state the developer-only proof,
       cleanup result, and open production and Marketplace limits. See `evidence/live-release-run.md`
       "Live run 16".
-- [x] `v1.0.0-rc.13` is a published developer prerelease. Its annotated tag peels to
-      `6e66cc302b904704ae6973ccbb3e023d6f77db9f`. Strict live testing passed 45 tests with zero
+- [x] `v1.0.0-rc.14` is a published developer prerelease. Its annotated tag peels to
+      `2d5e7fbf3507d520456d60f69f70e29e78d9edb9`. Strict live testing passed 45 tests with zero
       skips, and cleanup found zero test entries, tags, or custom fields. The developer deployment
       is healthy. Railway backup creation, backup locking, and an isolated restore are **NOT
-      PROVEN — explicitly waived for RC.13**. Production, Marketplace, stable-release, and
-      disaster-recovery readiness remain unproven.
+      PROVEN — explicitly waived for RC.14**. Production, Marketplace, stable-release, and
+      disaster-recovery readiness remain unproven. The later documentation receipt commit is not
+      the RC.14 application candidate.
 
 ## Next-candidate gates
 
@@ -174,9 +175,9 @@ evidence.
       the candidate, restores a copy of the preserved version-2 backup, starts the recorded prior
       image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`.
 - [ ] Before a later candidate, prove Railway platform backup/PITR and isolated Railway platform
-      restore, or obtain an explicit candidate-only waiver. The RC.13 waiver applies only to
-      RC.13. It does not prove production disaster-recovery readiness or authorize a Railway plan
+      restore, or obtain an explicit candidate-only waiver. The RC.14 waiver applies only to
+      RC.14. It does not prove production disaster-recovery readiness or authorize a Railway plan
       upgrade.
 - [ ] Before a later candidate is published, the operator records an authorization for its exact
       scope, developer-only deployment, release tag, reachable-ref Gitleaks bound, and backup and
-      restore decision. Do not reuse the RC.13 authorization, deployment proof, or waiver.
+      restore decision. Do not reuse the RC.14 authorization, deployment proof, or waiver.

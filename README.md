@@ -1,8 +1,10 @@
 # RestoreTime — Time Entry Recovery for Clockify
 
-RestoreTime is a Clockify Marketplace add-on. It helps users recreate deleted time entries.
+[![CI](https://github.com/apet97/restoretime/actions/workflows/ci.yml/badge.svg)](https://github.com/apet97/restoretime/actions/workflows/ci.yml)
+[![Node 22](https://img.shields.io/badge/node-%E2%89%A522.13%20%3C23-339933?logo=node.js&logoColor=white)](.nvmrc)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Use Node 22.13 or later within major version 22.
+RestoreTime is a Clockify Marketplace add-on. It helps users recreate deleted time entries.
 
 When a user deletes a time entry in Clockify, RestoreTime keeps the entry's data. The user can then
 **recreate** the entry: RestoreTime creates a **new** time entry with the same description, time,
@@ -36,7 +38,26 @@ can recreate entries for other users.
 - When Clockify delivers the uninstall lifecycle call, RestoreTime hard-deletes the workspace data
   it holds.
 
+## The component
+
+RestoreTime renders one sidebar component inside Clockify. It is plain TypeScript with no UI
+framework, bundled once with esbuild.
+
+- **Follows the Clockify theme.** Light and dark palettes come from one token set, and native
+  controls follow through `color-scheme`.
+- **Visible progress.** Every busy button, loading placeholder, and inline status shows the same
+  CSS-only spinner with a visible label and `aria-busy`. `prefers-reduced-motion` switches the
+  spinner and all transitions off.
+- **Keyboard-friendly filters.** Admins filter by user, project, date range, status, and
+  description text. Enter in any filter field applies the filters.
+- **Accessible by contract.** Screen headings take focus and announce, action errors keep their
+  context and always offer one safe next action, and the e2e suite enforces these behaviors.
+
+The full specification is [docs/10-ui-specification.md](docs/10-ui-specification.md).
+
 ## Local quickstart
+
+Use Node 22.13 or later within major version 22 (`.nvmrc` selects it).
 
 ### Offline first success
 
@@ -121,6 +142,9 @@ Do not send an unsigned webhook request. Use the SDK-signed fixtures in
 | Live or developer smoke checks are blocked | Verify the installed developer add-on and its authorized prerequisites. Do not treat a blocked check as live proof. |
 
 ## Status
+
+The developer environment runs commit `6306c1c` (UI polish, merged 2026-08-17) for evaluation. It
+supersedes the RC.14 deployment instance and is not a release candidate.
 
 The `v1.0.0-rc.14` developer prerelease points to
 `2d5e7fbf3507d520456d60f69f70e29e78d9edb9`. Its local, strict-live, deployment, and cleanup

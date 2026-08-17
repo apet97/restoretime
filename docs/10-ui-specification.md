@@ -65,6 +65,9 @@ written down rather than discovered:
 `userName` is admin-only for the same reason `userId` is (docs/09); so is `kind=users`, the one
 options kind that enumerates people rather than workspace metadata.
 
+**Enter in any filter field applies the filters** — the same as selecting **Apply filters**. An
+Enter that confirms an IME composition is text entry, not a command, and does not apply.
+
 **Status and "Show dismissed" are alternatives, not filters that stack.** `DISMISSED` is a
 lifecycle state, so the toggle selects one state and the dropdown selects any other — they answer
 the same question about the same column. Turning the toggle on therefore clears the chosen status

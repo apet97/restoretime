@@ -143,9 +143,8 @@ Do not send an unsigned webhook request. Use the SDK-signed fixtures in
 
 ## Status
 
-`main` is deployed to the developer environment for evaluation. The current deployment is commit
-`6306c1c` (UI polish, merged 2026-08-17). It supersedes the RC.14 deployment instance and is not a
-release candidate.
+The developer environment runs commit `6306c1c` (UI polish, merged 2026-08-17) for evaluation. It
+supersedes the RC.14 deployment instance and is not a release candidate.
 
 The `v1.0.0-rc.14` developer prerelease points to
 `2d5e7fbf3507d520456d60f69f70e29e78d9edb9`. Its local, strict-live, deployment, and cleanup

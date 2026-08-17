@@ -239,10 +239,11 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     load(ctx, filters);
   });
 
-  // Enter in any filter field applies the filters — the same as selecting Apply filters.
+  // Enter in any filter field applies the filters — the same as selecting Apply filters. An Enter
+  // that confirms an IME composition is text entry, not a command, so it does not apply.
   for (const input of [userInput, projectInput, fromInput, toInput, searchInput]) {
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") applyButton.click();
+      if (event.key === "Enter" && !event.isComposing) applyButton.click();
     });
   }
 

@@ -40,6 +40,15 @@ waived for RC.14**. This waiver does not prove production, Marketplace, stable-r
 disaster-recovery readiness. The later documentation receipt commit is not the RC.14 application
 candidate. Do not redeploy or retag RC.14 because this documentation moves after publication.
 
+## Post-RC.14 developer deployments
+
+On 2026-08-17, developer deployment `6f7ad68d-5cc6-48e9-bc39-4874c8ba7d32` replaced
+`5b8d235f-4d3f-468f-be5b-1426cbed80a0` in the developer environment. It runs `main` commit
+`6306c1c506044d296150560833638d9b4954ae2a` (pull request 40, UI polish) with
+`RESTORETIME_CANDIDATE_ID` set to that commit. This is an evaluation deployment, not a release
+candidate. The RC.14 receipt above stays bound to its own commit, deployment, and instance; the
+strict handoff in the candidate pipeline must target the currently selected deployment.
+
 ## CI gates (every PR)
 
 1. `npm ci`

@@ -7,7 +7,7 @@ import { el } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
 import type { Ctx } from "../state.js";
 import { MutationTransportError } from "../api.js";
-import { bindBusyAction, mountView, renderApiError, renderStatusPill, runAction } from "./shared.js";
+import { bindBusyAction, mountView, renderApiError, renderSpinner, renderStatusPill, runAction } from "./shared.js";
 import { fidelityLabel } from "../format.js";
 import { renderFactsTable } from "./detail.js";
 import type { BulkPreflightRow, BulkRecreateRow } from "../types.js";
@@ -36,7 +36,7 @@ export function loadBulkReview(ctx: Ctx, previousRows: readonly BulkPreflightRow
   const ids = [...ctx.session.selectedEntryIds];
   const errorRegion = el("div", { class: "rt-inline-error", "aria-label": "Bulk review error" });
   renderBulkReview(ctx, previousRows, false, errorRegion, true);
-  errorRegion.append(el("p", { role: "status" }, "Refreshing review…"));
+  errorRegion.append(el("p", { role: "status", class: "rt-plan-status" }, renderSpinner(), "Refreshing review…"));
   void runAction(
     ctx,
     () => ctx.api.post("/api/entries/bulk-preflight", { ids }) as Promise<{ results: readonly BulkPreflightRow[] }>,

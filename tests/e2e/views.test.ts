@@ -584,6 +584,9 @@ describe("action lifecycle", () => {
     expect(recreate?.getAttribute("aria-busy")).toBe("true");
     expect(recreate?.textContent).toBe("Recreating…");
     expect(recreate?.getAttribute("aria-label")).toBe("Recreate entry");
+    // The busy state is visible, not only announced: the CSS-only spinner is mounted while the
+    // action runs (docs/10 §8).
+    expect(recreate?.querySelector(".rt-busy-spinner")).not.toBeNull();
   });
 
   it("keeps the confirm context and restores a safe action after a normal error", async () => {
@@ -598,6 +601,7 @@ describe("action lifecycle", () => {
     expect(ctx.root.textContent).toContain("Confirm recreation");
     expect(recreate?.disabled).toBe(false);
     expect(recreate?.textContent).toBe("Recreate entry");
+    expect(recreate?.querySelector(".rt-busy-spinner")).toBeNull();
   });
 
   it("reloads an expired session only once", () => {

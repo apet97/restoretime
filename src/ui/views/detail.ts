@@ -6,7 +6,7 @@
 import { clear, el } from "../dom.js";
 import { formatEntryHeader } from "../format.js";
 import type { ChoiceLabels, Ctx, ResolutionDraft, ReturnTarget } from "../state.js";
-import { bindBusyAction, mountView, renderApiError, renderBlockers, renderDifferences, renderLineage, renderNotice, runAction, withLoading } from "./shared.js";
+import { bindBusyAction, mountView, renderApiError, renderBlockers, renderDifferences, renderLineage, renderNotice, renderSpinner, runAction, withLoading } from "./shared.js";
 import { renderResult } from "./result.js";
 import { renderResolutionWidgets, toPreflightChoices, type MutableChoices } from "./resolution-widgets.js";
 import type { ActionRequiredItem, DeletedTimeEntry, DetailResponse, PreflightResponse, RecreationPlan } from "../types.js";
@@ -212,7 +212,7 @@ function runPreflightAndRender(
   };
   shell.planRegion.setAttribute("aria-busy", "true");
   shell.planRegion.querySelector(".rt-plan-status")?.remove();
-  shell.planRegion.append(el("p", { role: "status", class: "rt-plan-status" }, "Checking choices…"));
+  shell.planRegion.append(el("p", { role: "status", class: "rt-plan-status" }, renderSpinner(), "Checking choices…"));
   const restoreControls = disableSubmittingControlGroup();
   const run = async () => {
     if (!shell.planRegion.isConnected) return;

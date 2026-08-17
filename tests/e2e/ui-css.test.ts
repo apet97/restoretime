@@ -72,6 +72,12 @@ describe("shipped component CSS", () => {
     expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.rt-busy-spinner\s*\{[^}]*animation\s*:\s*none/);
   });
 
+  it("defines the spinner animation that the reduced-motion rule switches off", () => {
+    const source = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(source).toMatch(/@keyframes\s+rt-spin/);
+    expect(source).toMatch(/\.rt-busy-spinner\s*\{[^}]*animation\s*:\s*rt-spin/);
+  });
+
   it("contains long tables inside a narrow component instead of widening the page", () => {
     const wrapper = /\.rt-table-scroll\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
     const cells = /th,\s*\n?td\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";

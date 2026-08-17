@@ -8,8 +8,14 @@ import type { StatusPresentation } from "../format.js";
 import type { Ctx } from "../state.js";
 import type { DetailResponse, PlanBlocker, PlanWarning, RecreationPlan } from "../types.js";
 
+/** The one CSS-only progress marker (`.rt-busy-spinner` in app.css). `aria-hidden`: the busy label
+ * or status text beside it already says what is happening. */
+export function renderSpinner(): HTMLElement {
+  return el("span", { class: "rt-busy-spinner", "aria-hidden": "true" });
+}
+
 export function renderLoading(root: HTMLElement, label = "Loading…"): void {
-  mount(root, el("p", { role: "status" }, label));
+  mount(root, el("p", { role: "status", class: "rt-loading" }, renderSpinner(), label));
 }
 
 /** docs/10 §8: on a refresh timeout, "Reload the component" — the shell cannot recover a session
@@ -224,6 +230,7 @@ export function bindBusyAction<T>(options: BusyActionOptions<T>): void {
     button.setAttribute("aria-busy", "true");
     button.setAttribute("aria-label", originalLabel);
     button.textContent = busyLabel;
+    button.prepend(renderSpinner());
     void runAction(
       ctx,
       action,

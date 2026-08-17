@@ -129,11 +129,11 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     // Say so when the server withheld older rows, rather than letting a full page read as "all".
     if (data.truncated) {
       nodes.push(
-        el("p", {}, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
+        el("p", { class: "rt-list-note" }, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
       );
     }
   } else {
-    nodes.push(el("p", {}, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
+    nodes.push(el("p", { class: "rt-empty" }, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
   }
 
   mountView(ctx, heading, ...nodes);
@@ -238,6 +238,14 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
     if (before !== JSON.stringify(filters)) clearSelection(ctx);
     load(ctx, filters);
   });
+
+  // Enter in any filter field applies the filters — the same as selecting Apply filters. An Enter
+  // that confirms an IME composition is text entry, not a command, so it does not apply.
+  for (const input of [userInput, projectInput, fromInput, toInput, searchInput]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) applyButton.click();
+    });
+  }
 
   const clearButton = el("button", { type: "button" }, "Clear filters");
   clearButton.addEventListener("click", () => {

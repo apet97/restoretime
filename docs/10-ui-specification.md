@@ -267,7 +267,8 @@ message for each other entry."
 - Button actions use visible progress labels and `aria-busy`. They reject a second immediate
   activation. The labels are `Dismissing…`, `Undismissing…`, `Preparing review…`, `Recreating…`,
   `Recreating entries…`, `Checking…`, `Updating status…`, and `Linking entry…`. A plan-region
-  choice uses `Checking choices…`.
+  choice uses `Checking choices…`. A busy button, a loading placeholder, and an inline status also
+  show `rt-busy-spinner`, a CSS-only spinner that `prefers-reduced-motion` switches off.
 - Button-action errors stay in the current screen. Each error has alert semantics and an explicit
   safe next action such as `Reload list`, `Recheck entry`, `Check choices again`, or `Reload
   review`. Error text never exposes an HTTP status or an arbitrary response body.

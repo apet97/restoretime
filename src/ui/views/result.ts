@@ -256,7 +256,7 @@ function renderAmbiguousBody(ctx: Ctx, entryId: string, data: DetailResponse, re
           el("h3", {}, "Clockify shows more than one possible match"),
           el(
             "ul",
-            {},
+            { class: "rt-card-list" },
             ...candidateIds.map((id, index) => renderCandidate(ctx, entryId, id, index, data.plan, returnTo, errorRegion)),
           ),
         ),

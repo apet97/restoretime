@@ -135,8 +135,10 @@ installs under the synthetic `restoretime-live-addon`, so the generation fence a
 `tests/integration/live-harness-generation.test.ts` as the offline guard that was missing; removing
 the fix turns that test red with the same outcome. The application source is untouched by the fix.
 
-`npm run test:live:release` then passed, and was **reproduced twice**: 13 files and 45 tests, exit
-0, **zero skips and zero blocked rows**, plus the separate cleanup suite. LV-01A, LV-01B, LV-02A,
+`npm run test:live:release` then passed, and was **reproduced three times**: 13 files and 45 tests,
+exit 0, **zero skips and zero blocked rows**, plus the separate cleanup suite. The third run was
+made from a detached checkout of the candidate commit, because the strict runner requires
+`HEAD == CK_LIVE_CANDIDATE_ID` and `main` had by then moved on to this documentation commit. LV-01A, LV-01B, LV-02A,
 LV-02B, and LV-03 through LV-10 all pass on this candidate, including LV-10's hard ambiguity gate
 in both legs — a create that really committed while the caller saw a transport failure was adopted
 by reconcile, and a create that was never sent stayed uncommitted.
@@ -158,10 +160,16 @@ Operator receipts for this candidate are in `restoretime-1743857-evidence/` outs
 
 Cleanup afterwards, independently of the suite's own teardown: a scan of all 10 workspace users
 including deactivated ones, every page, plus active and archived tags and every custom field, found
-**zero** `RT-PROBE-` artifacts and reported **zero** read failures. The 36 `RT-PROBE-` rows the runs
-captured were deleted from the deployed volume, leaving that generation with the single
+**zero** `RT-PROBE-` artifacts and reported **zero** read failures — and reported zero read
+failures explicitly, so a silent per-user error cannot pass as a clean result. Each run's probe
+rows were then deleted from the deployed volume, leaving that generation with the single
 pre-existing recreated row from the design-pass check; the other workspace's 4 rows were untouched,
 `integrity_check` returned `ok`, and `user_version` stayed 5.
+
+The suite's own teardown deletes probe entries, tags, and custom fields from Clockify, which is
+what it verifies. It does not delete the `recoverable_entries` rows those deletions cause the
+deployed add-on to capture — correctly, since that capture is the product working. Clearing them is
+a separate operator step, scripted in `deployed-db-probe-cleanup.mjs` alongside the receipts.
 
 Not proved by this run, and deliberately so: Railway backup, point-in-time recovery, and isolated
 restore; a version-2 migration and rollback drill; reachable-ref secret scanning; the local Docker

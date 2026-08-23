@@ -4,7 +4,7 @@
 // (docs/10 §2).
 
 import { el } from "../dom.js";
-import { formatDetected, formatEntryHeader, statusPresentation } from "../format.js";
+import { formatDetectedDay, formatEntryHeader, statusPresentation } from "../format.js";
 import type { Ctx, UiSessionState } from "../state.js";
 import { bindBusyAction, mountView, renderApiError, renderNotice, renderStatusPill, runBackgroundRequest, withLoading } from "./shared.js";
 import type { BulkPreflightRow, ListResponse, ListRow } from "../types.js";
@@ -46,27 +46,22 @@ function load(ctx: Ctx, filters: ListFilterState): void {
   void withLoading(
     ctx,
     () => fetchList(ctx, filters),
-    (data) => renderLoaded(ctx, filters, data, []),
+    (data) => renderLoaded(ctx, filters, data),
     "Loading deleted time entries…",
     "Reload list",
   );
 }
 
 /**
- * `loaded` holds the pages already fetched. Load more appends the next page and re-renders the
- * whole view rather than splicing rows in, which keeps one rendering path for the list. Bulk
- * selection survives because it lives in `ctx.session.selectedEntryIds`, keyed by row id.
+ * Renders one page and keeps a handle on the pieces `Load more` has to extend.
+ *
+ * Rows are grouped under the day they were detected. That order is free: the server already sorts
+ * `detected_at DESC`, so each day's rows are contiguous, and the heading lets the row drop the
+ * "Detected" label it used to repeat on every line.
  */
-function renderLoaded(
-  ctx: Ctx,
-  filters: ListFilterState,
-  data: ListResponse,
-  loaded: readonly ListRow[],
-): void {
+function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): void {
   const heading = el("h2", {}, "Deleted time entries");
-  const nodes: (Node | string)[] = [
-    el("p", { class: "rt-page-intro" }, "RestoreTime recreates deleted time entries as new Clockify entries. Deleted-entry history stays unchanged."),
-  ];
+  const nodes: (Node | string)[] = [];
   const actionsUnavailable = data.disabled || data.broken || data.clockifyUnavailable;
   // The list says it is read-only in each of these states. Do not retain a prior bulk selection
   // that could enable a review action after the row controls disappear.
@@ -97,6 +92,7 @@ function renderLoaded(
   let reviewNote: HTMLElement | undefined;
   let selectionSummary: HTMLElement | undefined;
   let reviewBusy = false;
+  let total = 0;
   function syncReviewButton(): void {
     if (!reviewButton) return;
     const count = ctx.session.selectedEntryIds.size;
@@ -106,11 +102,8 @@ function renderLoaded(
     if (selectionSummary) selectionSummary.textContent = `${count} ${count === 1 ? "entry" : "entries"} selected (maximum 50).`;
   }
 
-  const rows = [...loaded, ...data.entries];
-  const rowList = rows.length > 0 ? el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton))) : null;
-
   if (ctx.isAdminRole && filters.bulkMode) {
-    reviewButton = el("button", { type: "button" }, "Review selected (0)");
+    reviewButton = el("button", { type: "button", class: "rt-primary" }, "Review selected (0)");
     bindBusyAction({
       ctx,
       button: reviewButton,
@@ -141,37 +134,82 @@ function renderLoaded(
     syncReviewButton();
   }
 
-  if (rowList) {
-    nodes.push(rowList);
-    // Older rows are reached by continuing this page sequence. Narrowing the filters is a way to
-    // search, not a way to paginate, so it must not be the only route to row 51.
-    const cursor = data.nextCursor;
-    if (cursor !== null) {
-      const errorRegionForMore = el("div", { class: "rt-inline-error", "aria-label": "Load more error" });
-      const moreButton = el("button", { type: "button" }, "Load more");
-      bindBusyAction({
-        ctx,
-        button: moreButton,
-        busyLabel: "Loading more…",
-        action: () => fetchList(ctx, filters, cursor),
-        onSuccess: (next) => renderLoaded(ctx, filters, next, rows),
-        onError: (err) =>
-          renderApiError({
-            region: errorRegionForMore,
-            err,
-            context: "",
-            action: () => load(ctx, filters),
-            actionLabel: "Reload list",
-          }),
-      });
-      nodes.push(
-        el("p", { class: "rt-list-note", role: "status" }, `Showing ${rows.length} entries.`),
-        moreButton,
-        errorRegionForMore,
-      );
+  if (data.entries.length === 0) {
+    nodes.push(
+      el(
+        "p",
+        { class: "rt-empty" },
+        "No deleted time entries. When you delete a time entry in Clockify, it appears here — RestoreTime keeps its details so you can recreate it as a new entry.",
+      ),
+    );
+    mountView(ctx, heading, ...nodes);
+    return;
+  }
+
+  const listContainer = el("div", { class: "rt-list" });
+  // The day heading currently being filled. `Load more` continues into it when the next page opens
+  // on the same day, instead of emitting a second heading with identical text.
+  let openGroupLabel: string | null = null;
+  let openGroupList: HTMLElement | null = null;
+
+  function appendRows(newRows: readonly ListRow[]): void {
+    for (const row of newRows) {
+      const label = formatDetectedDay(row.detectedAt, ctx.locale);
+      if (label !== openGroupLabel || openGroupList === null) {
+        openGroupLabel = label;
+        openGroupList = el("ul", { class: "rt-group-rows" });
+        listContainer.append(el("h3", { class: "rt-group" }, label), openGroupList);
+      }
+      openGroupList.append(renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton));
     }
-  } else {
-    nodes.push(el("p", { class: "rt-empty" }, "No deleted time entries. When you delete a time entry in Clockify, it appears here."));
+    total += newRows.length;
+  }
+
+  appendRows(data.entries);
+  nodes.push(listContainer);
+
+  // Older rows are reached by continuing this page sequence. Narrowing the filters is a way to
+  // search, not a way to paginate, so it must not be the only route to row 51.
+  if (data.nextCursor !== null) {
+    let cursor: string = data.nextCursor;
+    const moreError = el("div", { class: "rt-inline-error", "aria-label": "Load more error" });
+    // `tabindex` so focus has somewhere defined to land when the button is removed on the last
+    // page — otherwise it falls to the body and the reader loses its place entirely.
+    const note = el("p", { class: "rt-list-note", role: "status", tabindex: "-1" }, "");
+    const moreButton = el("button", { type: "button", class: "rt-more" }, "Load more");
+    const syncNote = () => { note.textContent = `Showing ${total} entries.`; };
+    syncNote();
+
+    bindBusyAction({
+      ctx,
+      button: moreButton,
+      busyLabel: "Loading more…",
+      action: () => fetchList(ctx, filters, cursor),
+      onSuccess: (next) => {
+        const added = next.entries.length;
+        // Appended, never re-rendered: a full re-render would move focus to the page heading and
+        // throw a keyboard user back to the top of a list they had already scrolled through.
+        appendRows(next.entries);
+        syncNote();
+        if (next.nextCursor === null) {
+          note.textContent = `All ${total} entries shown.`;
+          note.focus();
+          moreButton.remove();
+        } else {
+          cursor = next.nextCursor;
+        }
+        ctx.announce(`${added} more ${added === 1 ? "entry" : "entries"} loaded. ${note.textContent}`);
+      },
+      onError: (err) =>
+        renderApiError({
+          region: moreError,
+          err,
+          context: "",
+          action: () => load(ctx, filters),
+          actionLabel: "Reload list",
+        }),
+    });
+    nodes.push(el("div", { class: "rt-list-more" }, note, moreButton), moreError);
   }
 
   mountView(ctx, heading, ...nodes);
@@ -314,7 +352,17 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
   });
   const bulkLabel = el("label", {}, bulkToggle, " Bulk mode");
 
-  return el(
+  // A disclosure, not a permanently open slab: unset filters are the common case, and the panel
+  // used to outweigh the rows it filters. The summary carries the active count so a collapsed
+  // panel can never hide a filter that is changing what the list shows.
+  const active = [filters.userName, filters.projectName, filters.from, filters.to, filters.status, filters.search].filter(Boolean).length;
+  const summary = el(
+    "summary",
+    { class: "rt-filters-summary" },
+    "Filters",
+    ...(active > 0 ? [el("span", { class: "rt-chip rt-chip--count" }, String(active))] : []),
+  );
+  const panel = el("details", { class: "rt-filters" }, summary, el(
     "section",
     { "aria-label": "Filters" },
     el(
@@ -344,7 +392,11 @@ function renderAdminControls(ctx: Ctx, filters: ListFilterState): HTMLElement {
       clearButton,
       bulkLabel,
     ),
-  );
+  ));
+  // Opened whenever a filter is set, so an active filter is never collapsed out of sight.
+  panel.open = filters.filtersOpen || active > 0;
+  panel.addEventListener("toggle", () => { filters.filtersOpen = panel.open; });
+  return panel;
 }
 
 function renderRow(
@@ -360,36 +412,40 @@ function renderRow(
   // when a project exists made two entries in the same project indistinguishable, and hid the
   // very text the admin free-text filter searches.
   const projectLine = [source.projectName, source.taskName].filter((v): v is string => Boolean(v)).join(" — ");
-  const tagNames = source.tags.map((t) => t.name).join(", ");
-  const detected = formatDetected(row.detectedAt, ctx.locale);
   const status = statusPresentation(row);
   const actionable = row.lifecycleState === "IDLE" || row.lifecycleState === "FAILED";
 
-  const openButton = el("button", { type: "button", class: "rt-title" }, header);
+  // The description leads: it is what a person recognises an entry by. The timestamp used to hold
+  // this position, which put the chrome above the identity on every row.
+  const openButton = el("button", { type: "button", class: "rt-title" }, source.description || "(no description)");
+  if (!source.description) openButton.classList.add("rt-title--empty");
   openButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
 
-  // Date and duration first, description second, then one metadata line with everything else.
+  // One quiet line, separated rather than labelled: "Tags:" and "Status:" cost more attention than
+  // the values they introduce, and the group heading above already carries "Detected".
+  const meta: (Node | string)[] = [el("span", { class: "rt-when" }, header)];
+  if (projectLine) meta.push(el("span", { class: "rt-chip" }, projectLine));
+  for (const tag of source.tags) meta.push(el("span", { class: "rt-chip rt-chip--tag" }, tag.name));
+
   const main = el(
     "div",
     { class: "rt-entry-main" },
-    el("div", {}, openButton),
-    el("div", { class: "rt-desc" }, source.description || "(no description)"),
-    el(
-      "div",
-      { class: "rt-metadata" },
-      ...(projectLine ? [el("span", { class: "rt-entry-value" }, projectLine)] : []),
-      el("span", {}, `Tags: ${tagNames || "none"}`),
-      el("span", {}, `Detected: ${detected}`),
-      el("span", {}, "Status: ", renderStatusPill(status)),
-    ),
+    el("div", { class: "rt-entry-head" }, openButton, renderStatusPill(status)),
+    el("div", { class: "rt-metadata" }, ...meta),
   );
 
-  const li = el("li", { class: "rt-entry" }, main);
+  // The action column is always present, even with nothing in it: the status pill sits against its
+  // left edge, so a row without an action would otherwise let its pill drift to the frame edge and
+  // break the column of pills the list is scanned down.
+  const side = el("div", { class: "rt-entry-side" });
+  const li = el("li", { class: "rt-entry" }, main, side);
 
   if (actionable && !actionsUnavailable) {
-    const recreateButton = el("button", { type: "button", class: "rt-primary" }, "Recreate");
+    // Not `rt-primary`: that weight marks the one dominant action on a screen, and a page of fifty
+    // filled buttons marks nothing at all. The dominant action lives on the detail view.
+    const recreateButton = el("button", { type: "button", class: "rt-recreate" }, "Recreate");
     recreateButton.addEventListener("click", () => ctx.navigate({ kind: "detail", entryId: row.id }));
-    li.append(el("div", { class: "rt-entry-side" }, recreateButton));
+    side.append(recreateButton);
   }
 
   if (ctx.isAdminRole && filters.bulkMode && actionable && !actionsUnavailable) {

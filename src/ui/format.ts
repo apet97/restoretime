@@ -122,6 +122,16 @@ export function formatEntryHeader(
   return `${date} · ${startTime}–${endPoint} (${formatDuration(start, end)})`;
 }
 
+/** The day heading a list group carries (docs/10 §1). Rows are ordered `detected_at DESC`, so
+ * grouping by the detected day yields contiguous groups — grouping by the entry's own start would
+ * interleave them. The group owns the word "Detected", which is why the row no longer repeats it.
+ *
+ * Callers key groups on this returned string rather than on the raw date, so the key and the
+ * heading can never disagree at a local-midnight boundary. */
+export function formatDetectedDay(iso: string, locale: string): string {
+  return `Detected ${formatClockifyDate(new Date(iso), locale)}`;
+}
+
 /** docs/10 §1 "Detected: 7 Aug 2026, 15:42". */
 export function formatDetected(iso: string, locale: string): string {
   return `${formatClockifyDate(new Date(iso), locale)}, ${formatTime(iso, locale)}`;

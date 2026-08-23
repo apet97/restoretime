@@ -75,7 +75,7 @@ PASS-02 copies the webhook campaign's `sanitized-payloads/` samples into `tests/
 | IT-20 | Name and date filters over `/api/*` (docs/10 §2; `tests/integration/name-filters.test.ts`). An entry on a project Clockify has since deleted is found by its stored project name while that project is absent from `/api/options?kind=projects` — the case an id-resolving filter would silently miss, which is why the design exists. Also: a deactivated member's entry is found by their stored name; `userName` is silently ignored for a non-admin, exactly as `userId` is; `/api/options?kind=users` returns `{id, name}` including deactivated members and 403s a non-admin, while the other option kinds stay open. Strict UTC list bounds accept seconds or one to three fractional digits and are canonical before filtering. An invalid, over-precise, or reversed list bound returns 400 before a row query. |
 | IT-21 | Installation-generation isolation (docs/08 "Retention and deletion", docs/09 "Identity"; `tests/integration/installation-generation.test.ts`). A reinstall neither inherits the previous generation's entries nor is blocked by them when capturing the same source entry id; installing supersedes the older generation, which is what stops a missed `DELETED` from retaining data forever; a delayed `DELETED` for a superseded generation is acknowledged and leaves the current one intact; a viewer from one generation gets 404 for another generation's row. A replayed `INSTALLED` for an already-retired generation is still installed but supersedes nothing — lifecycle tokens carry no expiry, so it can arrive at any time and always looks newest. Each assertion was verified red-first against the unscoped code. |
 | IT-22 | Uninstall/webhook race (docs/08; `tests/integration/webhook-uninstall-race.test.ts`). A barrier inside `ClockifyInstallationStore.load` holds a delivery at the point production holds it — after the add-on token is loaded and decrypted — the uninstall runs to completion, then the delivery is released and reaches its write. No row is inserted, no false `recoverable_created` is counted, and the delivery is acknowledged because a retry could not succeed. Deterministic: a promise barrier through the `wrapInstallationStore` seam, never a sleep. Removing the SQL fence makes it fail with a row present. |
-| IT-23 | Viewer authority (docs/09 "Credential authority"; `tests/integration/viewer-authority.test.ts`). Every Clockify call carries the installation's add-on token, the only credential the platform issues, so a member's own choices are checked first: the project picker omits a private project they are not a member of (name included, not just id), `kind=tasks` answers 404 rather than 403 for one, and a re-targeting `choices.projectId` outside their reach is refused 403 before a plan exists and before any write. An admin is unaffected, and the entry's *own* original project needs no membership check. |
+| IT-23 | Viewer authority (docs/09 "Credential authority"; `tests/integration/viewer-authority.test.ts`). Every Clockify call carries the installation's add-on token, the only credential the platform issues, so a member's own choices are checked first: the project picker omits a private project they are not a member of (name included, not just id), `kind=tasks` answers 404 rather than 403 for one, and a re-targeting `choices.projectId` outside their reach is refused 403 before a plan exists and before any write. An admin is unaffected, and the entry's *own* original project needs no membership check — including when the member supplies only a `taskId`, which is resolved inside that same project and is therefore not a re-target, and including a project-less entry, which an earlier version rejected outright because its fallback target was `null`. A 401/4017 raised by the single-project access read still maps to `broken_at` and the reinstall notice rather than escaping as a 500: the read moved from a paginated walk to one request, but stayed inside the handler's own catch. |
 | IT-24 | List traversal (docs/03 `GET /api/entries`; `tests/integration/pagination.test.ts`). 101 identically-filtered rows are each reached exactly once across three pages, in strict order; a shared `detected_at` keeps the boundary deterministic through the id tiebreaker; a row inserted between pages never repeats an already-returned one; a malformed or unsupported-version cursor and an out-of-range `limit` are answered 400 rather than clamped; a cursor cannot reach another installation generation's rows. |
 
 Mock transport: a stub `fetch` injected into `createClockifyClient`, driven by recorded response
@@ -238,10 +238,18 @@ scripts/live-env.sh https://<exact-railway-origin> npm run test:live:release
 
 ## E2E (component flow) — `tests/e2e/`
 
-List continuation (`tests/e2e/views.test.ts` "list continuation") covers the **Load more** path:
-the next page appends and the rows already shown stay, the server's own `nextCursor` is sent back
-verbatim, the button disappears on the last page, and changing a filter starts a fresh sequence
-rather than carrying a cursor that names a position in the previous result set.
+List continuation (`tests/e2e/views.test.ts`, the two "list continuation" suites) covers the
+**Load more** path: the next page appends and the rows already shown stay, the server's own
+`nextCursor` is sent back verbatim, the button disappears on the last page, and changing a filter
+starts a fresh sequence rather than carrying a cursor that names a position in the previous result
+set.
+
+It also covers what appending is *for*. Focus stays on the Load more button across a page, instead
+of being thrown to the page heading by a full re-render, and the announcement names the rows that
+arrived rather than the view; when the last page removes the button, focus moves to the count. A
+page that opens on the same detected day the previous one ended on joins that group rather than
+emitting a second heading with identical text. Each was verified red-first — restoring the
+re-render puts focus on the `<h2>`.
 
 PASS-03 scope: load the iframe shell against a local server with SDK test-signing helpers
 (`@apet97/clockify-addon-sdk/testing`), drive list → detail → preflight → confirm with a mocked

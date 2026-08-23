@@ -87,6 +87,11 @@ function currentWorkspaceStub(): typeof fetch {
         { id: "task-done", name: "Completed task", status: "DONE" },
       ]);
     }
+    // After `/tasks`: a task list lives at `/projects/{id}/tasks`, so a single-project match has to
+    // come second or it swallows the task route.
+    if (path.includes("/projects/")) {
+      return jsonResponse({ id: "proj-live", name: "Still Here", archived: false, public: true, memberships: [] });
+    }
     if (path.endsWith("/tags")) {
       return jsonResponse([
         { id: CURRENT_TAG_ID, name: "Current tag", archived: false },

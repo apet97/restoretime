@@ -10,7 +10,7 @@ import { MutationTransportError } from "../api.js";
 import { bindBusyAction, mountView, renderApiError, renderSpinner, renderStatusPill, runAction } from "./shared.js";
 import { fidelityLabel } from "../format.js";
 import { renderFactsTable } from "./detail.js";
-import type { BulkPreflightRow, BulkRecreateRow } from "../types.js";
+import type { BulkPreflightRow, BulkRecreateRow, RecreationPlan } from "../types.js";
 
 function rowReason(row: BulkPreflightRow): string {
   if (row.message) return row.message;
@@ -51,6 +51,12 @@ export function loadBulkReview(ctx: Ctx, previousRows: readonly BulkPreflightRow
   );
 }
 
+/** A bulk request that left the browser without a complete response: the outcome of every row in
+ * it is unknown, never failed (docs/10 §7, ADR-007). */
+function unknownOutcomes(rows: readonly (BulkPreflightRow & { plan: RecreationPlan })[]) {
+  return rows.map((row) => ({ entryId: row.entryId, planId: row.plan.id, outcome: "AMBIGUOUS" as const }));
+}
+
 export function renderBulkReview(
   ctx: Ctx,
   rows: readonly BulkPreflightRow[],
@@ -69,7 +75,12 @@ export function renderBulkReview(
   const errorRegion = suppliedErrorRegion ?? el("div", { class: "rt-inline-error", "aria-label": "Bulk review error" });
 
   const recreateButton = el("button", { type: "button", class: "rt-primary" }, "");
-  const readyPlanIds = () => rows.filter((r) => r.status === "ready" && r.plan && selected.has(r.entryId)).map((r) => r.plan!.id);
+  /** A "ready" row always carries a plan, but only a type predicate tells the compiler that —
+   * without one every downstream `.plan` read needs a non-null assertion (AGENTS.md). */
+  const isSelectedReady = (row: BulkPreflightRow): row is BulkPreflightRow & { plan: RecreationPlan } =>
+    row.status === "ready" && row.plan !== null && selected.has(row.entryId);
+  const selectedReadyRows = () => rows.filter(isSelectedReady);
+  const readyPlanIds = () => selectedReadyRows().map((row) => row.plan.id);
   /** The label and the action have to agree: computing the count once left the button saying
    * "Recreate 2 entries" after the admin unchecked one, and clicking with nothing checked
    * silently did nothing. */
@@ -147,29 +158,27 @@ export function renderBulkReview(
     busyLabel: "Recreating entries…",
     conflictingControls: () => [backButton, ...checkboxes],
     action: async () => {
-    const snapshot = rows.filter((row) => row.status === "ready" && row.plan && selected.has(row.entryId));
-    const planIds = snapshot.map((row) => row.plan!.id);
-    if (planIds.length === 0) throw new Error("No selected ready entries.");
-    busy = true;
-    syncRecreateButton();
-    const response = await ctx.api.mutate("/api/entries/bulk-recreate", { planIds });
-    return { response, snapshot };
+      const snapshot = selectedReadyRows();
+      const planIds = snapshot.map((row) => row.plan.id);
+      if (planIds.length === 0) throw new Error("No selected ready entries.");
+      busy = true;
+      syncRecreateButton();
+      const response = await ctx.api.mutate("/api/entries/bulk-recreate", { planIds });
+      return { response, snapshot };
     },
     onSuccess: ({ response: res, snapshot }) => {
-        if (!hasBulkResults(res)) {
-          const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
-          ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
-          return;
-        }
-        ctx.navigate({ kind: "bulk-results", rows: res.results, reviewRows: snapshot });
+      if (!hasBulkResults(res)) {
+        ctx.navigate({ kind: "bulk-results", rows: unknownOutcomes(snapshot), reviewRows: snapshot });
+        return;
+      }
+      ctx.navigate({ kind: "bulk-results", rows: res.results, reviewRows: snapshot });
     },
     onError: (err) => {
-      const snapshot = rows.filter((row) => row.status === "ready" && row.plan && selected.has(row.entryId));
-        if (err instanceof MutationTransportError) {
-          const unknown = snapshot.map((row) => ({ entryId: row.entryId, planId: row.plan!.id, outcome: "AMBIGUOUS" as const }));
-          ctx.navigate({ kind: "bulk-results", rows: unknown, reviewRows: snapshot });
-          return;
-        }
+      if (err instanceof MutationTransportError) {
+        const snapshot = selectedReadyRows();
+        ctx.navigate({ kind: "bulk-results", rows: unknownOutcomes(snapshot), reviewRows: snapshot });
+        return;
+      }
       busy = false;
       renderApiError({ region: errorRegion, err, context: "", action: () => loadBulkReview(ctx, rows), actionLabel: "Reload review" });
     },

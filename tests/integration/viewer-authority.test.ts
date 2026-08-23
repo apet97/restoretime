@@ -73,12 +73,18 @@ function testConfig(): AppConfig {
   };
 }
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-/** The workspace as the *installation token* sees it: all three projects, because that credential
- * is workspace-wide. Only `public` and `memberships` distinguish what the viewer may target. */
+/** The workspace as the installation token sees it. `public` and `memberships` are what the access
+ * rule reads (docs/09); real Clockify returns both on the list and on a single project. */
+const PROJECTS = [
+  { id: OPEN_PROJECT, name: "Open project", archived: false, public: true, memberships: [] },
+  { id: JOINED_PROJECT, name: "Joined project", archived: false, public: false, memberships: [{ userId: MEMBER_ID }] },
+  { id: PRIVATE_PROJECT, name: "Secret rebrand", archived: false, public: false, memberships: [{ userId: "someone-else" }] },
+];
+
 function clockifyStub() {
   return async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -88,17 +94,16 @@ function clockifyStub() {
       writes += 1;
       return jsonResponse({ id: "new-entry" });
     }
-    if (path.endsWith("/projects")) {
-      return jsonResponse([
-        { id: OPEN_PROJECT, name: "Open project", archived: false, public: true, memberships: [] },
-        { id: JOINED_PROJECT, name: "Joined project", archived: false, public: false, memberships: [{ userId: MEMBER_ID }] },
-        { id: PRIVATE_PROJECT, name: "Secret rebrand", archived: false, public: false, memberships: [{ userId: "someone-else" }] },
-      ]);
-    }
+    if (path.endsWith("/projects")) return jsonResponse(PROJECTS);
     if (path.endsWith("/tasks")) return jsonResponse([{ id: "task-1", name: "Task", status: "ACTIVE" }]);
+    // After `/tasks`: a task list lives at `/projects/{id}/tasks`. The single read serves the same
+    // rows the list does — the access rule reads `public`/`memberships` either way, so a stub that
+    // answered them differently would be testing itself rather than the route.
     if (path.includes("/projects/")) {
       const id = path.split("/projects/")[1]?.split("/")[0] ?? "";
-      return jsonResponse({ id, name: `Project ${id}`, archived: false, public: false, memberships: [] });
+      const project = PROJECTS.find((candidate) => candidate.id === id);
+      if (!project) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
+      return jsonResponse(project);
     }
     if (path.endsWith("/tags")) return jsonResponse([]);
     if (path.includes("/custom-fields")) return jsonResponse([]);
@@ -197,6 +202,31 @@ describe("the project picker shows a member only what they may target", () => {
   });
 });
 
+describe("a rejected add-on token still reaches the reinstall notice", () => {
+  it("marks the installation broken when the access read is refused, not a bare 500", async () => {
+    // The access check used to run through the same paginated walk the picker uses, inside the
+    // handler's own try/catch. Moving it to a single read must not move it out of that catch:
+    // a 401/4017 has to keep mapping to `broken_at` and the reinstall message (docs/03 §6, IT-08).
+    vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const path = new URL(url).pathname;
+      if ((init?.method ?? "GET").toUpperCase() !== "GET") { writes += 1; return jsonResponse({ id: "new-entry" }); }
+      if (path.includes(`/projects/${JOINED_PROJECT}`)) {
+        return jsonResponse({ message: "Add-on token is invalid", code: 4017 }, 401);
+      }
+      return clockifyStub()(input, init);
+    });
+
+    const response = await preflight("member", { projectId: JOINED_PROJECT });
+    expect(response.status).toBe(503);
+    expect((response.body as { error: string }).error).toContain("Reinstall the addon");
+    expect(
+      server.db.prepare("SELECT broken_at FROM installations WHERE workspace_id = ?").get(WORKSPACE_ID),
+    ).not.toEqual({ broken_at: null });
+    expect(writes).toBe(0);
+  });
+});
+
 describe("a member cannot re-target a recreation into a project they cannot open", () => {
   it("refuses the choice before a plan exists, and sends no write", async () => {
     const response = await preflight("member", { projectId: PRIVATE_PROJECT });
@@ -216,6 +246,22 @@ describe("a member cannot re-target a recreation into a project they cannot open
 
   it("allows an admin to re-target anywhere in the workspace", async () => {
     expect((await preflight("admin", { projectId: PRIVATE_PROJECT })).status).toBe(200);
+  });
+
+  it("does not treat a task-only choice as a re-target", async () => {
+    // `resolveEffectiveIds` resolves a bare taskId inside the *source* project, so a task choice
+    // can never reach another project's task — and the source project is never membership-checked
+    // (docs/09). Including taskId in the trigger rejected a member picking a task on their own entry.
+    expect((await preflight("member", { taskId: "task-1" })).status).toBe(200);
+  });
+
+  it("does not reject a project-less entry for choosing a task", async () => {
+    // The old fallback target for a task-only choice was the source project, which is null here —
+    // and a null target failed the accessible-set test, so every project-less entry got 403.
+    server.db
+      .prepare("UPDATE recoverable_entries SET source_json = json_set(source_json, '$.projectId', null) WHERE id = ?")
+      .run(entryId);
+    expect((await preflight("member", { taskId: "task-1" })).status).toBe(200);
   });
 
   it("leaves the entry's own original project reachable without a membership check", async () => {

@@ -258,7 +258,7 @@ async function mountShell(server: AppServer, token: string): Promise<void> {
   const response = await server.addon.handle(createTestComponentRequest(token, { path: "/component" }));
   expect(response.status).toBe(200);
   const html = String(response.body);
-  const inner = /<html>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
+  const inner = /<html[^>]*>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
   document.documentElement.innerHTML = inner
     .replace(/<script[^>]*><\/script>/, "")
     .replace(/<link[^>]*rel="stylesheet"[^>]*>/, "");
@@ -444,7 +444,7 @@ describe("component E2E: member dismissal", () => {
     expect(showDismissed).toBeDefined();
     showDismissed!.checked = true;
     showDismissed!.dispatchEvent(new Event("change"));
-    await waitFor(() => text().includes("Status: Dismissed"));
+    await waitFor(() => text().includes("Dismissed"));
 
     const title = document.querySelector("button.rt-title") as HTMLButtonElement | null;
     expect(title).not.toBeNull();

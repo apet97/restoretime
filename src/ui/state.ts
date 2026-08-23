@@ -25,6 +25,10 @@ export interface UiSessionState {
     search: string;
     dismissed: boolean;
     bulkMode: boolean;
+    /** Whether the admin filter panel is expanded. Session state, not derived per render: the bar
+     * is rebuilt on every list load, so deriving it would snap the panel shut the moment a filter
+     * was applied. */
+    filtersOpen: boolean;
   };
   readonly selectedEntryIds: Set<string>;
   bulkReviewRows: readonly BulkPreflightRow[] | null;
@@ -32,7 +36,7 @@ export interface UiSessionState {
 
 export function createUiSessionState(): UiSessionState {
   return {
-    list: { userName: "", projectName: "", from: "", to: "", status: "", search: "", dismissed: false, bulkMode: false },
+    list: { userName: "", projectName: "", from: "", to: "", status: "", search: "", dismissed: false, bulkMode: false, filtersOpen: false },
     selectedEntryIds: new Set(),
     bulkReviewRows: null,
   };

@@ -13,15 +13,28 @@ Result uncertain · Failed · Dismissed. Never: restore, undelete, original entr
 
 Title: **Deleted time entries**. Shows only the viewer's own entries.
 
-Row content:
+Rows are grouped under the day they were detected. The server already orders by `detected_at DESC`,
+so each day's rows are contiguous and the heading is free — it also carries the word "Detected",
+which every row used to repeat.
 
 ```text
-Fri 7 Aug 2026 · 09:00–11:30 (2h 30m)
-Customer Support — API investigation
-Tags: support, api          Detected: 7 Aug 2026, 15:42
-Status: Ready to recreate
-[Recreate]
+DETECTED 7 AUG 2026
+──────────────────────────────────────────────────────────
+API investigation                        [Ready to recreate]
+7 Aug 2026 · 09:00–11:30 (2h 30m) · (Customer Support) · (support) · (api)   [Recreate]
 ```
+
+- **The description leads.** It is what a person recognises an entry by. The timestamp held this
+  position first, which put chrome above identity on every row, and made two entries in the same
+  project indistinguishable when the description was dropped for "Project — Task".
+- **One metadata line, separated rather than labelled.** `Tags:` and `Status:` cost more attention
+  than the values they introduce. Project and tag names render as chips — they are named things,
+  not prose.
+- **`Recreate` is a secondary control.** Filled weight marks the single dominant action on a
+  screen; fifty filled buttons down a list mark nothing. The dominant action lives on the detail
+  view, where there is exactly one.
+- The row title is the only link into the detail view, at body colour. Two blue controls per row
+  going to the same place made neither read as the way in.
 
 - Status text comes from the latest preflight summary or lifecycle state: `Ready to recreate`,
   `Needs your input`, `Blocked`, `Recreating…`, `Result uncertain`, `Failed`, `Recreated`.
@@ -32,14 +45,23 @@ Status: Ready to recreate
 - The list is paged server-side, 50 rows at a time. Every returned row costs a preflight with its
   own Clockify lookups, so an unbounded list scales API traffic with the backlog.
 - When more rows exist, the list says how many are shown and offers **Load more**, which appends
-  the next page and keeps the rows already on screen. Narrowing the filters is a way to search, not
+  the next page into the existing list and keeps the rows already on screen — including keyboard
+  focus, which stays on the button. Re-rendering the view instead would move focus to the page
+  heading and throw a keyboard user back to the top of a list they had already scrolled through.
+  On the last page the button is removed and focus moves to the count, which then reads
+  "All N entries shown."; a page that continues the open day joins that group rather than
+  repeating its heading. Narrowing the filters is a way to search, not
   a way to paginate: every matching row has to be reachable without one. Changing a filter starts a
   fresh sequence, because the continuation token names a position in one ordered result set.
 - Bulk selection survives Load more — it is keyed by row id, and the appended page only adds rows.
 
 ## 2. List view (admin additions)
 
-Admin filters above the list: user, project, date range, status, and free-text search. Bulk mode:
+Admin filters sit above the list in a **collapsed disclosure** labelled "Filters", with a count of
+how many are set — an unset filter bar is the common case, and an always-open filled panel
+outweighed the rows it filters. It opens automatically whenever any filter is set, so an active
+filter can never be hidden, and its open state survives applying one. The filters themselves are:
+user, project, date range, status, and free-text search. Bulk mode:
 row checkboxes, a counter, and one **Review selected** action. Nothing else. No dashboards, no
 charts. The common "Show dismissed" control from §1 remains available.
 

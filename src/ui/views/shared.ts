@@ -254,9 +254,12 @@ export function bindBusyAction<T>(options: BusyActionOptions<T>): void {
  * plan-specific warnings each in "what changed — why — what the new entry will contain" form. Both
  * come straight from `plan.warnings` (server-computed); this only lays them out. */
 export function renderDifferences(plan: RecreationPlan): HTMLElement {
+  // Compact, not collapsed: docs/10's "always lists the system differences" is a truthfulness
+  // requirement, so this stays visible on every plan. It is the same four sentences every time
+  // though, so it reads as a footnote rather than competing with the comparison above it.
   const systemDiffs = el(
     "div",
-    {},
+    { class: "rt-system-diffs" },
     el("p", {}, "The new entry always differs from the deleted entry:"),
     el(
       "ul",

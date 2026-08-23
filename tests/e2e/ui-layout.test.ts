@@ -89,11 +89,11 @@ async function productionListMarkup(): Promise<string> {
     clockifyUnavailable: false,
     disabled: false,
     broken: false,
-      nextCursor: null,
+    nextCursor: null,
   };
   (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(response);
   renderList(ctx);
-  await vi.waitFor(() => expect(ctx.root.querySelector(".rt-entry-value")).not.toBeNull());
+  await vi.waitFor(() => expect(ctx.root.querySelector(".rt-chip")).not.toBeNull());
   const markup = ctx.root.innerHTML;
   ctx.root.remove();
   return markup;

@@ -49,6 +49,40 @@ On 2026-08-17, developer deployment `6f7ad68d-5cc6-48e9-bc39-4874c8ba7d32` repla
 candidate. The RC.14 receipt above stays bound to its own commit, deployment, and instance; the
 strict handoff in the candidate pipeline must target the currently selected deployment.
 
+On 2026-08-23, developer deployment `9f425551-2535-4685-b4f9-9a7a2e778f91` replaced
+`6f7ad68d-5cc6-48e9-bc39-4874c8ba7d32`. It runs commit
+`538440823296786ee7296ea394e536ffb3e4db69` (pull request 42, installation-generation boundary) with
+`RESTORETIME_CANDIDATE_ID` set to that commit, deployed with `railway up` from a clean checkout of
+it. This is an evaluation deployment, not a release candidate.
+
+Verified on that deployment, against the developer workspace `69bda6b317a0c5babe34b4ff`:
+
+- Migrations 0004 and 0005 applied to the live volume. `user_version` 5, 158 rows preserved across
+  two workspaces, every row owned by an existing installation, `integrity_check` `ok`,
+  `foreign_key_check` empty — matching the drill run beforehand on a copy of the same database.
+- `/healthz`, `/manifest`, `/icon.svg`, `/static/app.js`, `/static/app.css` served; `/component`
+  and `/api/entries` answer 401 unauthenticated.
+- List traversal: 4 pages, 153 rows, 153 unique ids, no repeats. Load more in the component walked
+  50 → 100 → 150 → 153 and then withdrew. A malformed cursor and a `limit` above the cap were each
+  answered 400.
+- Component reload with cache bypass produced zero console errors, zero CSP violations, and no
+  failed subresource loads.
+- Capture and recreation: a deleted entry was captured under the current generation and recreated
+  through the component into a genuinely new Clockify entry with the same values — exactly one
+  match, a different id from the original.
+- Uninstall purged that installation's 156 rows and left the *other* workspace's installation and
+  4 rows untouched, recording the generation as retired.
+- **Reinstall issued a fresh `addonId`** (`6a8a5582…`, distinct from the retired `6a7fd73e…`),
+  confirming the assumption the ownership model rests on. The new generation started empty and
+  captured its own deletion under its own id.
+- Probe entries and rows removed afterwards; an orphaned `restoretime.sqlite` from a superseded
+  `DATABASE_PATH` was deleted from the volume.
+
+Railway backup, point-in-time recovery, and isolated restore remain **unproven**, `main` and
+release tags are **unprotected**, and the release-candidate gates beyond ordinary CI are **not
+enforced** by the merge path. This deployment therefore carries no production or Marketplace
+readiness claim.
+
 ## CI gates (every PR)
 
 1. `npm ci`

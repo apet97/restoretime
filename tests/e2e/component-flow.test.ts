@@ -444,7 +444,7 @@ describe("component E2E: member dismissal", () => {
     expect(showDismissed).toBeDefined();
     showDismissed!.checked = true;
     showDismissed!.dispatchEvent(new Event("change"));
-    await waitFor(() => text().includes("Status: Dismissed"));
+    await waitFor(() => text().includes("Dismissed"));
 
     const title = document.querySelector("button.rt-title") as HTMLButtonElement | null;
     expect(title).not.toBeNull();

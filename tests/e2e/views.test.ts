@@ -1269,11 +1269,11 @@ describe("running-entry widget (docs/10 §4)", () => {
 });
 
 describe("list continuation", () => {
-  function listRow(id: string) {
+  function listRow(id: string, detectedAt = "2026-08-07T12:00:00Z") {
     return {
       id,
       lifecycleState: "IDLE" as const,
-      detectedAt: "2026-08-07T12:00:00Z",
+      detectedAt,
       source: { ...source(), description: `entry ${id}` },
       preflightSummary: { blockerCount: 0, actionRequiredCount: 0 },
     };
@@ -1357,5 +1357,102 @@ describe("list continuation", () => {
     await vi.waitFor(() => expect(queries).toHaveLength(2));
     expect(queries[1]?.cursor).toBeUndefined();
     expect(queries[1]?.search).toBe("invoice");
+  });
+});
+
+describe("list continuation keeps the reader's place", () => {
+  function row(id: string, detectedAt: string) {
+    return {
+      id,
+      lifecycleState: "IDLE" as const,
+      detectedAt,
+      source: { ...source(), description: `entry ${id}` },
+      preflightSummary: { blockerCount: 0, actionRequiredCount: 0 },
+    };
+  }
+
+  function page(entries: ReturnType<typeof row>[], nextCursor: string | null) {
+    return { entries, disabled: false, broken: false, clockifyUnavailable: false, nextCursor };
+  }
+
+  function loadMore(ctx: ReturnType<typeof stubCtx>): HTMLButtonElement | undefined {
+    return Array.from(ctx.root.querySelectorAll("button")).find((b) => b.textContent === "Load more") as HTMLButtonElement | undefined;
+  }
+
+  it("leaves focus on Load more instead of throwing it back to the page heading", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) =>
+      path !== "/api/entries"
+        ? Promise.resolve({ items: [] })
+        : Promise.resolve(
+            query?.cursor === undefined
+              ? page([row("re-1", "2026-08-07T12:00:00Z")], "cursor-2")
+              : page([row("re-2", "2026-08-07T09:00:00Z")], "cursor-3"),
+          ),
+    );
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(loadMore(ctx)).toBeDefined());
+    const button = loadMore(ctx);
+    button?.focus();
+    button?.click();
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-2"));
+    // Re-rendering the view would move focus to the <h2> and bounce a keyboard user to the top of
+    // a list they had already scrolled through. The button is the same node it was before.
+    expect(document.activeElement).toBe(button);
+    expect(ctx.announce).toHaveBeenCalledWith("1 more entry loaded. Showing 2 entries.");
+  });
+
+  it("moves focus to the count when the last page removes the button", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) =>
+      path !== "/api/entries"
+        ? Promise.resolve({ items: [] })
+        : Promise.resolve(
+            query?.cursor === undefined
+              ? page([row("re-1", "2026-08-07T12:00:00Z")], "cursor-2")
+              : page([row("re-2", "2026-08-07T09:00:00Z")], null),
+          ),
+    );
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(loadMore(ctx)).toBeDefined());
+    loadMore(ctx)?.focus();
+    loadMore(ctx)?.click();
+
+    // Waiting on the button to disappear would race the busy label: `bindBusyAction` renames it
+    // to "Loading more…" while the request is in flight, so it is briefly not found either way.
+    const note = ctx.root.querySelector(".rt-list-note");
+    await vi.waitFor(() => expect(note?.textContent).toBe("All 2 entries shown."));
+    expect(loadMore(ctx)).toBeUndefined();
+    // Removing the focused button would drop focus to the body; the count takes it instead.
+    expect(document.activeElement).toBe(note);
+  });
+
+  it("continues the open day group instead of repeating its heading", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) =>
+      path !== "/api/entries"
+        ? Promise.resolve({ items: [] })
+        : Promise.resolve(
+            query?.cursor === undefined
+              ? page([row("re-1", "2026-08-07T12:00:00Z")], "cursor-2")
+              // Page 2 opens on the same day page 1 ended on, then crosses into an earlier one.
+              : page([row("re-2", "2026-08-07T09:00:00Z"), row("re-3", "2026-08-06T09:00:00Z")], null),
+          ),
+    );
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(loadMore(ctx)).toBeDefined());
+    expect(ctx.root.querySelectorAll(".rt-group")).toHaveLength(1);
+    loadMore(ctx)?.click();
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-3"));
+    const headings = Array.from(ctx.root.querySelectorAll(".rt-group")).map((n) => n.textContent);
+    expect(headings).toHaveLength(2);
+    expect(new Set(headings).size).toBe(2);
+    // The row that shares page 1's day joined that group rather than opening a duplicate.
+    expect(ctx.root.querySelectorAll(".rt-group-rows")[0]?.children).toHaveLength(2);
   });
 });

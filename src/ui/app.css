@@ -98,25 +98,27 @@ body {
   margin-inline: auto;
 }
 
-/* Product brand: one quiet line that separates the chrome from the screen content. */
+/* Product brand: one quiet line that separates the chrome from the screen content. It used to be
+ * 17px/650 against a 20px/650 view heading — two near-equal titles stacked, which read as an
+ * oversight. It is a label now, and the view heading owns the top of the screen. */
 .rt-shell-header {
-  border-bottom: 1px solid var(--rt-border);
-  margin-bottom: 16px;
-  padding-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .rt-shell-header h1 {
   margin: 0;
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rt-muted);
 }
 
 h2 {
-  margin: 0 0 10px;
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+  font-size: 21px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
 }
 
 /* One short purpose statement under the list heading — what this screen is for, nothing more. */
@@ -196,6 +198,56 @@ p {
 }
 
 /* Filters ------------------------------------------------------------------------------------ */
+
+/* The panel is a disclosure. Collapsed it is one line; open it drops the filled-card treatment the
+ * rows use, so the control surface never outweighs the data it filters. */
+.rt-filters {
+  margin: 0 0 12px;
+}
+
+.rt-filters-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rt-muted);
+  list-style: none;
+  width: fit-content;
+}
+
+.rt-filters-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The marker is drawn rather than inherited so it can rotate and match the text colour. */
+.rt-filters-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border: 4px solid transparent;
+  border-left-color: currentColor;
+  transition: transform 0.15s ease;
+}
+
+.rt-filters[open] > .rt-filters-summary::before {
+  transform: rotate(90deg) translateX(-1px);
+}
+
+.rt-filters-summary:hover {
+  color: var(--rt-text);
+}
+
+.rt-filters > section[aria-label="Filters"] {
+  border: 0;
+  border-left: 2px solid var(--rt-border);
+  border-radius: 0;
+  background: none;
+  margin: 6px 0 0;
+  padding: 4px 0 4px 14px;
+}
 
 section[aria-label="Filters"],
 fieldset {
@@ -381,6 +433,38 @@ button[disabled] {
   border-color: var(--rt-muted);
 }
 
+/* The one action a row offers. Deliberately not `.rt-primary`: filled weight marks the single
+ * dominant action on a screen, and fifty filled buttons down a list mark nothing. */
+.rt-recreate {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--rt-accent);
+  border-color: var(--rt-border);
+}
+
+.rt-recreate:hover:not([disabled]) {
+  border-color: var(--rt-accent);
+  background: var(--rt-hover-bg);
+}
+
+/* Continuation: the count and the control sit together, so "how much is shown" and "show more"
+ * are one thing to look at rather than two stacked lines. */
+.rt-list-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+}
+
+.rt-list-more > .rt-list-note {
+  margin: 0;
+  margin-right: auto;
+}
+
 button + button {
   margin-left: 8px;
 }
@@ -403,24 +487,28 @@ ul {
   padding: 0;
 }
 
-/* Scoped to the top-level entry/result list. Nested lists (the Differences bullets, a blocker
- * list) are prose, and styling every <li> as a card turned four sentences into four cards. */
-#app > ul > li {
+/* Scoped to the top-level entry/result list and to grouped rows. Nested lists (the Differences
+ * bullets, a blocker list) are prose, and styling every <li> as a card turned four sentences into
+ * four cards. */
+#app > ul > li,
+.rt-group-rows > li {
   border: 1px solid var(--rt-border);
   border-radius: 8px;
-  padding: 10px 14px;
-  margin-bottom: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
   background: var(--rt-surface);
   list-style: none;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-#app > ul > li.rt-entry:hover:not(.rt-entry--selected) {
+#app > ul > li.rt-entry:hover:not(.rt-entry--selected),
+.rt-group-rows > li.rt-entry:hover:not(.rt-entry--selected) {
   background: var(--rt-hover-bg);
 }
 
 #app > ul > li.rt-entry--selected,
-#app > ul > li.rt-review-row--selected {
+#app > ul > li.rt-review-row--selected,
+.rt-group-rows > li.rt-entry--selected {
   border-color: var(--rt-accent);
   background: var(--rt-notice-info-bg);
 }
@@ -467,22 +555,106 @@ section ul {
   margin-top: 8px;
 }
 
-/* The row header is a button carrying the date range (docs/10 §1) — it reads as a title, not a
+/* Day groups ---------------------------------------------------------------------------------- */
+
+/* Rows arrive ordered by detection time, so a heading per day costs nothing and gives a long list
+ * the rhythm a flat run of a hundred cards has none of. It also carries the word "Detected", which
+ * every row used to repeat. Sticky so the day stays answerable while scrolling inside it. */
+.rt-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 8px;
+  padding: 4px 0;
+  background: var(--rt-bg);
+  color: var(--rt-muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The gap between groups is the previous group's trailing space, not a first-child exception:
+ * positional selectors are what once styled a row header as a primary button (see `.rt-primary`). */
+.rt-group-rows {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+}
+
+/* A group under an open bulk bar has two sticky layers; the bar owns the top edge. */
+.rt-bulk-bar ~ .rt-list .rt-group {
+  top: 44px;
+}
+
+/* Chips ----------------------------------------------------------------------------------------
+ * Project and tag names are values, not sentences. A chip says "this is one named thing" without
+ * the "Tags:" label the row used to spend a line on. */
+.rt-chip {
+  display: inline-block;
+  max-width: 100%;
+  border: 1px solid var(--rt-border);
+  border-radius: 5px;
+  padding: 0 6px;
+  background: var(--rt-bg);
+  color: var(--rt-muted);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.rt-chip--count {
+  border-color: var(--rt-accent);
+  background: var(--rt-pill-progress-bg);
+  color: var(--rt-accent);
+  font-weight: 650;
+}
+
+/* The row header is a button carrying the description (docs/10 §1) — it reads as a title, not a
  * control, so it drops the button chrome and keeps only the affordance. */
 .rt-title {
   background: none;
   border: none;
   min-height: 0;
   padding: 0;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--rt-accent);
+  /* Body colour, not accent: the row already has one blue control in `Recreate`, and two competing
+   * blues for the same destination made neither read as the primary way in. */
+  color: var(--rt-text);
   text-align: left;
 }
 
 .rt-title:hover {
+  color: var(--rt-accent);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* Title and status share a line, with the status held to the right edge so a column of pills is
+ * scannable down the list rather than floating after descriptions of different lengths. */
+.rt-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+/* Both children may shrink; without this the button's implicit `min-width: auto` lets a long
+ * description set the row's width and push the frame into horizontal scroll. */
+.rt-entry-head > .rt-title {
+  flex: 1 1 12ch;
+  min-width: 0;
+}
+
+.rt-entry-head > .rt-status-pill {
+  flex: 0 0 auto;
+}
+
+/* The entry's own date and time. Tabular figures keep the times aligned between rows. */
+.rt-when {
+  font-variant-numeric: tabular-nums;
 }
 
 li > div {
@@ -515,10 +687,26 @@ li > div {
   gap: 3px;
 }
 
-/* The row's one action keeps the same corner on every actionable row. */
+/* The row's one action keeps the same corner on every actionable row — and reserves that width on
+ * rows that have no action, so the status pills beside it stay in one column down the list. */
 .rt-entry-side {
   flex: 0 0 auto;
   margin-left: auto;
+  min-width: 92px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* An entry deleted without a description still needs a title; saying so quietly is honest, and
+ * distinguishes it from an entry actually named "(no description)". */
+.rt-title--empty {
+  color: var(--rt-muted);
+  font-weight: 500;
+  font-style: italic;
+}
+
+.rt-title--empty:hover {
+  color: var(--rt-accent);
 }
 
 .rt-metadata {
@@ -562,7 +750,8 @@ li > div {
 }
 
 .rt-metadata > span,
-.rt-desc,
+.rt-title,
+.rt-when,
 .rt-entry-value,
 .rt-notice,
 .rt-card,
@@ -602,12 +791,6 @@ li > div {
 
 .rt-deleted-facts dd {
   margin: 0;
-}
-
-/* The description line carries the entry's identity — keep it at body colour, not muted. */
-.rt-desc {
-  color: var(--rt-text);
-  font-size: 14px;
 }
 
 /* The empty list and the truncation note are information, not actions — quiet, centred, and
@@ -687,6 +870,25 @@ tbody th {
   background: var(--rt-pill-warning-bg);
   box-shadow: inset 3px 0 0 var(--rt-warn);
   font-weight: 600;
+}
+
+/* The fixed four-sentence disclaimer under every plan. Always present (docs/10 §3), but sized as
+ * the reference text it is — at body weight it outweighed the comparison it annotates. */
+.rt-system-diffs {
+  color: var(--rt-muted);
+  font-size: 13px;
+}
+
+.rt-system-diffs > p {
+  margin: 0 0 4px;
+}
+
+.rt-system-diffs ul {
+  margin: 0 0 0 18px;
+}
+
+.rt-system-diffs li + li {
+  margin-top: 2px;
 }
 
 /* Notices ------------------------------------------------------------------------------------ */

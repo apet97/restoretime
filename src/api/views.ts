@@ -33,8 +33,11 @@ export function componentShellHtml(
   const safeTheme = escapeHtml(claims.theme ?? "");
   const safeLanguage = escapeHtml(claims.language ?? "");
   const safeRole = escapeHtml(claims.workspaceRole ?? "");
+  // `lang` is served, not only applied after boot by `applyClockifyLanguage`: assistive technology
+  // and the browser's own text handling read it before any script runs. "en" is the fallback when
+  // the claim carries no language, which is what `normalizeLocale` also defaults to.
   return `<!doctype html>
-<html>
+<html lang="${safeLanguage || "en"}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Time Entry Recovery</title><link rel="stylesheet" href="${safeStylePath}"></head>
 <body data-parent-origin="${safeOrigin}" data-theme="${safeTheme}" data-language="${safeLanguage}" data-role="${safeRole}">
 <header class="rt-shell-header"><h1>RestoreTime</h1></header>

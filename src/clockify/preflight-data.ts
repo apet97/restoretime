@@ -122,6 +122,40 @@ function isProjectGone(err: unknown): boolean {
   return err.statusCode === 400 && clockifyErrorCode(err) === "501";
 }
 
+/** Whether one named project may be used as a recreation target by one viewer.
+ *
+ * `gone` is a separate answer from `inaccessible` so a caller can report a project that does not
+ * exist and one the viewer cannot see identically, without confusing either with a transport
+ * failure. Clockify reports a deleted project as `400` body code `501` rather than `404`
+ * ({@link isProjectGone}), which is why this lives beside that mapping instead of at the route.
+ */
+export type ProjectAccess = "accessible" | "inaccessible" | "gone";
+
+/**
+ * Resolves {@link ProjectAccess} for a single project with one request.
+ *
+ * The route-level alternative — listing every project and testing membership of the result — costs
+ * a full `collectPaged` walk (up to ten requests) to answer a question about one id, and the
+ * resolution widgets ask it on every project pick. A single project read carries the same `public`
+ * and `memberships` fields the list does (probed on the developer environment 2026-08-23).
+ */
+export async function fetchProjectAccess(
+  client: ClockifyClient,
+  workspaceId: string,
+  projectId: string,
+  viewerUserId: string,
+): Promise<ProjectAccess> {
+  let project;
+  try {
+    project = await client.projects.get({ workspaceId, projectId });
+  } catch (err) {
+    if (isProjectGone(err)) return "gone";
+    throw err;
+  }
+  const member = project.memberships?.some((membership) => membership.userId === viewerUserId);
+  return project.public || member ? "accessible" : "inaccessible";
+}
+
 /**
  * Per-request memoization for the two per-row lookups (project, task) — PASS-04 performance fix.
  * `GET /api/entries` calls `fetchEntryWorkspaceState` once per listed row, concurrently, via

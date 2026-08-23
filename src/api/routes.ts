@@ -29,7 +29,7 @@ import * as entries from "../store/entries.js";
 import * as plans from "../store/plans.js";
 import * as attempts from "../store/attempts.js";
 import { buildClockifyClient } from "../clockify/client.js";
-import { fetchWorkspaceState, fetchSharedWorkspaceData, fetchEntryWorkspaceState, collectPaged, createProjectTaskCache, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
+import { fetchWorkspaceState, fetchSharedWorkspaceData, fetchEntryWorkspaceState, fetchProjectAccess, collectPaged, createProjectTaskCache, PreflightTruncatedError, type SharedWorkspaceData } from "../clockify/preflight-data.js";
 import {
   attemptRecreation,
   runReconcile,
@@ -273,42 +273,6 @@ function preflightSummary(fidelity: ReturnType<typeof classifyFidelity>, blocker
 function emitPreflightMetrics(logger: Logger, result: { readonly blockers: readonly unknown[]; readonly actionRequired: readonly unknown[] }): void {
   if (result.blockers.length > 0) emitMetric(logger, "preflight_blockers", { count: result.blockers.length });
   if (result.actionRequired.length > 0) emitMetric(logger, "preflight_action_required", { count: result.actionRequired.length });
-}
-
-// --- Viewer project access (docs/09) -----------------------------------------------------
-
-/**
- * The projects this viewer may use as a recreation target.
- *
- * Every Clockify call this add-on makes carries the installation's add-on token, because the
- * platform issues no user-scoped credential: the `INSTALLED` payload's `authToken` is the only one
- * that exists (docs/09 "Credential authority"). That token can reach projects the viewer cannot,
- * so any project the *viewer chooses* has to be checked here — otherwise a normal member could
- * steer a privileged write into a private project, and read every private project's name out of
- * the picker.
- *
- * Accessibility is read from the project list the picker already fetches: Clockify returns
- * `public` and `memberships` on each row, and the `access` query filter is not honored by the API
- * (probed on the developer environment 2026-08-23 — it returns every project either way), so
- * filtering here rather than in the request is both correct and free.
- *
- * Deliberately not applied to a deleted entry's *original* project: recreating your own entry into
- * the project it was deleted from is what this product does, and Clockify already let that user
- * log time there. Only an explicit re-targeting choice is constrained.
- */
-async function viewerAccessibleProjectIds(
-  client: ReturnType<typeof buildClockifyClient>,
-  workspaceId: string,
-  viewer: Viewer,
-): Promise<ReadonlySet<string>> {
-  const projects = await collectPaged(client.projects.list.bind(client.projects), { workspaceId });
-  const accessible = new Set<string>();
-  for (const project of projects) {
-    if (project.public || project.memberships?.some((m) => m.userId === viewer.userId)) {
-      accessible.add(project.id);
-    }
-  }
-  return accessible;
 }
 
 const INACCESSIBLE_PROJECT_MESSAGE =
@@ -610,15 +574,20 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   try {
     // Before any plan exists: a non-admin may not re-target a recreation into a project they
     // cannot reach with their own Clockify permissions (docs/09 "Credential authority"). Admins
-    // already hold workspace-wide authority, so the extra read is skipped for them.
-    if (!isAdmin(viewer) && (choices.projectId != null || choices.taskId != null)) {
-      const accessible = await viewerAccessibleProjectIds(
+    // already hold workspace-wide authority, so the read is skipped for them.
+    //
+    // An explicitly chosen `projectId` only. A bare `taskId` is not a re-target: `resolveEffectiveIds`
+    // resolves it inside the *source* project, which docs/09 states is never membership-checked, so
+    // including it here rejected a member picking a task on their own entry — and rejected every
+    // project-less entry outright, because the fallback target was then `null`.
+    if (!isAdmin(viewer) && choices.projectId != null) {
+      const access = await fetchProjectAccess(
         clientResult.client,
         viewer.workspaceId,
-        viewer,
+        choices.projectId,
+        viewer.userId,
       );
-      const target = choices.projectId ?? entry.source.projectId;
-      if (target === null || target === undefined || !accessible.has(target)) {
+      if (access !== "accessible") {
         emitMetric(deps.logger, "authz_denied", { reason: "project-not-accessible" });
         return errorJson(403, INACCESSIBLE_PROJECT_MESSAGE);
       }
@@ -1493,6 +1462,11 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
       // This picker feeds `choices.projectId`, so it shows a non-admin exactly the projects that
       // choice may name — no more. Listing every project would disclose the names and ids of
       // private projects the viewer is not a member of (docs/09 "Credential authority").
+      //
+      // Filtered from the rows already fetched rather than re-read per project: Clockify returns
+      // `public` and `memberships` on each one, and the `access` query filter is not honored by the
+      // API (probed on the developer environment 2026-08-23 — it returns every project either way).
+      // Validating a *single* id goes through `fetchProjectAccess`, which costs one request.
       const visible = isAdmin(viewer)
         ? items
         : items.filter((p) => p.public || p.memberships?.some((m) => m.userId === viewer.userId));
@@ -1517,10 +1491,11 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
       const projectId = query.get("projectId");
       if (!projectId) return errorJson(400, "projectId is required for kind=tasks");
       // 404, not 403: to a viewer without access, a project they cannot see must not be
-      // distinguishable from one that does not exist (docs/09 "no existence leak").
+      // distinguishable from one that does not exist (docs/09 "no existence leak") — which is why
+      // `gone` and `inaccessible` share this answer.
       if (!isAdmin(viewer)) {
-        const accessible = await viewerAccessibleProjectIds(client, viewer.workspaceId, viewer);
-        if (!accessible.has(projectId)) {
+        const access = await fetchProjectAccess(client, viewer.workspaceId, projectId, viewer.userId);
+        if (access !== "accessible") {
           emitMetric(deps.logger, "authz_denied", { reason: "project-not-accessible" });
           return errorJson(404, "not found");
         }

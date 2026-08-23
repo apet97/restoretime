@@ -258,7 +258,7 @@ async function mountShell(server: AppServer, token: string): Promise<void> {
   const response = await server.addon.handle(createTestComponentRequest(token, { path: "/component" }));
   expect(response.status).toBe(200);
   const html = String(response.body);
-  const inner = /<html>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
+  const inner = /<html[^>]*>([\s\S]*)<\/html>/.exec(html)?.[1] ?? "";
   document.documentElement.innerHTML = inner
     .replace(/<script[^>]*><\/script>/, "")
     .replace(/<link[^>]*rel="stylesheet"[^>]*>/, "");

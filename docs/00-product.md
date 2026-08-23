@@ -37,12 +37,16 @@ A regular user can:
 
 An admin can also:
 
-- see recoverable deleted entries for the full workspace;
+- see recoverable deleted entries for the full workspace, as captured by the current
+  installation of the add-on;
 - filter by user, project, date, and status;
 - recreate eligible entries for other users;
 - use bulk recreation for multiple entries.
 
 All permission checks run on the server. The UI never decides what a user may see or do.
+
+Uninstalling the add-on deletes the copies it kept. A later reinstall starts a fresh history
+instead of reviving the old one (docs/08).
 
 ## What recreation preserves
 

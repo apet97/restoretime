@@ -12,7 +12,9 @@
 3. **Clockify boundary** — addon → Clockify REST. Installation `authToken` as `X-Addon-Token`
    (exactly one auth mode, R11). Token is server-side only, stored encrypted (SDK AES-256-GCM
    codec; key from `TOKEN_ENCRYPTION_KEY`).
-4. **Tenant boundary** — every query is scoped by the claims' `workspaceId`.
+4. **Tenant boundary** — every product-data query is scoped by the claims' `(workspaceId,
+   addonId)` pair. `workspaceId` alone identifies the tenant; the pair identifies the installation
+   generation that owns the row (docs/08, docs/09).
 
 ## Component token transport
 
@@ -61,7 +63,8 @@ access logs for the component route. Do not strip the query from browser history
   file also holds potentially sensitive entry descriptions, custom-field values, plans, and
   attempts. Deployments place it on encrypted disks. Backups copy the file and inherit its
   sensitivity (docs/14).
-- Uninstall: full workspace purge from the active database when the lifecycle call arrives (F17).
+- Uninstall: a purge of everything that installation generation owns, from the active database,
+  when the lifecycle call arrives (F17). Another generation of the same workspace is untouched.
   It does not rewrite existing backup files. Status INACTIVE keeps data because the add-on can be
   re-enabled.
 - Retention: the next preflight for an entry deletes its older unattempted STALE or CONSUMED

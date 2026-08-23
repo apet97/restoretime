@@ -22,7 +22,7 @@ Requirements are numbered for traceability. Tests reference these IDs (docs/13).
 | F14 | Record lineage: if a recreated entry is itself deleted and recreated, keep the chain A→B→C visible. | Domain model |
 | F15 | Bulk recreation for admins: select entries, preflight each, confirm once, execute independently. | docs/10 §7 |
 | F16 | Offer "recreate as running timer" only when the deleted entry was running, as an explicit choice. | W12 |
-| F17 | On uninstall, delete the workspace's data per the retention policy. | docs/12, docs/08 |
+| F17 | On uninstall, delete the data owned by that installation generation — `(workspace_id, addon_id)` — per the retention policy. Never delete by workspace alone. | docs/12, docs/08 |
 | F18 | Enforce platform restrictions deterministically: only `REGULAR` entries are recreated (P-TYPE); force-timer workspaces block regular users' completed recreations (P-TIMER); locked periods warn regular users (P-LOCK-REG). Admins bypass both restrictions on the user-scoped route (R16), so blocked regular users are told an admin can recreate the entry. | R16, R17, operator guide |
 | F19 | Preserve custom-field values through the create write path when the field still exists; resolve removed fields and invalid options explicitly. | R5, P-CF rules |
 

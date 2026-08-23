@@ -101,8 +101,9 @@ src/
    `UPDATE parent_recoverable_id`. Dedup and effect commit or roll back together, so a crash can
    never ack a delivery that was not persisted. A link is written only when the parent and child
    have the same owner (advisor-reviewed).
-2. Every `/api/*` route derives `workspaceId` and the viewer from the verified JWT only. Path and
-   body parameters never carry workspace or user identity.
+2. Every `/api/*` route derives `workspaceId`, `addonId`, and the viewer from the verified JWT
+   only, and scopes every product-data read and write by the `(workspace_id, addon_id)` pair. Path
+   and body parameters never carry workspace, installation, or user identity.
 3. Only the recreate path creates Clockify entries. Reconciliation only links existing Clockify
    IDs to rows. The webhook path never creates Clockify entries. There is exactly one mutation
    path (advisor-reviewed).

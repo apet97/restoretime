@@ -42,7 +42,7 @@ Evidence IDs: `docs/01-evidence-baseline.md`. Test IDs refer to docs/13.
 | Addon token rejected (401 code 4017) | Distinct auth error (R11); the body code arrives as the **number** `4017` | `clockifyErrorCode` normalizes to `"4017"`; mark installation broken; component shows reinstall notice | Notice view | IT-08, UT-M01 |
 | Clockify 4xx with no body `code` | Live: 404 unknown workspace returns `{message}` only (R15, FP-2) | Map on `statusCode` alone; never guess a code | Failure view with the status-only reason | UT-M01 |
 | Workspace larger than the page bound | `PaginatedList.collect()` returns `truncated: true` (docs/03 note 5) | Preflight fails with "workspace too large to verify; try again"; an AMBIGUOUS reconcile stays AMBIGUOUS and reports the bound | Failure view; "Check now" stays available | IT-14 |
-| Cross-workspace ID guessing | 404 on fake workspace (R15); rows scoped by claims workspace | 404, no existence leak | — | IT-09 |
+| Cross-workspace ID guessing | 404 on fake workspace (R15); rows scoped by the claims' `(workspaceId, addonId)` pair, so another installation generation's row is a 404 too | 404, no existence leak | — | IT-09 |
 | Webhook redelivery after dismissal | Genuine duplicates observed (W10) | DISMISSED row absorbs redelivery | Entry stays hidden | IT-10 |
 
 Cases intentionally not handled in v1 (recorded, not silently dropped):

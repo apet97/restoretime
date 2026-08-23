@@ -4,6 +4,12 @@ The product is done when every current-candidate statement is true and verified.
 below is historical unless the item names the exact current candidate. Worktree changes after
 `v1.0.0-rc.14` require new local gates, strict live receipts, and cleanup evidence.
 
+Two changes have shipped to `main` since `v1.0.0-rc.14` and neither is a release candidate: the
+installation-generation boundary (pull request 42) and the defect sweep and component design pass
+(pull request 43). Their contracts are checked in "Contracts" below and their developer-deployment
+evidence is in docs/15. The "Next-candidate gates" section still governs the next candidate; a
+merged pull request and an evaluation deployment do not satisfy it.
+
 PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
 uses `@apet97/clockify-addon-sdk` 1.3.0, `clockify-sdk-ts-115` 5.1.0, and `better-sqlite3` 13.0.3.
 Older local and live results remain useful history, but they are not proof for this dependency set.
@@ -48,9 +54,41 @@ evidence.
 - [x] Bounded list reads use SDK `PaginatedList.collect()` and surface `truncated: true` instead of
       returning a partial result (IT-14).
 - [x] Recreated-deleted-recreated chains show lineage (IT-06).
-- [x] Uninstall purges the workspace's data (IT-11) — and **proved live**: a real uninstall on the
-      developer workspace took `recoverable_entries` 132, `recreation_plans` 11,
-      `recreation_attempts` 4 and `installations` 1 all to zero (evidence "Live run 10").
+- [x] Uninstall purges the data owned by that installation generation, scoped by
+      `(workspace_id, addon_id)`, in one transaction; another generation of the same workspace and
+      another workspace are both untouched, and a repeated `DELETED` reports `stale` and changes
+      nothing (IT-11). **Proved live** under the earlier workspace-wide rule: a real uninstall on
+      the developer workspace took `recoverable_entries` 132, `recreation_plans` 11,
+      `recreation_attempts` 4 and `installations` 1 all to zero (evidence "Live run 10"). Proved
+      live again under the scoped rule on developer deployment `9f425551`: the uninstall purged
+      that installation's 156 rows and left the *other* workspace's installation and its 4 rows
+      in place (docs/15).
+- [x] `(workspace_id, addon_id)` is the ownership key for every product-data read and write
+      (migration 0004). A reinstall neither inherits the previous generation's entries nor is
+      blocked by them; installing supersedes the older generation; a delayed `DELETED` for a
+      superseded generation is acknowledged and leaves the current one intact; a viewer from one
+      generation gets 404 for another's row (IT-21). A delivery still being verified when the
+      uninstall commits is refused by a database-enforced generation fence rather than an
+      in-memory check (IT-22). **Proved live**: a reinstall issued a fresh `addonId`
+      (`6a8a5582…`, distinct from the retired `6a7fd73e…`), and the new generation started empty
+      and captured its own deletion under its own id (docs/15).
+- [x] A replayed `INSTALLED` for an already-retired generation is still installed but supersedes
+      nothing, so it cannot purge the current generation (IT-21, migration 0005). Lifecycle tokens
+      carry no `exp` — the SDK verifier defaults `requireExpiration: false` — so such an event can
+      arrive at any later time and always looks newest; `retired_installations` is what makes it
+      inert.
+- [x] The list is fully traversable: `GET /api/entries` pages by keyset over
+      `detected_at DESC, id DESC`, each row is reached exactly once, a row inserted between pages
+      never repeats an already-returned one, a malformed or unsupported-version cursor and an
+      out-of-range `limit` are answered 400 rather than clamped, and a cursor cannot reach another
+      installation generation's rows (IT-24). **Proved live**: 4 pages, 153 rows, 153 unique ids,
+      no repeats; **Load more** walked 50 → 100 → 150 → 153 and then withdrew (docs/15).
+- [x] **Load more** appends without losing the reader's place: the rows already shown stay, focus
+      remains on the button across a page, the announcement names the rows that arrived, and when
+      the last page removes the button focus moves to the count (E2E-UI-01, E2E-UI-02;
+      `tests/e2e/views.test.ts` "list continuation"). Verified red-first — restoring the full
+      re-render throws focus to the page heading. **Proved live** on deployment `fdce441f` with 60
+      seeded entries: 50 → 60 rows and focus on `All 60 entries shown.` (docs/15).
 
 ## Quality bars
 

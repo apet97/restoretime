@@ -16,13 +16,16 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned by commit SHA, not by a mutable tag: a tag can be
+      # repointed at any commit, which would silently change what runs in CI. Dependabot updates
+      # these; the trailing comment is the human-readable version.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # gitleaks needs history to diff against (docs/15 gate 6, "secret scan of the diff") —
           # a shallow checkout has nothing to diff.
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # .nvmrc selects the supported Node 22 major. Node 26 is not supported by
           # better-sqlite3@11, so local and CI must agree.
@@ -43,6 +46,6 @@ jobs:
       # docs/15 "Repository") — no `GITLEAKS_LICENSE` needed. It is required only for
       # organization-owned repos; if this repository is ever transferred to an organization, add
       # `GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}` to this step's `env`.
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

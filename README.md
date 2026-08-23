@@ -35,8 +35,11 @@ can recreate entries for other users.
 - One deleted entry produces at most one recreated entry. This is enforced by the database, not by
   the UI.
 - All permission checks run on the server.
-- When Clockify delivers the uninstall lifecycle call, RestoreTime hard-deletes the workspace data
-  it holds.
+- When Clockify delivers the uninstall lifecycle call, RestoreTime hard-deletes the data that
+  installation holds. Clockify issues a fresh add-on id per install, so a reinstall starts empty
+  and a delayed uninstall for an older installation cannot touch the current one's data.
+- A webhook still being verified when an uninstall lands writes nothing: the database, not an
+  in-memory check, enforces it.
 
 ## The component
 
@@ -50,6 +53,8 @@ framework, bundled once with esbuild.
   spinner and all transitions off.
 - **Keyboard-friendly filters.** Admins filter by user, project, date range, status, and
   description text. Enter in any filter field applies the filters.
+- **Every entry is reachable.** The list pages 50 rows at a time with a Load more continuation, so
+  a long backlog never hides its tail behind a filter.
 - **Accessible by contract.** Screen headings take focus and announce, action errors keep their
   context and always offer one safe next action, and the e2e suite enforces these behaviors.
 
@@ -143,15 +148,15 @@ Do not send an unsigned webhook request. Use the SDK-signed fixtures in
 
 ## Status
 
-The developer environment runs commit `6306c1c` (UI polish, merged 2026-08-17) for evaluation. It
-supersedes the RC.14 deployment instance and is not a release candidate.
+Verified on the sacrificial developer workspace. **Not** production- or Marketplace-ready: Railway
+backup, point-in-time recovery, and isolated restore are unproven, `main` and release tags are
+unprotected, and the release-candidate gates beyond ordinary CI are not enforced by the merge path.
+Those three are what a production claim would rest on, so this repository does not make one.
 
 The `v1.0.0-rc.14` developer prerelease points to
 `2d5e7fbf3507d520456d60f69f70e29e78d9edb9`. Its local, strict-live, deployment, and cleanup
-receipts apply only to that commit. Railway backup creation, backup locking, and isolated database
-recovery are **NOT PROVEN — explicitly waived for RC.14**. Production, Marketplace, stable-release,
-and disaster-recovery readiness remain unproven. The later documentation receipt commit is not the
-RC.14 application candidate. Any later application commit needs new candidate-bound proof.
+receipts apply only to that commit; later application commits need their own candidate-bound
+proof.
 
 ## Documentation map
 
@@ -163,7 +168,6 @@ RC.14 application candidate. Any later application commit needs new candidate-bo
 | `docs/05-architecture.md` | System design |
 | `docs/13-testing.md` | Local, developer, and release evidence boundaries |
 | `docs/07-recreation-preflight.md` | The core algorithm |
-| `implementation/ROADMAP.md` | Historical implementation pass sequence |
 | `evidence/` | Evidence index and validation |
 | `adr/` | Architecture decisions |
 

@@ -169,7 +169,7 @@ Notes:
 
 | Method | Exact path | Request | Response |
 |---|---|---|---|
-| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed` (validated; never widen workspace scope). `from` and `to` follow the list-bound rule below. `dismissed` is available to every viewer so an owner can undo a dismissal; non-admin results remain owner-scoped. The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, truncated, limit }` — rows sort by `detected_at DESC, id DESC`; `broken` is `broken_at` read back (§6: reinstall notice) |
+| GET | `/api/entries` | query: `userId`, `userName`, `projectId`, `projectName`, `from`, `to`, `status`, `search`, `dismissed`, `limit`, `cursor` (validated; never widen installation scope). `from` and `to` follow the list-bound rule below. `dismissed` is available to every viewer so an owner can undo a dismissal; non-admin results remain owner-scoped. The `*Name` pair is a substring match on the name **stored at deletion time**, never a Clockify lookup — docs/10 §2 states the three consequences. `status` and `dismissed` both select a `lifecycle_state`, so they are alternatives: sending both is answered as `dismissed` rather than as an empty list | `{ entries: EntrySummary[], clockifyUnavailable, disabled, broken, nextCursor }` — rows sort by `detected_at DESC, id DESC`; `broken` is `broken_at` read back (§6: reinstall notice) |
 | GET | `/api/entries/detail` | query: `id` (entry id) | full detail (source, state, latest plan, attempts, lineage) |
 | POST | `/api/entries/preflight` | body: `{ entryId, choices? }` | plan or `{ actionRequired: [...] }` or `{ blockers: [...] }` |
 | POST | `/api/entries/recreate` | body: `{ entryId, planId }` | attempt result (RECREATED/FAILED/AMBIGUOUS) |
@@ -187,11 +187,19 @@ Notes:
   not enable it.
 - A list bound is a strict UTC ISO timestamp with seconds or one to three fractional digits. An
   invalid, over-precise, or reversed list bound returns 400 before the row query.
-- `limit` is the maximum number of database rows in the list response. The current limit is 50.
-  `truncated: true` means older matching database rows exist beyond that limit. It is a list
-  paging signal, not a Clockify result.
+- `limit` caps the database rows in one list page. It defaults to 50 and 50 is also the maximum:
+  every returned row costs a preflight with its own Clockify lookups, so the cap bounds real API
+  traffic, not payload size. A non-integer, a zero, or a value above the cap is answered 400 rather
+  than silently clamped.
+- `nextCursor` is an opaque continuation token, or `null` on the last page. It is derived from an
+  actually-observed extra row, never inferred from a full page, and is sent back verbatim as
+  `cursor` to continue. It encodes only the last row's order keys (`detected_at`, `id`) and a
+  format version, and is unsigned on purpose: the installation, viewer, and filter clauses are
+  applied before the cursor predicate, so a forged cursor can only seek *within* a scope the caller
+  already has — it can never widen one. An unknown version or a malformed value returns 400.
+  Changing filters starts a fresh sequence; a cursor names a position in one ordered result set.
 - Clockify pagination truncation is different. It aborts preflight and options processing because
-  a partial Clockify result is unsafe. It is never returned as the list `truncated` flag.
+  a partial Clockify result is unsafe. It is never a list paging signal.
 - Bulk `ids` and `planIds` must each be unique, non-empty arrays with at most 50 items. Bulk
   recreation accepts only individually safe FULL plans. Adjusted and partial plans need individual
   review.

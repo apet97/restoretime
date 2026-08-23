@@ -18,7 +18,7 @@ decisions as constraints when you change it.
 7. `docs/05-architecture.md`, `docs/08-data-model.md`, `docs/09-permissions.md`.
 8. `docs/10-ui-specification.md` … `docs/17-decisions.md` as your change requires.
 9. `adr/` — the ten decisions. They are binding.
-10. `implementation/ROADMAP.md` and `implementation/passes/` only when you need the history of the
+10. `implementation/passes/` only when you need the history of the
     original implementation.
 
 ## Source SDKs (read-only)

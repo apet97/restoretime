@@ -1,8 +1,8 @@
 {
   "name": "restoretime",
-  "version": "0.1.0",
+  "version": "1.0.0-rc.15",
   "private": true,
-  "description": "RestoreTime — Clockify Marketplace add-on that recreates deleted time entries.",
+  "description": "RestoreTime \u2014 Clockify Marketplace add-on that recreates deleted time entries.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0 <23"

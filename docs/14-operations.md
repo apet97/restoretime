@@ -20,10 +20,15 @@ Proportional to a single-process addon. No observability platform.
 ## Metrics
 
 Counter/gauge log lines (`metric:` prefix) are enough at this scale; any scraper can parse them.
-Emit: `webhook_received`, `webhook_rejected`, `webhook_duplicate`, `recoverable_created`,
-`preflight_blockers`, `preflight_action_required`, `recreate_attempt`, `recreate_success`,
-`recreate_failed`, `recreate_ambiguous`, `ambiguous_adopted`, `ambiguous_not_created`,
-`authz_denied`.
+Emit: `webhook_received`, `webhook_rejected`, `webhook_duplicate`, `webhook_after_uninstall`,
+`recoverable_created`, `preflight_blockers`, `preflight_action_required`, `recreate_attempt`,
+`recreate_success`, `recreate_failed`, `recreate_ambiguous`, `ambiguous_adopted`,
+`ambiguous_not_created`, `authz_denied`.
+
+`webhook_after_uninstall` counts a verified delivery the generation fence refused because its
+installation was uninstalled while the delivery was being verified (docs/08). Nothing was written,
+so it must never be counted as `recoverable_created`. A steady non-zero rate means deliveries are
+arriving for an installation Clockify still believes exists.
 
 ## Error reporting
 

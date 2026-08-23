@@ -29,10 +29,13 @@ Status: Ready to recreate
 - Empty state: "No deleted time entries. When you delete a time entry in Clockify, it appears
   here."
 - A "Show dismissed" toggle lets the viewer find and undismiss an entry that they dismissed.
-- The list is bounded server-side (50 most recently detected). Every returned row costs a preflight
-  with its own Clockify lookups, so an unbounded list scales API traffic with the backlog. When rows
-  were withheld the list says so — "Showing the 50 most recently detected entries. Use the filters
-  above to find older ones." — rather than letting a full page read as "everything".
+- The list is paged server-side, 50 rows at a time. Every returned row costs a preflight with its
+  own Clockify lookups, so an unbounded list scales API traffic with the backlog.
+- When more rows exist, the list says how many are shown and offers **Load more**, which appends
+  the next page and keeps the rows already on screen. Narrowing the filters is a way to search, not
+  a way to paginate: every matching row has to be reachable without one. Changing a filter starts a
+  fresh sequence, because the continuation token names a position in one ordered result set.
+- Bulk selection survives Load more — it is keyed by row id, and the appended page only adds rows.
 
 ## 2. List view (admin additions)
 

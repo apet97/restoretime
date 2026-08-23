@@ -44,6 +44,7 @@ ACTIVE` leaves `broken_at` unchanged, because re-enable and reinstall have diffe
 |---|---|---|
 | `id` | TEXT PK | internal UUID |
 | `workspace_id` | TEXT NOT NULL | tenant boundary |
+| `addon_id` | TEXT NOT NULL | installation generation that captured this row; with `workspace_id` it is the ownership key every read and write scopes by (migration 0004) |
 | `source_entry_id` | TEXT NOT NULL | deleted Clockify entry id |
 | `owner_id` | TEXT NOT NULL | authorization + recreate target |
 | `detected_at` | TEXT NOT NULL | server receipt time (W14) |
@@ -58,9 +59,14 @@ ACTIVE` leaves `broken_at` unchanged, because re-enable and reinstall have diffe
 Constraints:
 
 - `UNIQUE(workspace_id, source_entry_id)` — duplicate webhook and duplicate-recovery guard (F2, F11).
+  Deliberately workspace-wide rather than per generation: a Clockify time entry can be deleted
+  exactly once, so the same `source_entry_id` cannot legitimately appear under two generations, and
+  the wider rule is a strictly stronger guard. A superseded generation's rows are purged on
+  install, so it never blocks a legitimate capture.
 - `CREATE UNIQUE INDEX ... ON recoverable_entries(workspace_id, new_entry_id) WHERE new_entry_id IS NOT NULL`
-  — double-adoption guard (advisor).
-- `INDEX(workspace_id, owner_id)`, `INDEX(workspace_id, detected_at)` — list queries.
+  — double-adoption guard (advisor). Workspace-wide for the same reason.
+- `INDEX(workspace_id, addon_id, owner_id)` — list queries.
+- `INDEX(workspace_id, addon_id, detected_at DESC, id DESC)` — the keyset list order (docs/03).
 
 ### `recreation_plans`
 
@@ -116,8 +122,32 @@ Constraints:
   deletes older STALE or CONSUMED plans for that deleted entry when they have no attempt. Plans
   linked to attempts remain for audit until uninstall. This bounded cleanup is part of preflight;
   there is no worker or sweeper (ADR-010).
-- Uninstall (`DELETED` lifecycle): hard-delete the installation row and all rows in the three
-  domain tables for the workspace, in one transaction. (F17)
+- Every `recoverable_entries` row carries `addon_id`: the installation generation that captured
+  it. Clockify issues a fresh `addonId` per install, so `(workspace_id, addon_id)` is one
+  installation lifetime while `workspace_id` alone is only the tenant. Plans and attempts inherit
+  the scope through their entry.
+- Uninstall (`DELETED` lifecycle): hard-delete the installation row and every domain-table row
+  **that installation owns**, in one transaction, scoped by `(workspace_id, addon_id)`. An event
+  naming a generation this app no longer holds is acknowledged as stale and purges only that
+  generation's leftovers. Never delete by workspace alone: a delayed event for a superseded
+  generation would otherwise erase the current one's recovery data. (F17)
+- Install (`INSTALLED` lifecycle): a new `addonId` for a workspace supersedes every older
+  generation there — Clockify allows one installation of an add-on per workspace at a time, so a
+  new identity proves the previous one was removed. Its rows are purged in the same transaction,
+  which is what stops a missed `DELETED` from retaining deleted-entry data indefinitely.
+- `retired_installations` records every generation this app has retired, by uninstall or by
+  supersede. Lifecycle tokens carry no expiry (the SDK's lifecycle verifier defaults
+  `requireExpiration` to false, because Clockify's lifecycle authToken has no `exp`), so a delayed
+  or replayed `INSTALLED` for a long-gone generation can arrive at any later time — and it always
+  looks newest, because `installed_at` is stamped at processing time and the payload carries no
+  timestamp of its own. Acting on such an event would purge the *current* generation's data: the
+  stale-`DELETED` defect arriving through the other lifecycle event. A retired generation is
+  therefore still installed when its event replays, but never supersedes anything. Only the
+  destructive half is skipped, so a workspace can never be left unable to install.
+- Webhook ingestion is fenced on the installation row: the insert is a single
+  `INSERT ... SELECT ... WHERE EXISTS (...)`, so a delivery whose verification began before an
+  uninstall and finished after it writes nothing. It is acknowledged (a retry cannot succeed) and
+  counted as `webhook_after_uninstall`, never as a created row.
   The purge is delivery-dependent: it only runs when Clockify's `DELETED` call reaches this
   process. A workspace uninstalled while the host is unreachable stays removed on Clockify's side
   and keeps its rows here, and nothing reconciles the two afterwards — observed live (evidence

@@ -114,7 +114,7 @@ describe("a gone project resolves to P-PROJ-GONE, not a transport failure", () =
 
   it("reports a project that still exists", async () => {
     const state = await fetchWorkspaceState(
-      client(() => jsonResponse({ id: PROJECT_ID, name: "Live Project", archived: false })),
+      client(() => jsonResponse({ id: PROJECT_ID, name: "Live Project", archived: false, public: true, memberships: [] })),
       WORKSPACE_ID,
       SOURCE,
       {},

@@ -13,9 +13,12 @@ import * as entries from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
 import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./workers/claim-worker.mjs", import.meta.url));
 const WORKSPACE_ID = "ws-1";
+const ADDON_ID = "addon-install-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const N_WORKERS = 8;
 
 const SOURCE: DeletedTimeEntry = {
@@ -53,7 +56,7 @@ interface WorkerResult {
 function runWorker(dbPath: string, entryId: string, claimToken: string, nowIso: string): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_PATH, {
-      workerData: { mode: "claim-idle", dbPath, entryId, workspaceId: WORKSPACE_ID, claimToken, nowIso },
+      workerData: { mode: "claim-idle", dbPath, entryId, scope: SCOPE, claimToken, nowIso },
     });
     worker.once("message", (msg: WorkerResult) => {
       resolve(msg);
@@ -78,9 +81,10 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
       // Main thread creates and migrates the file first (worker connections never race the schema
       // creation itself — only the row claim, which is the invariant under test).
       const db = openDatabase(dbPath);
-      const { entry } = entries.ingestDeletedEntry(db, {
+      seedInstallation(db, SCOPE);
+      const { entry } = ingestEntry(db, {
         id: "re-1",
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         sourceEntryId: "entry-a",
         ownerId: "user-1",
         detectedAt: "2026-08-08T09:00:00Z",
@@ -110,7 +114,8 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
       // some interleaved partial write) — the CAS actually serialized the race, it did not just
       // report "not claimed" while secretly corrupting the row.
       const verifyDb = openDatabase(dbPath);
-      const row = entries.getById(verifyDb, WORKSPACE_ID, entry.id);
+      seedInstallation(verifyDb, SCOPE);
+      const row = entries.getById(verifyDb, SCOPE, entry.id);
       expect(row?.lifecycleState).toBe("RECREATING");
       expect(row?.claimToken).toBe(winners[0]?.claimToken);
       verifyDb.close();
@@ -124,9 +129,10 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
     const dbPath = join(dir, "restoretime.sqlite");
     try {
       const db = openDatabase(dbPath);
-      const { entry } = entries.ingestDeletedEntry(db, {
+      seedInstallation(db, SCOPE);
+      const { entry } = ingestEntry(db, {
         id: "re-started",
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         sourceEntryId: "entry-started",
         ownerId: "user-1",
         detectedAt: "2026-08-08T09:00:00Z",
@@ -154,7 +160,7 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
       });
       entries.claim(db, {
         id: entry.id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         claimToken: "started-attempt",
         now: new Date("2026-08-08T09:00:00Z"),
       });
@@ -173,7 +179,7 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
           mode: "observe-started-attempt",
           dbPath,
           entryId: entry.id,
-          workspaceId: WORKSPACE_ID,
+          scope: SCOPE,
           attemptId: "started-attempt",
         },
       });
@@ -188,14 +194,16 @@ describe("IT-03 concurrent recreate claims under real process-level parallelism"
         });
 
         const recoveryDb = openDatabase(dbPath);
+
+        seedInstallation(recoveryDb, SCOPE);
         const retry = entries.claim(recoveryDb, {
           id: entry.id,
-          workspaceId: WORKSPACE_ID,
+          scope: SCOPE,
           claimToken: "forbidden-reclaim",
           now: new Date("2026-08-08T09:01:01Z"),
         });
         expect(retry).toBeUndefined();
-        expect(entries.getById(recoveryDb, WORKSPACE_ID, entry.id)).toMatchObject({
+        expect(entries.getById(recoveryDb, SCOPE, entry.id)).toMatchObject({
           lifecycleState: "AMBIGUOUS",
           claimToken: null,
         });

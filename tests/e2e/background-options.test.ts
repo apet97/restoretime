@@ -143,8 +143,7 @@ describe("background option requests", () => {
       clockifyUnavailable: false,
       disabled: false,
       broken: false,
-      truncated: false,
-      limit: 200,
+      nextCursor: null,
     };
     const get = vi.fn((path: string, query?: Record<string, string>) => {
       if (path === "/api/entries") return Promise.resolve(emptyList);

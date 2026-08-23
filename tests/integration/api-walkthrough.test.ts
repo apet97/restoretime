@@ -21,13 +21,15 @@ import {
 import { createServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import * as entries from "../../src/store/entries.js";
-import * as attempts from "../../src/store/attempts.js";
 import * as plans from "../../src/store/plans.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
+import { setReconcileFixture } from "../support/reconcile-fixture.js";
 
 const ADDON_KEY = "restoretime-test";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 
 let dir: string;
@@ -75,7 +77,11 @@ function methodOf(input: string | URL | Request, init?: RequestInit): string {
 }
 
 async function boot() {
-  return createServer(testConfig(), { publicKey: keys.publicKey });
+  const server = await createServer(testConfig(), { publicKey: keys.publicKey });
+  // Webhook ingestion is fenced on an installation row existing. Tests that seed rows directly,
+  // without replaying the INSTALLED lifecycle, still need one. A later real install replaces it.
+  seedInstallation(server.db, SCOPE);
+  return server;
 }
 
 async function componentToken(role = "admin", user = OWNER_ID) {
@@ -261,9 +267,9 @@ describe("bulk preflight installation-wide token failures", () => {
     await install(server, webhookToken);
     const token = await componentToken("admin");
     for (const [id, projectId] of [["bulk-first", "project-first"], ["bulk-invalid", "project-invalid"], ["bulk-later", "project-later"]] as const) {
-      entries.ingestDeletedEntry(server.db, {
+      ingestEntry(server.db, {
         id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         sourceEntryId: `source-${id}`,
         ownerId: OWNER_ID,
         detectedAt: "2026-08-08T09:00:00Z",
@@ -334,9 +340,9 @@ describe("saved resolution presentation", () => {
       addonId: ADDON_ID,
     });
     await install(server, webhookToken);
-    const entry = entries.ingestDeletedEntry(server.db, {
+    const entry = ingestEntry(server.db, {
       id: "re-editable",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "source-editable",
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -374,7 +380,7 @@ describe("saved resolution presentation", () => {
         }
         if (method === "GET" && (path.endsWith("/tags") || path.endsWith("/custom-fields"))) return jsonResponse([]);
         if (method === "GET" && path.endsWith("/projects/project-replacement")) {
-          return jsonResponse({ id: "project-replacement", name: "Replacement project", archived: false });
+          return jsonResponse({ id: "project-replacement", name: "Replacement project", archived: false, public: true, memberships: [] });
         }
         return jsonResponse({ message: "unstubbed", code: 0 }, 404);
       }) as typeof fetch,
@@ -687,9 +693,9 @@ describe("policy negatives through the API surface", () => {
   it("pre-scans a mixed active and stale bulk request before any row or Clockify state changes", async () => {
     const server = await boot();
     const token = await componentToken();
-    const makeEntry = (id: string) => entries.ingestDeletedEntry(server.db, {
+    const makeEntry = (id: string) => ingestEntry(server.db, {
       id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: `source-${id}`,
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -762,7 +768,7 @@ describe("policy negatives through the API surface", () => {
       }],
     });
     expect(clockifyCalls).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, activeEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(entries.getById(server.db, SCOPE, activeEntry.id)?.lifecycleState).toBe("IDLE");
     expect(plans.getById(server.db, activePlan.id)?.status).toBe("ACTIVE");
     expect(server.db.prepare("SELECT COUNT(*) AS n FROM recreation_attempts").get()).toEqual({ n: 0 });
 
@@ -774,7 +780,7 @@ describe("policy negatives through the API surface", () => {
     });
     expect(missing.status).toBe(404);
     expect(missing.body).toEqual({ error: "not found" });
-    expect(entries.getById(server.db, WORKSPACE_ID, activeEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(entries.getById(server.db, SCOPE, activeEntry.id)?.lifecycleState).toBe("IDLE");
     expect(plans.getById(server.db, activePlan.id)?.status).toBe("ACTIVE");
     expect(clockifyCalls).toBe(0);
 
@@ -807,9 +813,9 @@ describe("policy negatives through the API surface", () => {
       },
     ];
     const planIds = configurations.map((configuration) => {
-      const entry = entries.ingestDeletedEntry(server.db, {
+      const entry = ingestEntry(server.db, {
         id: `bulk-${configuration.id}`,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         sourceEntryId: `source-${configuration.id}`,
         ownerId: OWNER_ID,
         detectedAt: "2026-08-08T09:00:00Z",
@@ -902,9 +908,9 @@ describe("policy negatives through the API surface", () => {
       taskName: null,
       tags: [],
     } as const;
-    entries.ingestDeletedEntry(server.db, {
+    ingestEntry(server.db, {
       id: "bulk-partial-preflight",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "source-partial-preflight",
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -917,9 +923,9 @@ describe("policy negatives through the API surface", () => {
         customFieldValues: [{ customFieldId: "deleted-field", name: "Deleted field", value: "private" }],
       },
     });
-    entries.ingestDeletedEntry(server.db, {
+    ingestEntry(server.db, {
       id: "bulk-warning-preflight",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "source-warning-preflight",
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T09:01:00Z",
@@ -935,7 +941,7 @@ describe("policy negatives through the API surface", () => {
     vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
       const path = pathOf(input);
       if (methodOf(input, init) === "GET" && path.endsWith("/projects/archived-project")) {
-        return jsonResponse({ id: "archived-project", name: "Archived project", archived: true });
+        return jsonResponse({ id: "archived-project", name: "Archived project", archived: true, public: true, memberships: [] });
       }
       return baseStub()(input, init);
     }) as typeof fetch);
@@ -1084,7 +1090,7 @@ describe("POST /api/entries/recreate — guards", () => {
     expect(response.status).toBe(503);
     expect((response.body as { error: string }).error.toLowerCase()).toContain("reinstall");
     expect(createCalls).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+    expect(entries.getById(server.db, SCOPE, entryId)).toMatchObject({
       lifecycleState: "IDLE",
       claimToken: null,
     });
@@ -1127,7 +1133,7 @@ describe("POST /api/entries/recreate — guards", () => {
       "RestoreTime could not verify the current Clockify entries. Nothing was created. Open the entry again, then try again.",
     );
     expect(createCalls).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+    expect(entries.getById(server.db, SCOPE, entryId)).toMatchObject({
       lifecycleState: "IDLE",
       claimToken: null,
     });
@@ -1170,7 +1176,7 @@ describe("POST /api/entries/recreate — guards", () => {
     expect(response.status).toBe(502);
     expect((response.body as { error: string }).error).toContain("Nothing was created");
     expect(createCalls).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+    expect(entries.getById(server.db, SCOPE, entryId)).toMatchObject({
       lifecycleState: "IDLE",
       claimToken: null,
     });
@@ -1214,12 +1220,12 @@ describe("POST /api/entries/recreate — guards", () => {
     ).run(new Date(Date.now() - 1_000).toISOString(), entryId);
     expect(entries.recoverExpiredClaim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       now: new Date(),
     })?.lifecycleState).toBe("IDLE");
     expect(entries.claim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "new-owner",
       now: new Date(),
     })?.claimToken).toBe("new-owner");
@@ -1229,7 +1235,7 @@ describe("POST /api/entries/recreate — guards", () => {
     expect(response.status).toBe(409);
     expect((response.body as { error: string }).error).toContain("did not send");
     expect(createCalls).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)).toMatchObject({
+    expect(entries.getById(server.db, SCOPE, entryId)).toMatchObject({
       lifecycleState: "RECREATING",
       claimToken: "new-owner",
     });
@@ -1346,7 +1352,7 @@ describe.each(["single", "bulk"] as const)("%s preflight persistence is fenced b
           signalProjectRead();
           await projectReadReleased;
         }
-        return jsonResponse({ id: "proj-1", name: "Project One", archived: false });
+        return jsonResponse({ id: "proj-1", name: "Project One", archived: false, public: true, memberships: [] });
       }
       if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
       if (method === "POST" && path.endsWith("/time-entries")) return jsonResponse(createdEntry, 201);
@@ -1452,9 +1458,9 @@ describe("stale confirm persistence is fenced by the current entry state", () =>
           holdNextProjectRead = false;
           signalProjectRead();
           await projectReadReleased;
-          return jsonResponse({ id: "proj-1", name: "Project One", archived: true });
+          return jsonResponse({ id: "proj-1", name: "Project One", archived: true, public: true, memberships: [] });
         }
-        return jsonResponse({ id: "proj-1", name: "Project One", archived: false });
+        return jsonResponse({ id: "proj-1", name: "Project One", archived: false, public: true, memberships: [] });
       }
       if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
         return jsonResponse([]);
@@ -1487,7 +1493,7 @@ describe("stale confirm persistence is fenced by the current entry state", () =>
         { path: "/webhooks/time-entry-deleted" },
       ),
     );
-    const entryId = entries.list(server.db, WORKSPACE_ID, {}).rows[0]!.id;
+    const entryId = entries.list(server.db, SCOPE, {}).rows[0]!.id;
     const preflight = await server.addon.handle({
       method: "POST",
       path: "/api/entries/preflight",
@@ -1836,7 +1842,7 @@ describe("a disabled installation refuses actions but stays readable", () => {
     const attemptId = "disabled-ambiguous-attempt";
     expect(entries.claim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: attemptId,
       now: new Date(),
     })).toBeDefined();
@@ -1849,10 +1855,10 @@ describe("a disabled installation refuses actions but stays readable", () => {
     });
     expect(entries.setAmbiguous(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: attemptId,
     })).toBeDefined();
-    attempts.updateReconcile(server.db, attemptId, {
+    setReconcileFixture(server.db, attemptId, {
       checkedAt: new Date(Date.now() - RECONCILE_THROTTLE_MS - 1_000).toISOString(),
       checks: 1,
       matchCount: 0,
@@ -1885,6 +1891,6 @@ describe("a disabled installation refuses actions but stays readable", () => {
     expect(detail.status).toBe(200);
     expect(detail.body).toMatchObject({ disabled: true, entry: { lifecycleState: "AMBIGUOUS" } });
     expect(clockifyFetches).toBe(0);
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(server.db, SCOPE, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });

@@ -3,12 +3,19 @@
 // expired lease recovers to AMBIGUOUS instead (ADR-007, IT-12).
 
 import type Database from "better-sqlite3";
-import type { DeletedTimeEntry, LifecycleState, RecoverableEntry, VerificationDiff } from "../domain/entry.js";
+import type {
+  DeletedTimeEntry,
+  InstallationScope,
+  LifecycleState,
+  RecoverableEntry,
+  VerificationDiff,
+} from "../domain/entry.js";
 import * as attempts from "./attempts.js";
 
 interface EntryRow {
   id: string;
   workspace_id: string;
+  addon_id: string;
   source_entry_id: string;
   owner_id: string;
   detected_at: string;
@@ -26,6 +33,7 @@ function rowToEntry(row: EntryRow): RecoverableEntry {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    addonId: row.addon_id,
     sourceEntryId: row.source_entry_id,
     ownerId: row.owner_id,
     detectedAt: row.detected_at,
@@ -48,7 +56,7 @@ export function claimLeaseExpiry(now: Date): string {
 
 export interface IngestInput {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly scope: InstallationScope;
   readonly sourceEntryId: string;
   readonly ownerId: string;
   readonly detectedAt: string;
@@ -59,43 +67,63 @@ export interface IngestInput {
  * (docs/03 §1, docs/06 "Lineage", UT-L01). */
 export function findByNewEntryId(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   newEntryId: string,
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<[string, string], EntryRow>(
-      "SELECT * FROM recoverable_entries WHERE workspace_id = ? AND new_entry_id = ?",
+    .prepare<[string, string, string], EntryRow>(
+      "SELECT * FROM recoverable_entries WHERE workspace_id = ? AND addon_id = ? AND new_entry_id = ?",
     )
-    .get(workspaceId, newEntryId);
+    .get(scope.workspaceId, scope.addonId, newEntryId);
   return row ? rowToEntry(row) : undefined;
 }
 
-/** ADR-003 / docs/05 invariant 1: one atomic transaction covering the `INSERT OR IGNORE` into
+/**
+ * The outcome of one webhook delivery.
+ *
+ * `installation-gone` is what makes uninstall a real deletion rather than a moment in time: the
+ * insert below is fenced on the installation row still existing, so a delivery whose verification
+ * started before an uninstall and finished after it writes nothing. The guard lives in SQL because
+ * webhook verification is asynchronous (the add-on token is decrypted with AES-GCM) while the
+ * uninstall purge is one synchronous transaction — an in-memory check made before the `await`
+ * proves nothing about the state at the write.
+ */
+export type IngestOutcome =
+  | { readonly kind: "inserted"; readonly entry: RecoverableEntry }
+  | { readonly kind: "duplicate"; readonly entry: RecoverableEntry }
+  | { readonly kind: "installation-gone" };
+
+/** ADR-003 / docs/05 invariant 1: one atomic transaction covering the guarded `INSERT` into
  * `recoverable_entries` plus, only when a row was inserted, the lineage-link
  * `UPDATE parent_recoverable_id`. Dedup and the lineage link commit or roll back together, so a
  * crash between them can never leave a webhook acked but unlinked (UT-L01, IT-01). */
-export function ingestDeletedEntry(
-  db: Database.Database,
-  input: IngestInput,
-): { inserted: boolean; entry: RecoverableEntry } {
-  const run = db.transaction((i: IngestInput) => {
+export function ingestDeletedEntry(db: Database.Database, input: IngestInput): IngestOutcome {
+  const run = db.transaction((i: IngestInput): IngestOutcome => {
+    // `INSERT ... SELECT ... WHERE EXISTS` rather than `INSERT ... VALUES`: the installation check
+    // and the write are then a single statement, so no uninstall can commit between them.
+    // `OR IGNORE` still absorbs the redelivery case (W10), which the outcome below separates from
+    // a fenced-out write by asking whether the row exists at all.
     const result = db
       .prepare(
         `INSERT OR IGNORE INTO recoverable_entries
-           (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
-         VALUES (@id, @workspaceId, @sourceEntryId, @ownerId, @detectedAt, @sourceJson, 'IDLE')`,
+           (id, workspace_id, addon_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
+         SELECT @id, @workspaceId, @addonId, @sourceEntryId, @ownerId, @detectedAt, @sourceJson, 'IDLE'
+         WHERE EXISTS (
+           SELECT 1 FROM installations WHERE workspace_id = @workspaceId AND addon_id = @addonId
+         )`,
       )
       .run({
         id: i.id,
-        workspaceId: i.workspaceId,
+        workspaceId: i.scope.workspaceId,
+        addonId: i.scope.addonId,
         sourceEntryId: i.sourceEntryId,
         ownerId: i.ownerId,
         detectedAt: i.detectedAt,
         sourceJson: JSON.stringify(i.source),
       });
-    const inserted = result.changes > 0;
-    if (inserted) {
-      const parent = findByNewEntryId(db, i.workspaceId, i.sourceEntryId);
+
+    if (result.changes > 0) {
+      const parent = findByNewEntryId(db, i.scope, i.sourceEntryId);
       if (parent?.ownerId === i.ownerId) {
         db.prepare("UPDATE recoverable_entries SET parent_recoverable_id = ? WHERE id = ?").run(
           parent.id,
@@ -103,28 +131,30 @@ export function ingestDeletedEntry(
         );
       }
     }
-    return inserted;
+
+    const row = db
+      .prepare<[string, string, string], EntryRow>(
+        "SELECT * FROM recoverable_entries WHERE workspace_id = ? AND addon_id = ? AND source_entry_id = ?",
+      )
+      .get(i.scope.workspaceId, i.scope.addonId, i.sourceEntryId);
+    // No row and no insert means the fence rejected the write: this installation is gone. That is
+    // the one case where "nothing was persisted" is correct rather than a broken invariant.
+    if (!row) return { kind: "installation-gone" };
+    return { kind: result.changes > 0 ? "inserted" : "duplicate", entry: rowToEntry(row) };
   });
-  const inserted = run(input);
-  const row = db
-    .prepare<[string, string], EntryRow>(
-      "SELECT * FROM recoverable_entries WHERE workspace_id = ? AND source_entry_id = ?",
-    )
-    .get(input.workspaceId, input.sourceEntryId);
-  if (!row) throw new Error("ingest did not persist a row");
-  return { inserted, entry: rowToEntry(row) };
+  return run.immediate(input);
 }
 
 export function getById(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   id: string,
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<[string, string], EntryRow>(
-      "SELECT * FROM recoverable_entries WHERE id = ? AND workspace_id = ?",
+    .prepare<[string, string, string], EntryRow>(
+      "SELECT * FROM recoverable_entries WHERE id = ? AND workspace_id = ? AND addon_id = ?",
     )
-    .get(id, workspaceId);
+    .get(id, scope.workspaceId, scope.addonId);
   return row ? rowToEntry(row) : undefined;
 }
 
@@ -147,6 +177,17 @@ export interface ListFilters {
   /** Caps how many rows come back. The list route always sets this: every returned row costs a
    * preflight with its own Clockify lookups, so an unbounded read is an unbounded fan-out. */
   readonly limit?: number;
+  /** Keyset continuation from a previous page, in the `detected_at DESC, id DESC` order below.
+   * Applied after every scope and filter clause, so it can only advance within the caller's own
+   * result set — it can never widen it. */
+  readonly after?: ListCursor;
+}
+
+/** The order keys of the last row of a page. `id` breaks ties between rows sharing a
+ * `detected_at`, which a webhook burst produces routinely. */
+export interface ListCursor {
+  readonly detectedAt: string;
+  readonly id: string;
 }
 
 /** A `LIKE` pattern matching `value` anywhere in a column. SQLite's own wildcards (`%`, `_`) and
@@ -157,19 +198,23 @@ function likeContains(value: string): string {
   return `%${value.replace(/[%_\\]/g, "\\$&")}%`;
 }
 
-/** `list` fetched one row beyond `limit`, meaning older rows exist that were not returned. */
 export interface ListPage {
   readonly rows: RecoverableEntry[];
-  readonly truncated: boolean;
+  /** The order keys of the last returned row when a further page exists, otherwise `null`. Derived
+   * from an actually-observed extra row, never guessed from a full page. */
+  readonly nextCursor: ListCursor | null;
 }
 
 export function list(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   filters: ListFilters,
 ): ListPage {
-  const clauses = ["workspace_id = @workspaceId"];
-  const params: Record<string, unknown> = { workspaceId };
+  const clauses = ["workspace_id = @workspaceId", "addon_id = @addonId"];
+  const params: Record<string, unknown> = {
+    workspaceId: scope.workspaceId,
+    addonId: scope.addonId,
+  };
 
   if (filters.ownerId !== undefined) {
     clauses.push("owner_id = @ownerId");
@@ -220,6 +265,15 @@ export function list(
     params.projectName = likeContains(filters.projectName);
   }
 
+  // Last, so the seek narrows the caller's own filtered set rather than defining it.
+  if (filters.after !== undefined) {
+    clauses.push(
+      "(detected_at < @afterDetectedAt OR (detected_at = @afterDetectedAt AND id < @afterId))",
+    );
+    params.afterDetectedAt = filters.after.detectedAt;
+    params.afterId = filters.after.id;
+  }
+
   // Fetch one past the cap so "there are more" is observed, never guessed from a full page.
   let limitSql = "";
   if (filters.limit !== undefined) {
@@ -233,20 +287,25 @@ export function list(
     )
     .all(params);
 
-  const truncated = filters.limit !== undefined && rows.length > filters.limit;
-  return { rows: (truncated ? rows.slice(0, filters.limit) : rows).map(rowToEntry), truncated };
+  const hasMore = filters.limit !== undefined && rows.length > filters.limit;
+  const page = (hasMore ? rows.slice(0, filters.limit) : rows).map(rowToEntry);
+  const last = page[page.length - 1];
+  return {
+    rows: page,
+    nextCursor: hasMore && last ? { detectedAt: last.detectedAt, id: last.id } : null,
+  };
 }
 
 export interface ClaimInput {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly scope: InstallationScope;
   readonly claimToken: string;
   readonly now: Date;
 }
 
 interface ExpiredClaimTarget {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly scope: InstallationScope;
 }
 
 /** Recovers only an expired claim that has a durable attempt. The caller owns an immediate
@@ -258,12 +317,12 @@ function recoverExpiredAttempt(
   now: string,
 ): boolean {
   const expired = db
-    .prepare<[string, string, string], Pick<EntryRow, "claim_token">>(
+    .prepare<[string, string, string, string], Pick<EntryRow, "claim_token">>(
       `SELECT claim_token FROM recoverable_entries
-       WHERE id=? AND workspace_id=? AND lifecycle_state='RECREATING'
+       WHERE id=? AND workspace_id=? AND addon_id=? AND lifecycle_state='RECREATING'
          AND julianday(claim_expires_at) <= julianday(?)`,
     )
-    .get(input.id, input.workspaceId, now);
+    .get(input.id, input.scope.workspaceId, input.scope.addonId, now);
   if (!expired?.claim_token) return false;
 
   const attempt = attempts.getById(db, expired.claim_token);
@@ -296,12 +355,14 @@ function recoverExpiredAttempt(
        SET lifecycle_state='RECREATED', new_entry_id=@newEntryId,
            recreated_at=@recreatedAt, recreated_by=@recreatedBy,
            claim_token=NULL, claim_expires_at=NULL
-       WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId
+         AND lifecycle_state='RECREATING'
          AND claim_token=@expiredToken
          AND julianday(claim_expires_at) <= julianday(@now)`,
     ).run({
       id: input.id,
-      workspaceId: input.workspaceId,
+      workspaceId: input.scope.workspaceId,
+      addonId: input.scope.addonId,
       expiredToken: expired.claim_token,
       newEntryId: attempt.newEntryId,
       recreatedAt: attempt.finishedAt,
@@ -321,12 +382,14 @@ function recoverExpiredAttempt(
   const recovered = db.prepare(
     `UPDATE recoverable_entries
      SET lifecycle_state=@recoveredState, claim_token=NULL, claim_expires_at=NULL
-     WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+     WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId
+       AND lifecycle_state='RECREATING'
        AND claim_token=@expiredToken
        AND julianday(claim_expires_at) <= julianday(@now)`,
   ).run({
     id: input.id,
-    workspaceId: input.workspaceId,
+    workspaceId: input.scope.workspaceId,
+    addonId: input.scope.addonId,
     expiredToken: expired.claim_token,
     recoveredState,
     now,
@@ -353,7 +416,7 @@ function claimWhileLocked(
   const claimStatement = db.prepare<Record<string, unknown>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATING', claim_token=:token, claim_expires_at=:now_plus_60s
-       WHERE id=:id AND workspace_id=:ws
+       WHERE id=:id AND workspace_id=:ws AND addon_id=:addon
          AND (lifecycle_state IN ('IDLE','FAILED')
               OR (lifecycle_state='RECREATING'
                   AND julianday(claim_expires_at) <= julianday(:now)))
@@ -364,7 +427,8 @@ function claimWhileLocked(
 
   const row = claimStatement.get({
     id: input.id,
-    ws: input.workspaceId,
+    ws: input.scope.workspaceId,
+    addon: input.scope.addonId,
     token: input.claimToken,
     now,
     now_plus_60s: nowPlus60s,
@@ -427,17 +491,23 @@ export function recoverExpiredClaim(
       db.prepare(
         `UPDATE recoverable_entries
          SET lifecycle_state='IDLE', claim_token=NULL, claim_expires_at=NULL
-         WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='RECREATING'
+         WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId
+           AND lifecycle_state='RECREATING'
            AND julianday(claim_expires_at) <= julianday(@now)
            AND NOT EXISTS (
              SELECT 1 FROM recreation_attempts
              WHERE id=recoverable_entries.claim_token AND recoverable_entry_id=recoverable_entries.id
            )`,
-      ).run({ id: input.id, workspaceId: input.workspaceId, now });
+      ).run({
+        id: input.id,
+        workspaceId: input.scope.workspaceId,
+        addonId: input.scope.addonId,
+        now,
+      });
     }
-    const row = db.prepare<[string, string], EntryRow>(
-      "SELECT * FROM recoverable_entries WHERE id=? AND workspace_id=?",
-    ).get(input.id, input.workspaceId);
+    const row = db.prepare<[string, string, string], EntryRow>(
+      "SELECT * FROM recoverable_entries WHERE id=? AND workspace_id=? AND addon_id=?",
+    ).get(input.id, input.scope.workspaceId, input.scope.addonId);
     return row ? rowToEntry(row) : undefined;
   });
   return recover.immediate();
@@ -445,8 +515,19 @@ export function recoverExpiredClaim(
 
 interface FencedInput {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly scope: InstallationScope;
   readonly claimToken: string;
+}
+
+/** better-sqlite3 binds named parameters from flat keys, so the scope is spread rather than
+ * nested. Every fenced statement below shares this shape. */
+function fenceParams(input: FencedInput): Record<string, string> {
+  return {
+    id: input.id,
+    workspaceId: input.scope.workspaceId,
+    addonId: input.scope.addonId,
+    claimToken: input.claimToken,
+  };
 }
 
 /** RECREATING -> RECREATED, fenced by the claim token that won the claim (§8). */
@@ -455,14 +536,19 @@ export function setRecreated(
   input: FencedInput & { newEntryId: string; recreatedAt: string; recreatedBy: string },
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<FencedInput & { newEntryId: string; recreatedAt: string; recreatedBy: string }, EntryRow>(
+    .prepare<Record<string, string>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATED', new_entry_id=@newEntryId, recreated_at=@recreatedAt,
            recreated_by=@recreatedBy, claim_token=NULL, claim_expires_at=NULL
-       WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId AND claim_token=@claimToken
        RETURNING *`,
     )
-    .get(input);
+    .get({
+      ...fenceParams(input),
+      newEntryId: input.newEntryId,
+      recreatedAt: input.recreatedAt,
+      recreatedBy: input.recreatedBy,
+    });
   if (!row) return undefined;
   attempts.clearTransientEvidenceForEntry(db, input.id);
   return rowToEntry(row);
@@ -486,26 +572,26 @@ export function releaseClaim(
   input: FencedInput & { previousState: "IDLE" | "FAILED" },
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<FencedInput & { previousState: string }, EntryRow>(
+    .prepare<Record<string, string>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state=@previousState, claim_token=NULL, claim_expires_at=NULL
-       WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId AND claim_token=@claimToken
        RETURNING *`,
     )
-    .get(input);
+    .get({ ...fenceParams(input), previousState: input.previousState });
   return row ? rowToEntry(row) : undefined;
 }
 
 /** RECREATING -> FAILED, fenced (§8). */
 export function setFailed(db: Database.Database, input: FencedInput): RecoverableEntry | undefined {
   const row = db
-    .prepare<FencedInput, EntryRow>(
+    .prepare<Record<string, string>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='FAILED', claim_token=NULL, claim_expires_at=NULL
-       WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId AND claim_token=@claimToken
        RETURNING *`,
     )
-    .get(input);
+    .get(fenceParams(input));
   if (!row) return undefined;
   attempts.clearTransientEvidenceForEntry(db, input.id);
   return rowToEntry(row);
@@ -517,13 +603,13 @@ export function setAmbiguous(
   input: FencedInput,
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<FencedInput, EntryRow>(
+    .prepare<Record<string, string>, EntryRow>(
       `UPDATE recoverable_entries
        SET lifecycle_state='AMBIGUOUS', claim_token=NULL, claim_expires_at=NULL
-       WHERE id=@id AND workspace_id=@workspaceId AND claim_token=@claimToken
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId AND claim_token=@claimToken
        RETURNING *`,
     )
-    .get(input);
+    .get(fenceParams(input));
   return row ? rowToEntry(row) : undefined;
 }
 
@@ -534,7 +620,7 @@ export function adopt(
   db: Database.Database,
   input: {
     id: string;
-    workspaceId: string;
+    scope: InstallationScope;
     expectedAttemptId: string;
     expectedReconcileRunId: string;
     newEntryId: string;
@@ -555,14 +641,23 @@ export function adopt(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATED', new_entry_id=@newEntryId, recreated_at=@recreatedAt,
            recreated_by=@recreatedBy
-       WHERE id=@id AND workspace_id=@workspaceId AND lifecycle_state='AMBIGUOUS'
+       WHERE id=@id AND workspace_id=@workspaceId AND addon_id=@addonId
+         AND lifecycle_state='AMBIGUOUS'
          AND @expectedAttemptId = (
            SELECT id FROM recreation_attempts
            WHERE recoverable_entry_id=@id
            ORDER BY rowid DESC LIMIT 1
          )
        RETURNING *`,
-    ).get(input);
+    ).get({
+      id: input.id,
+      workspaceId: input.scope.workspaceId,
+      addonId: input.scope.addonId,
+      expectedAttemptId: input.expectedAttemptId,
+      newEntryId: input.newEntryId,
+      recreatedAt: input.recreatedAt,
+      recreatedBy: input.recreatedBy,
+    });
     if (!row) return undefined;
 
     const attempt = attempts.getById(db, input.expectedAttemptId);
@@ -585,17 +680,17 @@ export function adopt(
 /** AMBIGUOUS -> IDLE, user confirms "not created" (§8). */
 export function markNotCreated(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   id: string,
 ): RecoverableEntry | undefined {
   const mark = db.transaction((): RecoverableEntry | undefined => {
     const row = db
-      .prepare<[string, string], EntryRow>(
+      .prepare<[string, string, string], EntryRow>(
         `UPDATE recoverable_entries SET lifecycle_state='IDLE'
-         WHERE id = ? AND workspace_id = ? AND lifecycle_state='AMBIGUOUS'
+         WHERE id = ? AND workspace_id = ? AND addon_id = ? AND lifecycle_state='AMBIGUOUS'
          RETURNING *`,
       )
-      .get(id, workspaceId);
+      .get(id, scope.workspaceId, scope.addonId);
     if (!row) return undefined;
     attempts.clearTransientEvidenceForEntry(db, id);
     return rowToEntry(row);
@@ -606,16 +701,16 @@ export function markNotCreated(
 /** IDLE/FAILED -> DISMISSED (docs/06 lifecycle table). */
 export function dismiss(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   id: string,
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<[string, string], EntryRow>(
+    .prepare<[string, string, string], EntryRow>(
       `UPDATE recoverable_entries SET lifecycle_state='DISMISSED'
-       WHERE id = ? AND workspace_id = ? AND lifecycle_state IN ('IDLE','FAILED')
+       WHERE id = ? AND workspace_id = ? AND addon_id = ? AND lifecycle_state IN ('IDLE','FAILED')
        RETURNING *`,
     )
-    .get(id, workspaceId);
+    .get(id, scope.workspaceId, scope.addonId);
   return row ? rowToEntry(row) : undefined;
 }
 
@@ -623,15 +718,15 @@ export function dismiss(
  * own (W10) — only an explicit undismiss does. */
 export function undismiss(
   db: Database.Database,
-  workspaceId: string,
+  scope: InstallationScope,
   id: string,
 ): RecoverableEntry | undefined {
   const row = db
-    .prepare<[string, string], EntryRow>(
+    .prepare<[string, string, string], EntryRow>(
       `UPDATE recoverable_entries SET lifecycle_state='IDLE'
-       WHERE id = ? AND workspace_id = ? AND lifecycle_state='DISMISSED'
+       WHERE id = ? AND workspace_id = ? AND addon_id = ? AND lifecycle_state='DISMISSED'
        RETURNING *`,
     )
-    .get(id, workspaceId);
+    .get(id, scope.workspaceId, scope.addonId);
   return row ? rowToEntry(row) : undefined;
 }

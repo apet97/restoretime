@@ -9,7 +9,14 @@ the iframe loads. Claims used:
 user           viewer's Clockify user id
 workspaceId    workspace the viewer is operating in
 workspaceRole  "owner" | "admin" | member role
+addonId        the installation the viewer opened the component from
 ```
+
+`workspaceId` and `addonId` together are the `InstallationScope` (`domain/entry.ts`). Clockify
+issues a fresh `addonId` for every install, so the pair identifies one installation lifetime while
+`workspaceId` alone identifies only the tenant. Every product-data lookup is scoped by the pair: a
+viewer from a later installation cannot read, act on, or deduplicate against rows an earlier one
+captured.
 
 No session cookies. Every `/api/*` call carries the token as a Bearer header and is verified
 independently. Expired token → 401 → the iframe requests a fresh token through the SDK bridge
@@ -37,7 +44,34 @@ canAct(entry)   = canRead(entry)
 
 ## Enforcement points
 
-All paths are exact (the SDK router has no path parameters; docs/03 §5). `entryId` arrives in the JSON body (POST) or query (GET); it is a resource selector, never identity. Every lookup is scoped `WHERE id = :entryId AND workspace_id = claims.workspaceId`, then `canRead`/`canAct` applies.
+All paths are exact (the SDK router has no path parameters; docs/03 §5). `entryId` arrives in the JSON body (POST) or query (GET); it is a resource selector, never identity. Every lookup is scoped `WHERE id = :entryId AND workspace_id = claims.workspaceId AND addon_id = claims.addonId`, then `canRead`/`canAct` applies.
+
+## Credential authority
+
+The Clockify add-on platform issues exactly one server credential per installation: the add-on
+token from the `INSTALLED` payload, sent as `X-Addon-Token`. There is no user-token exchange in the
+lifecycle contract, so **every** Clockify call this app makes carries installation-wide authority,
+including calls made on behalf of a plain member.
+
+Authenticating the viewer is therefore not enough. Anything the viewer *chooses* has to be checked
+against that viewer's own Clockify access before the privileged credential acts on it:
+
+- `GET /api/options?kind=projects` returns, for a non-admin, only projects that are `public` or
+  list the viewer in `memberships`. Listing every project would disclose the names and ids of
+  private projects the viewer is not on.
+- `GET /api/options?kind=tasks` answers 404 — not 403 — for a project outside that set, so an
+  inaccessible project is indistinguishable from one that does not exist.
+- `POST /api/entries/preflight` rejects a non-admin's `choices.projectId` / `choices.taskId`
+  outside that set with 403, before a plan is created and before any write.
+- Tags are not restricted: Clockify tags are workspace-wide and carry no per-user access.
+
+Deliberately **not** checked: the deleted entry's own original project. Recreating your own entry
+into the project it was deleted from is what this product does, and Clockify already let that user
+log time there. Only an explicit re-targeting choice is constrained.
+
+Every recreation attempt writes one non-secret audit line — actor, source-entry owner, execution
+mode (`SELF` or `ADMIN`), installation, plan, attempt — because the credential used is the same in
+both modes and only the record distinguishes them.
 
 | Boundary | Check |
 |---|---|

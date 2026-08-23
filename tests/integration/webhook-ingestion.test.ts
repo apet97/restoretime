@@ -19,6 +19,7 @@ import type { AppConfig } from "../../src/config.js";
 const ADDON_KEY = "restoretime-test";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-install-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 
 let dir: string;
 let keys: ClockifyTestKeys;
@@ -267,7 +268,7 @@ describe("IT-10 dismissed entry absorbs redelivery", () => {
     const row = server.db
       .prepare("SELECT id FROM recoverable_entries WHERE workspace_id = ? AND source_entry_id = ?")
       .get(WORKSPACE_ID, "entry-a") as { id: string };
-    const dismissed = entries.dismiss(server.db, WORKSPACE_ID, row.id);
+    const dismissed = entries.dismiss(server.db, SCOPE, row.id);
     expect(dismissed?.lifecycleState).toBe("DISMISSED");
 
     // Redelivery (W10) — must be an insert-ignore no-op, never resurrecting the row.
@@ -278,7 +279,7 @@ describe("IT-10 dismissed entry absorbs redelivery", () => {
     );
     expect(redelivery.status).toBe(204);
 
-    const current = entries.getById(server.db, WORKSPACE_ID, row.id);
+    const current = entries.getById(server.db, SCOPE, row.id);
     expect(current?.lifecycleState).toBe("DISMISSED");
   });
 });

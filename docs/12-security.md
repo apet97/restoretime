@@ -45,7 +45,7 @@ access logs for the component route. Do not strip the query from browser history
 | SQL injection | 4 | Prepared statements only; no string-built SQL | review |
 | Sensitive log leakage | all | IDs/states/codes only; SDK `onError` redaction; no payload logging | IT-15 |
 | Addon token exposure | 3 | Server-only; encrypted at rest; never in responses | IT-15 (never logged); review (never in responses) |
-| Uninstall data residue | 1/4 | DELETED lifecycle hard-deletes workspace data in one transaction | IT-11 |
+| Uninstall data residue | 1/4 | DELETED hard-deletes the installation's own data in one transaction, scoped by `(workspace_id, addon_id)`; a webhook still being verified is refused by a database-enforced generation fence, not an in-memory check; a missed DELETED is cleaned by the next install | IT-11, IT-21, IT-22 |
 | Iframe embedding abuse | 2 | `frame-ancestors` restricted to `CLOCKIFY_PARENT_ORIGIN` (env var, fact 12) | LV-01 |
 | Token replay across addons | 2 | JWT `sub` must equal this addon's key | SDK tests |
 

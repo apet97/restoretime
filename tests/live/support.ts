@@ -38,8 +38,8 @@ import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import { CLOCKIFY_CLIENT_TIMEOUT_SECONDS } from "../../src/clockify/client.js";
 import { clockifyErrorCode } from "../../src/clockify/errors.js";
-import * as entries from "../../src/store/entries.js";
-import type { DeletedTimeEntry } from "../../src/domain/entry.js";
+import type { DeletedTimeEntry, InstallationScope } from "../../src/domain/entry.js";
+import { ingestEntry } from "../support/installation-fixture.js";
 
 /**
  * Which Clockify the live suite talks to. The suite requires the explicit developer API URL,
@@ -74,6 +74,13 @@ export function isStrictLiveRelease(): boolean {
 function blocked(reason: string): { readonly blocked: true; readonly reason: string } {
   if (isStrictLiveRelease()) throw new Error(`release gate blocked — ${reason}`);
   return { blocked: true, reason: `blocked — ${reason}` };
+}
+
+/** The installation generation the live suite works against: the configured developer workspace
+ * plus the add-on identity from `CK_LIVE_ADDON_ID`. Every scoped store call in the live tests goes
+ * through this rather than re-deriving the pair. */
+export function liveScope(env: LiveEnv): InstallationScope {
+  return { workspaceId: env.workspaceId, addonId: env.addonId };
 }
 
 export interface LiveEnv {
@@ -747,6 +754,7 @@ export async function bootLiveHarness(env: LiveEnv): Promise<LiveHarness> {
     logLevel: "error",
   };
   const server = await createServer(config, { publicKey: keys.publicKey });
+  
   const installToken = await signTestToken(keys.privateKey, LIVE_ADDON_KEY, {
     workspaceId: env.workspaceId,
     addonId: LIVE_ADDON_ID,
@@ -802,9 +810,9 @@ export function seedRecoverableEntry(
   harness: LiveHarness,
   input: { readonly id: string; readonly sourceEntryId: string; readonly ownerId: string; readonly source: DeletedTimeEntry },
 ) {
-  return entries.ingestDeletedEntry(harness.server.db, {
+  return ingestEntry(harness.server.db, {
     id: input.id,
-    workspaceId: harness.env.workspaceId,
+    scope: liveScope(harness.env),
     sourceEntryId: input.sourceEntryId,
     ownerId: input.ownerId,
     detectedAt: new Date().toISOString(),

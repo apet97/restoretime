@@ -78,7 +78,9 @@ function currentWorkspaceStub(): typeof fetch {
         { id: OTHER_ID, email: "grace@example.invalid", name: "Grace Hopper", status: "ACTIVE" },
       ]);
     }
-    if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Still Here", archived: false }]);
+    // `public` and `memberships` decide what a non-admin may target (docs/09); real Clockify
+    // always returns both, so the stub does too.
+    if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Still Here", archived: false, public: true, memberships: [] }]);
     if (path.endsWith("/tasks")) {
       return jsonResponse([
         { id: "task-active", name: "Current task", status: "ACTIVE" },

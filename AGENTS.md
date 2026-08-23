@@ -38,7 +38,9 @@ current rates).
     values.
 13. Minimize persisted deleted data: the normalized source only. Never log webhook bodies,
     descriptions, custom-field values, or tokens.
-14. On uninstall, hard-delete the workspace's data in one transaction.
+14. On uninstall, hard-delete the *installation's* data in one transaction, scoped by
+    `(workspace_id, addon_id)`. A workspace can hold rows from more than one installation
+    generation; never delete by workspace alone.
 
 ## Engineering rules
 

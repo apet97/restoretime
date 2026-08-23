@@ -171,9 +171,9 @@ describe("GET /api/entries", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    // `truncated`/`limit` are part of the list contract: the server bounds the page, so the UI can
-    // say "showing the N most recent" instead of letting a full page read as "everything".
-    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false, broken: false, truncated: false, limit: 50 });
+    // `nextCursor` is part of the list contract: the server bounds the page, so the UI can
+    // say "load more" instead of letting a full page read as "everything".
+    expect(response.body).toEqual({ entries: [], clockifyUnavailable: true, disabled: false, broken: false, nextCursor: null });
   });
 
   it("rejects a request with no Authorization header", async () => {
@@ -300,7 +300,7 @@ describe("lifecycle: STATUS_CHANGED", () => {
 });
 
 describe("lifecycle: DELETED", () => {
-  it("removes the installation row and every domain-table row for the workspace, in one transaction", async () => {
+  it("removes the installation row and every domain-table row it owns, in one transaction", async () => {
     const server = await boot();
     const installToken = await lifecycleToken();
     await server.addon.handle(
@@ -313,10 +313,10 @@ describe("lifecycle: DELETED", () => {
     server.db
       .prepare(
         `INSERT INTO recoverable_entries
-           (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
-         VALUES ('re-1', ?, 'entry-1', 'user-1', '2026-08-08T00:00:00.000Z', '{}', 'IDLE')`,
+           (id, workspace_id, addon_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
+         VALUES ('re-1', ?, ?, 'entry-1', 'user-1', '2026-08-08T00:00:00.000Z', '{}', 'IDLE')`,
       )
-      .run(WORKSPACE_ID);
+      .run(WORKSPACE_ID, ADDON_INSTALLATION_ID);
 
     const deleteToken = await lifecycleToken();
     const response = await server.addon.handle(
@@ -329,8 +329,8 @@ describe("lifecycle: DELETED", () => {
     expect(response.status).toBe(204);
     expect(await server.installations.load(WORKSPACE_ID, ADDON_INSTALLATION_ID)).toBeNull();
     const remaining = server.db
-      .prepare("SELECT COUNT(*) AS n FROM recoverable_entries WHERE workspace_id = ?")
-      .get(WORKSPACE_ID) as { n: number };
+      .prepare("SELECT COUNT(*) AS n FROM recoverable_entries WHERE workspace_id = ? AND addon_id = ?")
+      .get(WORKSPACE_ID, ADDON_INSTALLATION_ID) as { n: number };
     expect(remaining.n).toBe(0);
   });
 });

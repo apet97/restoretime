@@ -696,8 +696,7 @@ describe("action lifecycle", () => {
             disabled: false,
             broken: false,
             clockifyUnavailable: false,
-            truncated: false,
-            limit: 200,
+            nextCursor: null,
           }
         : { items: [] },
     ));
@@ -742,8 +741,7 @@ describe("action lifecycle", () => {
             disabled: false,
             broken: false,
             clockifyUnavailable: true,
-            truncated: false,
-            limit: 200,
+            nextCursor: null,
           }
         : { items: [] },
     ));
@@ -774,8 +772,7 @@ describe("action lifecycle", () => {
             disabled: false,
             broken: false,
             clockifyUnavailable: false,
-            truncated: false,
-            limit: 200,
+            nextCursor: null,
           }
         : { items: [] },
     ));
@@ -808,7 +805,7 @@ describe("action lifecycle", () => {
     (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
       if (path === "/api/entries") {
         queries.push(query);
-        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, truncated: false, limit: 200 });
+        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, nextCursor: null });
       }
       return Promise.resolve({ items: [] });
     });
@@ -833,7 +830,7 @@ describe("action lifecycle", () => {
     (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       if (path === "/api/entries") {
         entryReads += 1;
-        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, truncated: false, limit: 200 });
+        return Promise.resolve({ entries: [], disabled: false, broken: false, clockifyUnavailable: false, nextCursor: null });
       }
       if (path === "/api/options") {
         optionReads += 1;
@@ -1268,5 +1265,97 @@ describe("running-entry widget (docs/10 §4)", () => {
     const ctx = stubCtx();
     const rendered = renderResolutionWidgets(ctx, {}, () => undefined, [], null, source());
     expect(radios(rendered)).toHaveLength(0);
+  });
+});
+
+describe("list continuation", () => {
+  function listRow(id: string) {
+    return {
+      id,
+      lifecycleState: "IDLE" as const,
+      detectedAt: "2026-08-07T12:00:00Z",
+      source: { ...source(), description: `entry ${id}` },
+      preflightSummary: { blockerCount: 0, actionRequiredCount: 0 },
+    };
+  }
+
+  function listPage(entries: ReturnType<typeof listRow>[], nextCursor: string | null) {
+    return { entries, disabled: false, broken: false, clockifyUnavailable: false, nextCursor };
+  }
+
+  function loadMoreButton(ctx: ReturnType<typeof stubCtx>): HTMLButtonElement | undefined {
+    return Array.from(ctx.root.querySelectorAll("button")).find(
+      (button) => button.textContent === "Load more",
+    ) as HTMLButtonElement | undefined;
+  }
+
+  it("appends the next page and keeps the rows already shown", async () => {
+    const ctx = stubCtx();
+    const cursors: (string | undefined)[] = [];
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
+      if (path !== "/api/entries") return Promise.resolve({ items: [] });
+      cursors.push(query?.cursor);
+      return Promise.resolve(
+        query?.cursor === undefined
+          ? listPage([listRow("re-1"), listRow("re-2")], "cursor-page-2")
+          : listPage([listRow("re-3")], null),
+      );
+    });
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-1"));
+    expect(ctx.root.textContent).not.toContain("entry re-3");
+
+    const more = loadMoreButton(ctx);
+    expect(more).toBeDefined();
+    more?.click();
+
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-3"));
+    // The earlier page stays on screen: Load more continues the list, it does not replace it.
+    expect(ctx.root.textContent).toContain("entry re-1");
+    expect(ctx.root.textContent).toContain("entry re-2");
+    // The server's own token is sent back verbatim; the browser never builds one.
+    expect(cursors).toEqual([undefined, "cursor-page-2"]);
+    // Last page: nothing left to continue.
+    expect(loadMoreButton(ctx)).toBeUndefined();
+  });
+
+  it("offers no continuation when the first page is the whole result", async () => {
+    const ctx = stubCtx();
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) =>
+      Promise.resolve(path === "/api/entries" ? listPage([listRow("re-1")], null) : { items: [] }),
+    );
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-1"));
+    expect(loadMoreButton(ctx)).toBeUndefined();
+  });
+
+  it("starts a fresh sequence when the filters change", async () => {
+    // Admin: the filter controls the fresh-sequence rule applies to are admin-only.
+    const ctx: Ctx = { ...stubCtx(), isAdminRole: true };
+    const queries: (Record<string, string> | undefined)[] = [];
+    (ctx.api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string, query?: Record<string, string>) => {
+      if (path !== "/api/entries") return Promise.resolve({ items: [] });
+      queries.push(query);
+      return Promise.resolve(listPage([listRow("re-1")], "cursor-page-2"));
+    });
+
+    renderList(ctx);
+    await vi.waitFor(() => expect(ctx.root.textContent).toContain("entry re-1"));
+
+    const search = Array.from(ctx.root.querySelectorAll("input")).find(
+      (input) => input.getAttribute("placeholder") === "Search description",
+    ) as HTMLInputElement;
+    search.value = "invoice";
+    Array.from(ctx.root.querySelectorAll("button"))
+      .find((button) => button.textContent === "Apply filters")
+      ?.click();
+
+    // A cursor names a position in one ordered result set, so a filter change must not carry it:
+    // reusing it would skip rows rather than continue.
+    await vi.waitFor(() => expect(queries).toHaveLength(2));
+    expect(queries[1]?.cursor).toBeUndefined();
+    expect(queries[1]?.search).toBe("invoice");
   });
 });

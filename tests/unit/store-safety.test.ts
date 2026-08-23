@@ -5,6 +5,8 @@ import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { TEST_SCOPE, ingestEntry, seedInstallation } from "../support/installation-fixture.js";
+import { setReconcileFixture } from "../support/reconcile-fixture.js";
 
 const SOURCE: DeletedTimeEntry = {
   workspaceId: "ws-1",
@@ -52,9 +54,10 @@ function newPlan(id: string, recoverableEntryId: string, createdAt = "2026-08-08
 
 function seedAmbiguous() {
   const db = openDatabase(":memory:");
-  const entry = entries.ingestDeletedEntry(db, {
+  seedInstallation(db);
+  const entry = ingestEntry(db, {
     id: "entry-1",
-    workspaceId: "ws-1",
+    scope: TEST_SCOPE,
     sourceEntryId: SOURCE.entryId,
     ownerId: SOURCE.ownerId,
     detectedAt: "2026-08-08T09:00:00Z",
@@ -118,7 +121,7 @@ describe("reconcile run fencing", () => {
     })).toBe(false);
 
     firstOutcome("attempt-ambiguous", "AMBIGUOUS");
-    attempts.updateReconcile(db, "attempt-ambiguous", {
+    setReconcileFixture(db, "attempt-ambiguous", {
       checkedAt: "2026-08-08T09:00:03Z",
       checks: 1,
       matchCount: 1,
@@ -158,11 +161,11 @@ describe("reconcile run fencing", () => {
       candidateIds: [],
       truncated: false,
     };
-    attempts.updateReconcile(db, "attempt-1", prior);
+    setReconcileFixture(db, "attempt-1", prior);
 
     const begin = (checkedAt: string, runId: string) => attempts.beginReconcile(db, {
       recoverableEntryId: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-1",
       checkedAt,
       runId,
@@ -184,7 +187,7 @@ describe("reconcile run fencing", () => {
     })).toBe(false);
     expect(entries.adopt(db, {
       id: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-1",
       expectedReconcileRunId: "run-a",
       newEntryId: "stale-candidate",
@@ -192,7 +195,7 @@ describe("reconcile run fencing", () => {
       recreatedBy: "user-1",
       diffs: [],
     })).toBeUndefined();
-    expect(entries.getById(db, "ws-1", entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(db, TEST_SCOPE, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
     expect(attempts.cancelReconcile(db, "attempt-1", "run-a")).toBe(false);
     expect(attempts.cancelReconcile(db, "attempt-1", "run-b")).toBe(true);
     expect(attempts.getById(db, "attempt-1")?.reconcile).toEqual(prior);
@@ -205,7 +208,7 @@ describe("reconcile run fencing", () => {
     const { db, entry } = seedAmbiguous();
     const input = {
       recoverableEntryId: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-1",
       checkedAt: "2026-08-08T09:00:00Z",
       runId: "failed-read",
@@ -229,7 +232,7 @@ describe("reconcile run fencing", () => {
     ) => {
       expect(attempts.beginReconcile(db, {
         recoverableEntryId: entry.id,
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         expectedAttemptId: "attempt-1",
         checkedAt,
         runId,
@@ -268,7 +271,7 @@ describe("reconcile run fencing", () => {
     ] as const) {
       expect(attempts.beginReconcile(db, {
         recoverableEntryId: entry.id,
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         expectedAttemptId: "attempt-1",
         checkedAt,
         runId,
@@ -307,7 +310,7 @@ describe("reconcile run fencing", () => {
     expect(attempts.latestForEntry(db, entry.id)?.id).toBe("attempt-2");
     expect(attempts.beginReconcile(db, {
       recoverableEntryId: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-1",
       checkedAt: "2026-08-08T09:00:00Z",
       runId: "old-attempt",
@@ -320,9 +323,10 @@ describe("reconcile run fencing", () => {
 describe("lease clock fencing", () => {
   it("a backward clock cannot take over an unexpired recreation claim", () => {
     const db = openDatabase(":memory:");
-    const entry = entries.ingestDeletedEntry(db, {
+    seedInstallation(db);
+    const entry = ingestEntry(db, {
       id: "entry-lease",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: SOURCE.entryId,
       ownerId: SOURCE.ownerId,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -330,25 +334,26 @@ describe("lease clock fencing", () => {
     }).entry;
     expect(entries.claim(db, {
       id: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       claimToken: "owner",
       now: new Date("2026-08-08T09:00:00Z"),
     })?.claimToken).toBe("owner");
     expect(entries.claim(db, {
       id: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       claimToken: "rollback-takeover",
       now: new Date("2026-08-08T08:59:00Z"),
     })).toBeUndefined();
-    expect(entries.getById(db, "ws-1", entry.id)?.claimToken).toBe("owner");
+    expect(entries.getById(db, TEST_SCOPE, entry.id)?.claimToken).toBe("owner");
     db.close();
   });
 
   it("a backward clock at attempt start cannot shorten the existing lease", () => {
     const db = openDatabase(":memory:");
-    const entry = entries.ingestDeletedEntry(db, {
+    seedInstallation(db);
+    const entry = ingestEntry(db, {
       id: "entry-renewal",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: SOURCE.entryId,
       ownerId: SOURCE.ownerId,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -357,7 +362,7 @@ describe("lease clock fencing", () => {
     plans.createActive(db, newPlan("plan-renewal", entry.id));
     expect(entries.claim(db, {
       id: entry.id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       claimToken: "attempt-renewal",
       now: new Date("2026-08-08T09:00:00Z"),
     })?.claimExpiresAt).toBe("2026-08-08T09:01:00.000Z");
@@ -370,7 +375,7 @@ describe("lease clock fencing", () => {
       leaseExpiresAt: "2026-08-08T09:00:30.000Z",
       baseline: [],
     })).toBe(true);
-    expect(entries.getById(db, "ws-1", entry.id)?.claimExpiresAt).toBe("2026-08-08T09:01:00.000Z");
+    expect(entries.getById(db, TEST_SCOPE, entry.id)?.claimExpiresAt).toBe("2026-08-08T09:01:00.000Z");
     db.close();
   });
 });
@@ -378,9 +383,10 @@ describe("lease clock fencing", () => {
 describe("bounded recreation plan history", () => {
   it("keeps attempted stale plans and at most one unattempted stale plan", () => {
     const db = openDatabase(":memory:");
-    const entry = entries.ingestDeletedEntry(db, {
+    seedInstallation(db);
+    const entry = ingestEntry(db, {
       id: "entry-1",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: SOURCE.entryId,
       ownerId: SOURCE.ownerId,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -410,9 +416,10 @@ describe("bounded recreation plan history", () => {
 
   it("prunes consumed plans without attempts and retains consumed plans referenced by attempts", () => {
     const db = openDatabase(":memory:");
-    const entry = entries.ingestDeletedEntry(db, {
+    seedInstallation(db);
+    const entry = ingestEntry(db, {
       id: "entry-consumed",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: SOURCE.entryId,
       ownerId: SOURCE.ownerId,
       detectedAt: "2026-08-08T09:00:00Z",

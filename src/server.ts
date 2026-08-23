@@ -25,7 +25,7 @@ import { createNodeHttpAddonServer } from "@apet97/clockify-addon-sdk/adapters/n
 import { loadConfig, type AppConfig } from "./config.js";
 import { createLogger, type Logger } from "./log.js";
 import { openDatabase } from "./store/db.js";
-import { uninstallWorkspace } from "./store/cascade.js";
+import { isRetiredInstallation, supersedeOtherInstallations, uninstallInstallation } from "./store/cascade.js";
 import {
   clearInstallationBroken,
   createSqliteInstallationStore,
@@ -90,6 +90,11 @@ export interface CreateServerOptions {
   /** Test-only: verifies against a non-platform key (e.g. SDK testing/generateTestKeys()).
    * Omitted in production — the parser then uses Clockify's pinned platform key (S5). */
   readonly publicKey?: ClockifyPublicKeyInput;
+  /** Test-only: interposes on the encrypted installation store. The uninstall/webhook race
+   * (store/entries.ts `IngestOutcome`) can only be driven deterministically by pausing inside
+   * `load()`, which this server composes internally — racing the bare store instead would bypass
+   * the wiring under test. Omitted in production, where the store is used unchanged. */
+  readonly wrapInstallationStore?: (store: ClockifyInstallationStore) => ClockifyInstallationStore;
 }
 
 export async function createServer(
@@ -108,13 +113,14 @@ export async function createServer(
   const key = await importTokenEncryptionKey(config.tokenEncryptionKeyHex);
   const codec = createClockifyAesGcmTokenCodec(key);
   const rawInstallations = createSqliteInstallationStore(db);
-  const installations = wrapClockifyInstallationStoreWithEncryption(
+  const encryptedInstallations = wrapClockifyInstallationStoreWithEncryption(
     rawInstallations,
     codec,
     (error, workspaceId, addonId) => {
       logger.error("installation decode failed", { workspaceId, addonId, ...safeErrorSummary(error) });
     },
   );
+  const installations = options.wrapInstallationStore?.(encryptedInstallations) ?? encryptedInstallations;
 
   const manifest = buildManifest({ addonKey: config.addonKey, publicBaseUrl: config.publicBaseUrl });
   const parser = createClockifySignatureParser(
@@ -139,9 +145,23 @@ export async function createServer(
       if (previous !== null && previous.authToken !== payload.authToken) {
         clearInstallationBroken(db, claims.workspaceId, claims.addonId, installedAt);
       }
-      logger.info("installation installed", {
+      // A new addonId for this workspace is a new installation generation, which proves the
+      // previous one was removed in Clockify — a missed DELETED must not leave its deleted-entry
+      // data behind, unreachable but retained (store/cascade.ts).
+      //
+      // Unless this generation was already retired here. Lifecycle tokens carry no expiry, so a
+      // replayed INSTALLED for a long-gone generation can arrive at any time and always looks
+      // newest; acting on it would purge the current generation's data. The row above is still
+      // saved either way, so a workspace can never be left unable to install.
+      const replayed = isRetiredInstallation(db, claims);
+      const superseded = replayed
+        ? { installations: 0, entries: 0 }
+        : supersedeOtherInstallations(db, claims);
+      logger.info(replayed ? "replayed installation ignored for cleanup" : "installation installed", {
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,
+        supersededInstallations: superseded.installations,
+        supersededEntries: superseded.entries,
       });
       return { status: 204 };
     }),
@@ -172,15 +192,14 @@ export async function createServer(
   addon.registerLifecycleEvent(
     lifecycle.deleted,
     withClockifyDeletedLifecycleRequest(parser, async (_request, _payload, claims) => {
-      // The DELETED payload carries no generation: unconditional delete (docs/08). One
-      // synchronous transaction removes the installation row and every domain-table row for the
-      // workspace (store/cascade.ts) — IT-11.
-      const result = uninstallWorkspace(db, claims.workspaceId, claims.addonId);
-      logger.info("installation deleted", {
-        workspaceId: claims.workspaceId,
-        addonId: claims.addonId,
-        result,
-      });
+      // Scoped to the addressed installation generation, never to the workspace: a delayed event
+      // for an old `addonId` must not erase a later installation's recovery data (store/cascade.ts,
+      // IT-11). `stale` means no such installation is held any more — acknowledged, not retried.
+      const result = uninstallInstallation(db, claims);
+      logger.info(
+        result === "stale" ? "stale lifecycle event ignored" : "installation deleted",
+        { workspaceId: claims.workspaceId, addonId: claims.addonId, result },
+      );
       return { status: 204 };
     }),
   );
@@ -212,22 +231,32 @@ export async function createServer(
         // token, docs/12 boundary 1) — "received" means "a verified webhook arrived", not "was
         // accepted"; a rejected/malformed one below still counts here and separately as rejected.
         emitMetric(logger, "webhook_received", { workspaceId: claims.workspaceId });
-        if (claims.workspaceId === undefined) {
-          logger.error("webhook claims missing workspaceId", {});
-          emitMetric(logger, "webhook_rejected", { reason: "missing-workspace-id" });
-          return { status: 400, body: "missing workspaceId claim" };
+        // Both claims scope the write. Without `addonId` the delivery cannot be attributed to an
+        // installation generation, and the fenced insert has nothing to check against.
+        if (claims.workspaceId === undefined || claims.addonId === undefined) {
+          logger.error("webhook claims missing installation identity", {});
+          emitMetric(logger, "webhook_rejected", { reason: "missing-installation-identity" });
+          return { status: 400, body: "missing workspaceId or addonId claim" };
         }
-        const result = handleDeletedEntryWebhook(db, request.body, {
-          workspaceId: claims.workspaceId,
-        });
+        const scope = { workspaceId: claims.workspaceId, addonId: claims.addonId };
+        const result = handleDeletedEntryWebhook(db, request.body, scope);
         if (result.status >= 400) {
           logger.warn("webhook rejected", {
             workspaceId: claims.workspaceId,
             status: result.status,
           });
           emitMetric(logger, "webhook_rejected", { workspaceId: claims.workspaceId, status: result.status });
+        } else if (result.outcome === "installation-gone") {
+          // Never `recoverable_created`: nothing was written. Its own metric, because this counts
+          // the uninstall race the fence exists to close (store/entries.ts `IngestOutcome`).
+          logger.warn("webhook arrived after uninstall", scope);
+          emitMetric(logger, "webhook_after_uninstall", scope);
         } else {
-          emitMetric(logger, result.inserted ? "recoverable_created" : "webhook_duplicate", { workspaceId: claims.workspaceId });
+          emitMetric(
+            logger,
+            result.outcome === "inserted" ? "recoverable_created" : "webhook_duplicate",
+            { workspaceId: claims.workspaceId },
+          );
         }
         return result.body === undefined
           ? { status: result.status }

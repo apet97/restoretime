@@ -36,6 +36,7 @@ import {
   checkLiveDeployedHost,
   checkLiveEnv,
   describeIfAuthRejected,
+  liveScope,
   pickUsableProject,
   requiredCustomFieldValues,
   RT_PROBE_PREFIX,
@@ -148,7 +149,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       expect(["AMBIGUOUS", "RECREATED"]).toContain(body.result.outcome);
       expect(body.result.outcome).toBe(body.entry?.lifecycleState);
 
-      let finalEntry = entries.getById(harness.server.db, env.workspaceId, recoverableId);
+      let finalEntry = entries.getById(harness.server.db, liveScope(env), recoverableId);
       if (finalEntry?.lifecycleState !== "RECREATED") {
         // The immediate first-check reconcile did not find it yet (e.g. read-after-write lag).
         // Reconcile directly at the client/store layer (same call `runReconcile` makes, same as
@@ -163,7 +164,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
           if (planRow) {
             const reconcileRunId = beginReconcileFixture(harness.server.db, {
               recoverableEntryId: recoverableId,
-              workspaceId: env.workspaceId,
+              scope: liveScope(env),
               expectedAttemptId: attempt.id,
               checkedAt: new Date().toISOString(),
             });
@@ -171,7 +172,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
               db: harness.server.db,
               client: restClient,
               entryId: recoverableId,
-              workspaceId: env.workspaceId,
+              scope: liveScope(env),
               userId: owner.id,
               plannedRequest: planRow.plannedRequest,
               baseline: attempt.baseline ?? [],
@@ -183,7 +184,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
             expect(reconcileResult.kind).toBe("adopted");
           }
         }
-        finalEntry = entries.getById(harness.server.db, env.workspaceId, recoverableId);
+        finalEntry = entries.getById(harness.server.db, liveScope(env), recoverableId);
       }
       expect(finalEntry?.lifecycleState).toBe("RECREATED");
       expect(finalEntry?.newEntryId).toBeDefined();
@@ -262,7 +263,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
       const body = recreate.body as { result: { outcome: string } };
       expect(body.result.outcome).toBe("AMBIGUOUS");
 
-      const stayedAmbiguous = entries.getById(harness.server.db, env.workspaceId, recoverableId);
+      const stayedAmbiguous = entries.getById(harness.server.db, liveScope(env), recoverableId);
       expect(stayedAmbiguous?.lifecycleState).toBe("AMBIGUOUS");
       expect(stayedAmbiguous?.newEntryId).toBeNull(); // nothing was ever created
 
@@ -278,7 +279,7 @@ describe("LV-10 mandatory ambiguity drill (docs/13, hard gate)", () => {
 
       // Store-level "user marks not created" (bypasses only the UI cooldown window, not the
       // reconcile mechanics under test — see the module header).
-      const marked = entries.markNotCreated(harness.server.db, env.workspaceId, recoverableId);
+      const marked = entries.markNotCreated(harness.server.db, liveScope(env), recoverableId);
       expect(marked?.lifecycleState).toBe("IDLE");
       console.log("LV-10(b): nothing was ever sent to Clockify; the row stayed AMBIGUOUS through a real reconcile and moved to IDLE on 'not created'. Proved live.");
     } catch (err) {

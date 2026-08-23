@@ -207,9 +207,9 @@ are documentation and a test-harness fix on an **evaluation** deployment, not a 
 and a gate met on an evaluation deployment does not transfer to a later candidate. What the
 2026-08-23 run on `1743857` did establish, recorded in docs/15:
 
-- The strict live gate passed and was reproduced twice — 13 files, 45 tests, exit 0, zero skips and
-  zero blocked rows — with valid LV-01B and LV-02B receipts naming that exact candidate, that
-  deployment, and the `6a8a5582…` installation. It also found and closed the reason the suite could
+- The strict live gate passed and was reproduced three times — 13 files, 45 tests, exit 0, zero
+  skips and zero blocked rows — with valid LV-01B and LV-02B receipts naming that exact candidate,
+  that deployment, and the `6a8a5582…` installation. It also found and closed the reason the suite could
   not run at all after migration 0004.
 - The cleanup scan covered all 10 workspace users including deactivated ones, every page, and
   active and archived tags and custom fields, and found zero `RT-PROBE-` artifacts with zero read

@@ -111,6 +111,63 @@ preview renderings at light, dark, and 380px.
 All seeded entries and rows were removed afterwards: zero `RT-` entries in Clockify, zero rows for
 that workspace, and the other workspace's installation and 4 rows untouched throughout.
 
+### 2026-08-23 — `17438570dfb97f0982e0617648bf7b914a1611e3`, the first live-suite run since the ownership change
+
+Developer deployment `cd4808d6-9e99-4fa2-8be2-e9eb7f3fc414` (instance
+`55d85742-e53e-409c-9521-1c714615d13f`) replaced `4f3c3060-f46e-45f0-bb15-6097540521a8`, which in
+turn replaced `fdce441f-145b-4366-a88b-ef3c1ba81d90`. It runs commit
+`17438570dfb97f0982e0617648bf7b914a1611e3` with `RESTORETIME_CANDIDATE_ID` set to that commit,
+deployed with `railway up` from a clean checkout of it. This is an evaluation deployment, not a
+release candidate.
+
+All three deployments carry image digest
+`sha256:bfe346c69b2ac256aa22bddff5a51219a63a5e110965f539dcf788509d86f9eb`, and
+`sourceFingerprintFromGit` returns
+`d14273d42e7b932ae2320c5edec3648c1a84a0360c5f5b6fc41013d17f6f4642` for `e3a920d`, `d29f53d`, and
+`1743857` alike. Nothing under `src/` or the other fingerprint inputs changed across the three: the
+two commits since `e3a920d` are documentation and one test-harness fix.
+
+**`tests/live/` had not run since `(workspace_id, addon_id)` became the ownership key, and it did
+not pass on the first attempt.** LV-03 through LV-10 failed before reaching Clockify: `liveScope`
+named `CK_LIVE_ADDON_ID` — the Clockify-side installation id — while the in-process harness
+installs under the synthetic `restoretime-live-addon`, so the generation fence answered
+`installation-gone` to every seed. Fixed in `1743857` with
+`tests/integration/live-harness-generation.test.ts` as the offline guard that was missing; removing
+the fix turns that test red with the same outcome. The application source is untouched by the fix.
+
+`npm run test:live:release` then passed, and was **reproduced twice**: 13 files and 45 tests, exit
+0, **zero skips and zero blocked rows**, plus the separate cleanup suite. LV-01A, LV-01B, LV-02A,
+LV-02B, and LV-03 through LV-10 all pass on this candidate, including LV-10's hard ambiguity gate
+in both legs — a create that really committed while the caller saw a transport failure was adopted
+by reconcile, and a create that was never sent stayed uncommitted.
+
+Operator receipts for this candidate are in `restoretime-1743857-evidence/` outside the repository:
+
+- **LV-01B** — the authenticated component rendered in the real developer Clockify iframe, with the
+  component JWT carrying `addonId` `6a8a55823e328737e6b9556c`; the sidebar item **Time Entry
+  Recovery** active with its icon served from this deployment's `/icon.svg`; the deleted-entry list
+  loaded; the `/component` response carrying `frame-ancestors https://developer.clockify.me` and
+  `connect-src 'self'`; and, on a cache-bypassing top-level load, zero console errors, zero CSP
+  errors, and seven of seven requests answered 200. The zero counts are real zeros: a control
+  `console.error` was recorded by the same buffer and cleared immediately before the measured load.
+- **LV-02B** — deployment `cd4808d6` logged `webhook_received` at `2026-08-23T07:54:41.541Z`, and
+  that deployment's own volume holds `recoverable_entries` row
+  `5181d5f1-a81b-4c3d-85c0-e2417f7b55d0` with `source_entry_id` `6a8aa7403e328737e6b95ef8` and
+  `detected_at` `2026-08-23T07:54:41.541Z`. Log lines carry no entry id by design, so the row's
+  timestamp is what pins the log pair to the source id LV-02A printed.
+
+Cleanup afterwards, independently of the suite's own teardown: a scan of all 10 workspace users
+including deactivated ones, every page, plus active and archived tags and every custom field, found
+**zero** `RT-PROBE-` artifacts and reported **zero** read failures. The 36 `RT-PROBE-` rows the runs
+captured were deleted from the deployed volume, leaving that generation with the single
+pre-existing recreated row from the design-pass check; the other workspace's 4 rows were untouched,
+`integrity_check` returned `ok`, and `user_version` stayed 5.
+
+Not proved by this run, and deliberately so: Railway backup, point-in-time recovery, and isolated
+restore; a version-2 migration and rollback drill; reachable-ref secret scanning; the local Docker
+health and `SIGTERM` gates; branch protection and enforced release-candidate CI; and anything on
+production or the Marketplace. This deployment carries no production or Marketplace readiness claim.
+
 ## CI gates (every PR)
 
 1. `npm ci`

@@ -202,6 +202,23 @@ evidence.
 
 ## Next-candidate gates
 
+None of these boxes is checked by the work on `main` since `v1.0.0-rc.14`: `d29f53d` and `1743857`
+are documentation and a test-harness fix on an **evaluation** deployment, not a release candidate,
+and a gate met on an evaluation deployment does not transfer to a later candidate. What the
+2026-08-23 run on `1743857` did establish, recorded in docs/15:
+
+- The strict live gate passed and was reproduced twice — 13 files, 45 tests, exit 0, zero skips and
+  zero blocked rows — with valid LV-01B and LV-02B receipts naming that exact candidate, that
+  deployment, and the `6a8a5582…` installation. It also found and closed the reason the suite could
+  not run at all after migration 0004.
+- The cleanup scan covered all 10 workspace users including deactivated ones, every page, and
+  active and archived tags and custom fields, and found zero `RT-PROBE-` artifacts with zero read
+  failures.
+- Node 22 typecheck, lint, 502 offline tests, 111 E2E tests, and both npm audits passed.
+
+Still not run on any commit since `v1.0.0-rc.14`: reachable-ref secret scanning, the local Docker
+health and `SIGTERM` gates, and the version-2 migration and rollback drill.
+
 - [ ] The exact next candidate passes Node 22 typecheck, lint, offline tests, `npm run test:e2e`,
       both npm audits, redacted reachable-ref secret scanning, and the local Docker health and
       `SIGTERM` gates. Record candidate-bound receipts. Local evidence does not prove a deployed

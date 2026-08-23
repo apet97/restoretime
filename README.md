@@ -158,6 +158,12 @@ The `v1.0.0-rc.14` developer prerelease points to
 receipts apply only to that commit; later application commits need their own candidate-bound
 proof.
 
+`main` has moved past that tag and is **not** a release candidate. The current developer
+deployment runs `17438570dfb97f0982e0617648bf7b914a1611e3`, on which the strict live gate passed
+twice with zero skips and fresh LV-01B and LV-02B receipts, and the workspace was left clean
+(docs/15). That is evaluation evidence on the developer environment; it does not make the commit a
+candidate or change anything in the paragraph above.
+
 ## Documentation map
 
 | Path | Content |

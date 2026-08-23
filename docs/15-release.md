@@ -83,6 +83,34 @@ release tags are **unprotected**, and the release-candidate gates beyond ordinar
 enforced** by the merge path. This deployment therefore carries no production or Marketplace
 readiness claim.
 
+On 2026-08-23, developer deployment `fdce441f-145b-4366-a88b-ef3c1ba81d90` replaced
+`9f425551-2535-4685-b4f9-9a7a2e778f91`. It runs commit
+`e3a920d2c3eec94b5b9e505c7bc5f28ae9beb018` (pull request 43, defect sweep and component design
+pass) with `RESTORETIME_CANDIDATE_ID` set to that commit, deployed with `railway up` from a clean
+checkout of it. This is an evaluation deployment, not a release candidate.
+
+Verified on that deployment, against the developer workspace `69bda6b317a0c5babe34b4ff` seeded with
+60 created-then-deleted entries:
+
+- All 60 captured under the current generation; list renders 50 with `Showing 50 entries.`
+- **Load more appends**: 50 → 60 rows, note becomes `All 60 entries shown.`, and focus moves to
+  that count when the last page removes the button — the keyboard regression this release fixes.
+- **Zero `rt-primary` buttons on the list**; the only filled button on the detail view is
+  `Continue to confirm`. That reservation is the point of the change.
+- Cache-bypassing reload of the embedded component produced zero console errors, zero CSP
+  violations, and no failed subresource loads.
+- Detail view renders the compacted Differences block and the full comparison table.
+
+**Date grouping was verified offline, not live, and deliberately so.** Rows group by *detected*
+day, and every seeded entry is detected the moment it is deleted — so any API-driven seed renders
+as a single group no matter how the entry dates are spread. Live confirms the single
+`DETECTED AUG 23, 2026` heading and that a second page merges into the open group rather than
+repeating it; multi-group rendering is covered by `tests/e2e/views.test.ts` and by the offline
+preview renderings at light, dark, and 380px.
+
+All seeded entries and rows were removed afterwards: zero `RT-` entries in Clockify, zero rows for
+that workspace, and the other workspace's installation and 4 rows untouched throughout.
+
 ## CI gates (every PR)
 
 1. `npm ci`

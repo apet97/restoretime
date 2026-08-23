@@ -155,6 +155,17 @@ installation add-on token from `CK_LIVE_ADDON_TOKEN` and the API URL from `CK_LI
 Every app request goes to the real sacrificial workspace with `X-Addon-Token`. The API key is used
 only by the direct probe client from `buildLiveRestClient`.
 
+That in-process harness installs under its own **synthetic** add-on identity — `LIVE_ADDON_KEY`
+`restoretime-live-suite` and `LIVE_ADDON_ID` `restoretime-live-addon` — because a test-signed
+platform token may only claim a synthetic add-on key and id. `CK_LIVE_ADDON_ID` is a different
+thing: the Clockify-side installation id, which the LV-01B and LV-02B receipts, the strict runner's
+token claim check, and the Railway handoff all compare against. `liveScope` must therefore name the
+synthetic generation, not `CK_LIVE_ADDON_ID`; pointing it at the latter makes the generation fence
+reject every LV-03…LV-10 seed with `installation-gone`, which is how the whole suite failed the
+first time it ran after migration 0004. `tests/integration/live-harness-generation.test.ts` is the
+offline guard: it repeats the harness's install and its seed scope with no network and no live
+credentials, so the pairing is now covered by `npm run test` instead of only by a live run.
+
 LV-01 and LV-02 are different. They include deployed-artifact and Clockify-issued evidence that a
 test-signed key cannot produce. Each row therefore has an automated A claim and an operator B
 receipt. The B receipt must name the exact target, workspace, add-on ID, add-on key, deployed URL,

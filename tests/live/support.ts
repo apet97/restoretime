@@ -76,11 +76,17 @@ function blocked(reason: string): { readonly blocked: true; readonly reason: str
   return { blocked: true, reason: `blocked — ${reason}` };
 }
 
-/** The installation generation the live suite works against: the configured developer workspace
- * plus the add-on identity from `CK_LIVE_ADDON_ID`. Every scoped store call in the live tests goes
- * through this rather than re-deriving the pair. */
+/** The installation generation the in-process harness works against: the configured developer
+ * workspace plus `LIVE_ADDON_ID`, the synthetic add-on identity `startLiveHarness` installs under.
+ * Every scoped store call in LV-03…LV-10 goes through this rather than re-deriving the pair.
+ *
+ * Deliberately NOT `env.addonId`. That is the Clockify-side installation id from
+ * `CK_LIVE_ADDON_ID`, which the LV-01B/LV-02B receipts, the strict runner's token claim check, and
+ * the Railway handoff all compare against — but which this harness never installs, because a
+ * test-signed platform token may only claim the synthetic add-on key and id. Scoping a seed to it
+ * makes the generation fence reject every row (`tests/integration/live-harness-generation.test.ts`). */
 export function liveScope(env: LiveEnv): InstallationScope {
-  return { workspaceId: env.workspaceId, addonId: env.addonId };
+  return { workspaceId: env.workspaceId, addonId: LIVE_ADDON_ID };
 }
 
 export interface LiveEnv {

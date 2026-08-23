@@ -26,6 +26,7 @@ import { insertAttemptFixture } from "../support/attempt-fixture.js";
 const ADDON_KEY = "restoretime-n8";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 
 let dir: string;
@@ -204,7 +205,7 @@ describe("N8 error-message sweep", () => {
 
     const first = entries.claimForActivePlan(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       planId,
       claimToken: "first-claim",
       now: new Date("2026-08-08T09:00:00Z"),
@@ -212,7 +213,7 @@ describe("N8 error-message sweep", () => {
     expect(first.kind).toBe("claimed");
     const second = entries.claimForActivePlan(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       planId,
       claimToken: "second-claim",
       now: new Date("2026-08-08T09:00:01Z"),
@@ -319,7 +320,7 @@ describe("N8 error-message sweep", () => {
     { status: 400, code: 4005, expectBroken: false },
   ])("handles a per-entry Clockify read failure without hiding the list", async ({ status, code, expectBroken }) => {
     const { server, token, entryId } = await setup();
-    const entry = entries.getById(server.db, WORKSPACE_ID, entryId);
+    const entry = entries.getById(server.db, SCOPE, entryId);
     if (!entry) throw new Error("expected seeded entry");
     server.db
       .prepare("UPDATE recoverable_entries SET source_json=? WHERE id=?")
@@ -408,11 +409,11 @@ describe("N8 error-message sweep", () => {
     const attemptId = "attempt-lazy-token-rejection";
     expect(entries.claim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: attemptId,
       now: new Date("2026-08-08T12:00:00Z"),
     })).toBeDefined();
-    entries.setAmbiguous(server.db, { id: entryId, workspaceId: WORKSPACE_ID, claimToken: attemptId });
+    entries.setAmbiguous(server.db, { id: entryId, scope: SCOPE, claimToken: attemptId });
     insertAttemptFixture(server.db, {
       id: attemptId,
       planId,
@@ -490,11 +491,11 @@ describe("N8 error-message sweep", () => {
     const attemptId = "manual-resolution-attempt";
     entries.claim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: attemptId,
       now: new Date("2026-08-08T12:00:00Z"),
     });
-    entries.setAmbiguous(server.db, { id: entryId, workspaceId: WORKSPACE_ID, claimToken: attemptId });
+    entries.setAmbiguous(server.db, { id: entryId, scope: SCOPE, claimToken: attemptId });
     insertAttemptFixture(server.db, {
       id: attemptId,
       planId,
@@ -526,6 +527,6 @@ describe("N8 error-message sweep", () => {
     expect((res.body as { error: string }).error).toBe(
       "This entry cannot be used for this recreation.",
     );
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(server.db, SCOPE, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });

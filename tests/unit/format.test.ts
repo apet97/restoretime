@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { formatEntryHeader, normalizeLocale, statusLabel, statusPresentation } from "../../src/ui/format.js";
+import { formatEntryHeader, normalizeLocale, statusPresentation } from "../../src/ui/format.js";
 
 const originalTimeZone = process.env.TZ;
 
@@ -12,16 +12,16 @@ afterAll(() => {
   else process.env.TZ = originalTimeZone;
 });
 
-describe("statusLabel", () => {
+describe("statusPresentation label", () => {
   it("does not claim readiness when the server has no preflight summary", () => {
-    expect(statusLabel({ lifecycleState: "IDLE", preflightSummary: null })).toBe("Status unknown");
+    expect(statusPresentation({ lifecycleState: "IDLE", preflightSummary: null }).label).toBe("Status unknown");
   });
 
   it("reports readiness after a successful preflight with no open issues", () => {
-    expect(statusLabel({
+    expect(statusPresentation({
       lifecycleState: "IDLE",
       preflightSummary: { blockerCount: 0, actionRequiredCount: 0, fidelity: "FULL" },
-    })).toBe("Ready to recreate");
+    }).label).toBe("Ready to recreate");
   });
 
   it.each([

@@ -19,15 +19,20 @@ import { ChaosFetchInjectedError } from "../../src/clockify/chaos-fetch.js";
 import { attemptRecreation, runReconcile } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
 import { beginReconcileFixture } from "../support/reconcile-fixture.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const WORKSPACE_ID = "ws-1";
+const ADDON_ID = "addon-install-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const USER_ID = "user-1";
 
 let dir: string;
 
 function freshDb() {
   dir = mkdtempSync(join(tmpdir(), "restoretime-chaos-drill-"));
-  return openDatabase(join(dir, "restoretime.sqlite"));
+  const db = openDatabase(join(dir, "restoretime.sqlite"));
+  seedInstallation(db, SCOPE);
+  return db;
 }
 
 afterEach(() => {
@@ -71,9 +76,9 @@ const SOURCE: DeletedTimeEntry = {
 };
 
 function seedEntry(db: ReturnType<typeof freshDb>) {
-  return entries.ingestDeletedEntry(db, {
+  return ingestEntry(db, {
     id: "re-1",
-    workspaceId: WORKSPACE_ID,
+    scope: SCOPE,
     sourceEntryId: "entry-a",
     ownerId: USER_ID,
     detectedAt: "2026-08-08T09:00:00Z",
@@ -112,7 +117,7 @@ function seedPlan(db: ReturnType<typeof freshDb>, recoverableEntryId: string) {
 function candidateEntry(overrides: Record<string, unknown> = {}) {
   return {
     id: "new-entry-1",
-    workspaceId: WORKSPACE_ID,
+    scope: SCOPE,
     userId: USER_ID,
     description: "hello",
     billable: true,
@@ -130,7 +135,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
     const db = freshDb();
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    entries.claim(db, { id: entry.id, scope: SCOPE, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
 
     let createCalls = 0;
     const fetchStub: typeof fetch = async (input, init) => {
@@ -154,7 +159,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       db,
       client,
       entryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       planId: "plan-1",
       plannedRequest: PLANNED,
       claimToken: "tok-1",
@@ -167,7 +172,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
     // The real POST was sent and "succeeded" server-side — the wrapper only lost the reply.
     expect(createCalls).toBe(1);
     expect(result.outcome).toBe("AMBIGUOUS");
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(db, SCOPE, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
     // The SDK classifies ClockifyApiTimeoutError as `possibly-committed`. The unexpected-error
     // reporter is only for `unknown`, so it must not fire here.
     expect(unexpectedError).toBeUndefined();
@@ -181,13 +186,13 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = buildClockifyClient({ apiUrl: "https://developer.clockify.me/api", authToken: "tok" }, { fetch: reconcileFetch });
-    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-1" });
+    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, scope: SCOPE, expectedAttemptId: "tok-1" });
 
     const reconcileResult = await runReconcile({
       db,
       client: reconcileClient,
       entryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
@@ -197,7 +202,7 @@ describe("LV-10 chaos hook, mode lose-response (docs/13 LV-10(a))", () => {
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "adopted", newEntryId: "new-entry-1" });
-    const row = entries.getById(db, WORKSPACE_ID, entry.id);
+    const row = entries.getById(db, SCOPE, entry.id);
     expect(row?.lifecycleState).toBe("RECREATED");
     expect(row?.newEntryId).toBe("new-entry-1");
   });
@@ -208,7 +213,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
     const db = freshDb();
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    entries.claim(db, { id: entry.id, scope: SCOPE, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
 
     let createCalls = 0;
     const fetchStub: typeof fetch = async (input, init) => {
@@ -229,7 +234,7 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       db,
       client,
       entryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       planId: "plan-1",
       plannedRequest: PLANNED,
       claimToken: "tok-1",
@@ -247,13 +252,13 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       return jsonResponse({ message: "unstubbed" }, 404);
     };
     const reconcileClient = buildClockifyClient({ apiUrl: "https://developer.clockify.me/api", authToken: "tok" }, { fetch: emptyFetch });
-    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, workspaceId: WORKSPACE_ID, expectedAttemptId: "tok-1" });
+    const reconcileRunId = beginReconcileFixture(db, { recoverableEntryId: entry.id, scope: SCOPE, expectedAttemptId: "tok-1" });
 
     const reconcileResult = await runReconcile({
       db,
       client: reconcileClient,
       entryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       userId: USER_ID,
       plannedRequest: PLANNED,
       baseline: [],
@@ -263,9 +268,9 @@ describe("LV-10 chaos hook, mode fail-before-send (docs/13 LV-10(b))", () => {
       now: new Date("2026-08-08T09:03:00Z"),
     });
     expect(reconcileResult).toEqual({ kind: "none" });
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(db, SCOPE, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
 
-    const marked = entries.markNotCreated(db, WORKSPACE_ID, entry.id);
+    const marked = entries.markNotCreated(db, SCOPE, entry.id);
     expect(marked?.lifecycleState).toBe("IDLE");
   });
 });
@@ -275,7 +280,7 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
     const db = freshDb();
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    entries.claim(db, { id: entry.id, scope: SCOPE, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
 
     let createCalls = 0;
     const fetchStub: typeof fetch = async (input, init) => {
@@ -298,7 +303,7 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
         db,
         client,
         entryId: entry.id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         planId: "plan-1",
         plannedRequest: PLANNED,
         claimToken: "tok-1",
@@ -316,7 +321,7 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
     const db = freshDb();
     const entry = seedEntry(db);
     seedPlan(db, entry.id);
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
+    entries.claim(db, { id: entry.id, scope: SCOPE, claimToken: "tok-1", now: new Date("2026-08-08T09:01:00Z") });
 
     const fetchStub: typeof fetch = async (input, init) => {
       const path = pathOf(input);
@@ -333,7 +338,7 @@ describe("the chaos hook itself is inert outside NODE_ENV=test", () => {
       db,
       client,
       entryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       planId: "plan-1",
       plannedRequest: PLANNED,
       claimToken: "tok-1",

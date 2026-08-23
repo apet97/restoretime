@@ -89,8 +89,7 @@ async function productionListMarkup(): Promise<string> {
     clockifyUnavailable: false,
     disabled: false,
     broken: false,
-    truncated: false,
-    limit: 200,
+      nextCursor: null,
   };
   (ctx.api.get as ReturnType<typeof vi.fn>).mockResolvedValue(response);
   renderList(ctx);

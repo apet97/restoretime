@@ -283,8 +283,8 @@ describe("XSS proof: hostile fixture through every rendered view", () => {
       }
       if (method === "GET" && path.endsWith("/tasks")) return jsonResponse([]);
       if (method === "GET" && path.endsWith("/projects/gone-project")) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
-      if (method === "GET" && path.endsWith("/projects/proj-2")) return jsonResponse({ id: "proj-2", name: XSS_REPLACEMENT_PROJECT_NAME, archived: false });
-      if (method === "GET" && path.endsWith("/projects")) return jsonResponse([{ id: "proj-2", name: XSS_REPLACEMENT_PROJECT_NAME, archived: false }]);
+      if (method === "GET" && path.endsWith("/projects/proj-2")) return jsonResponse({ id: "proj-2", name: XSS_REPLACEMENT_PROJECT_NAME, archived: false, public: true, memberships: [] });
+      if (method === "GET" && path.endsWith("/projects")) return jsonResponse([{ id: "proj-2", name: XSS_REPLACEMENT_PROJECT_NAME, archived: false, public: true, memberships: [] }]);
       if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]); // baseline: empty
       if (method === "POST" && path.endsWith("/time-entries")) {
         return jsonResponse(

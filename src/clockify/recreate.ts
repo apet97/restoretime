@@ -13,7 +13,7 @@ import {
 
 type TimeEntry = ClockifyApi.TimeEntry;
 import type Database from "better-sqlite3";
-import type { PlannedRequest, VerificationDiff } from "../domain/entry.js";
+import type { InstallationScope, PlannedRequest, VerificationDiff } from "../domain/entry.js";
 import { looselyEqual } from "../domain/values.js";
 import { clockifyErrorCode, describeClockifyCreateFailure } from "./errors.js";
 import * as entries from "../store/entries.js";
@@ -258,7 +258,9 @@ export interface ReconcileInput {
   readonly db: Database.Database;
   readonly client: ClockifyClient;
   readonly entryId: string;
-  readonly workspaceId: string;
+  /** Identifies both the Clockify workspace to read and the installation generation that owns the
+   * local row (domain/entry.ts `InstallationScope`). */
+  readonly scope: InstallationScope;
   readonly userId: string;
   readonly plannedRequest: PlannedRequest;
   readonly baseline: readonly string[];
@@ -294,7 +296,7 @@ function isUniqueConstraintError(err: unknown): boolean {
  * one match) adopt, guarded by the partial unique index (double-adoption guard, §8). */
 export async function runReconcile(input: ReconcileInput): Promise<ReconcileResult> {
   const description = input.plannedRequest.description ?? "";
-  const { items, truncated } = await listForUserPaged(input.client, input.workspaceId, input.userId, description);
+  const { items, truncated } = await listForUserPaged(input.client, input.scope.workspaceId, input.userId, description);
   if (truncated) return { kind: "truncated" };
 
   const fp = fingerprintFromPlanned(input.plannedRequest);
@@ -306,7 +308,7 @@ export async function runReconcile(input: ReconcileInput): Promise<ReconcileResu
   let diffs: VerificationDiff[];
   try {
     const actual = await input.client.timeEntries.get({
-      workspaceId: input.workspaceId,
+      workspaceId: input.scope.workspaceId,
       timeEntryId: decision.id,
     });
     diffs = diffPlannedVsActual(input.plannedRequest, actual);
@@ -319,7 +321,7 @@ export async function runReconcile(input: ReconcileInput): Promise<ReconcileResu
   try {
     const adopted = entries.adopt(input.db, {
       id: input.entryId,
-      workspaceId: input.workspaceId,
+      scope: input.scope,
       expectedAttemptId: input.expectedAttemptId,
       expectedReconcileRunId: input.reconcileRunId,
       newEntryId: decision.id,
@@ -341,7 +343,9 @@ export interface AttemptRecreationInput {
   readonly db: Database.Database;
   readonly client: ClockifyClient;
   readonly entryId: string;
-  readonly workspaceId: string;
+  /** Identifies both the Clockify workspace to write and the installation generation that owns the
+   * local row (domain/entry.ts `InstallationScope`). */
+  readonly scope: InstallationScope;
   readonly planId: string;
   readonly plannedRequest: PlannedRequest;
   readonly claimToken: string;
@@ -396,7 +400,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
   try {
     baseline = await fetchBaseline(
       input.client,
-      input.workspaceId,
+      input.scope.workspaceId,
       input.plannedRequest.userId,
       input.plannedRequest.description ?? "",
     );
@@ -448,7 +452,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
       () =>
         entries.setRecreated(input.db, {
           id: input.entryId,
-          workspaceId: input.workspaceId,
+          scope: input.scope,
           claimToken: input.claimToken,
           newEntryId: outcome.newEntry.id,
           recreatedAt: finishedAt,
@@ -459,7 +463,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
     let diffs: VerificationDiff[];
     try {
       const actual = await input.client.timeEntries.get({
-        workspaceId: input.workspaceId,
+        workspaceId: input.scope.workspaceId,
         timeEntryId: outcome.newEntry.id,
       });
       diffs = diffPlannedVsActual(input.plannedRequest, actual);
@@ -493,7 +497,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
       () =>
         entries.setFailed(input.db, {
           id: input.entryId,
-          workspaceId: input.workspaceId,
+          scope: input.scope,
           claimToken: input.claimToken,
         }) !== undefined,
     );
@@ -515,7 +519,7 @@ export async function attemptRecreation(input: AttemptRecreationInput): Promise<
     () =>
       entries.setAmbiguous(input.db, {
         id: input.entryId,
-        workspaceId: input.workspaceId,
+        scope: input.scope,
         claimToken: input.claimToken,
       }) !== undefined,
   );

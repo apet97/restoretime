@@ -2,12 +2,16 @@
 // migrated database.
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/store/db.js";
-import { ingestDeletedEntry, getById, adopt, list } from "../../src/store/entries.js";
+import { getById, adopt, list } from "../../src/store/entries.js";
 import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
 import { beginReconcileFixture } from "../support/reconcile-fixture.js";
 import * as plans from "../../src/store/plans.js";
-import type { DeletedTimeEntry } from "../../src/domain/entry.js";
+import type { DeletedTimeEntry, InstallationScope } from "../../src/domain/entry.js";
+import { TEST_SCOPE, ingestEntry, seedInstallation } from "../support/installation-fixture.js";
+
+// A second installation generation in the same workspace, for scope-isolation cases.
+const OTHER_SCOPE = { workspaceId: "ws-2", addonId: TEST_SCOPE.addonId };
 
 function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
   return {
@@ -36,11 +40,13 @@ function source(overrides: Partial<DeletedTimeEntry> = {}): DeletedTimeEntry {
 describe("UT-L01 lineage linking on ingestion", () => {
   it("links parent_recoverable_id when the deleted id matches an existing new_entry_id", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
 
     // Row A was recreated as Clockify entry "new-entry-x".
-    const { entry: rowA } = ingestDeletedEntry(db, {
+    const { entry: rowA } = ingestEntry(db, {
       id: "re-a",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "entry-a",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
@@ -51,9 +57,9 @@ describe("UT-L01 lineage linking on ingestion", () => {
     ).run(rowA.id);
 
     // Row B: the webhook fires again for "new-entry-x" (it got deleted too) — chain A -> B.
-    const { entry: rowB } = ingestDeletedEntry(db, {
+    const { entry: rowB } = ingestEntry(db, {
       id: "re-b",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "new-entry-x",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:05:00Z",
@@ -61,15 +67,17 @@ describe("UT-L01 lineage linking on ingestion", () => {
     });
 
     expect(rowB.parentRecoverableId).toBe(rowA.id);
-    const reloaded = getById(db, "ws-1", "re-b");
+    const reloaded = getById(db, TEST_SCOPE, "re-b");
     expect(reloaded?.parentRecoverableId).toBe(rowA.id);
   });
 
   it("leaves parent_recoverable_id null when no row's new_entry_id matches", () => {
     const db = openDatabase(":memory:");
-    const { entry } = ingestDeletedEntry(db, {
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
+    const { entry } = ingestEntry(db, {
       id: "re-a",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "entry-a",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
@@ -80,9 +88,11 @@ describe("UT-L01 lineage linking on ingestion", () => {
 
   it("does not link a recreated entry owned by another member", () => {
     const db = openDatabase(":memory:");
-    const { entry: foreignParent } = ingestDeletedEntry(db, {
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
+    const { entry: foreignParent } = ingestEntry(db, {
       id: "re-foreign",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "foreign-source",
       ownerId: "user-2",
       detectedAt: "2026-08-08T09:00:00Z",
@@ -92,9 +102,9 @@ describe("UT-L01 lineage linking on ingestion", () => {
       "UPDATE recoverable_entries SET lifecycle_state='RECREATED', new_entry_id='shared-clockify-id' WHERE id=?",
     ).run(foreignParent.id);
 
-    const { entry: child } = ingestDeletedEntry(db, {
+    const { entry: child } = ingestEntry(db, {
       id: "re-child",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "shared-clockify-id",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:05:00Z",
@@ -106,17 +116,19 @@ describe("UT-L01 lineage linking on ingestion", () => {
 
   it("a duplicate delivery (same source_entry_id) is not inserted twice", () => {
     const db = openDatabase(":memory:");
-    const first = ingestDeletedEntry(db, {
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
+    const first = ingestEntry(db, {
       id: "re-a",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "entry-a",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
       source: source(),
     });
-    const second = ingestDeletedEntry(db, {
+    const second = ingestEntry(db, {
       id: "re-a-retry",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "entry-a",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:05Z",
@@ -140,15 +152,15 @@ describe("double-adoption guard", () => {
     db: ReturnType<typeof openDatabase>,
     id: string,
     sourceEntryId: string,
-    workspaceId = "ws-1",
+    scope: InstallationScope = TEST_SCOPE,
   ) {
-    ingestDeletedEntry(db, {
+    ingestEntry(db, {
       id,
-      workspaceId,
+      scope,
       sourceEntryId,
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
-      source: source({ workspaceId, entryId: sourceEntryId }),
+      source: source({ workspaceId: scope.workspaceId, entryId: sourceEntryId }),
     });
     plans.createActive(db, {
       id: `plan-${id}`,
@@ -160,7 +172,7 @@ describe("double-adoption guard", () => {
       resolution: [],
       presentation: { project: null, task: null, tags: [], customFields: [], editable: [] },
       plannedRequest: {
-        workspaceId,
+        workspaceId: scope.workspaceId,
         userId: "user-1",
         start: "2026-08-08T10:00:00Z",
         end: "2026-08-08T11:00:00Z",
@@ -182,11 +194,12 @@ describe("double-adoption guard", () => {
 
   it("rejects a second row adopting an already-adopted new_entry_id", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     ambiguousRow(db, "re-a", "entry-a");
     ambiguousRow(db, "re-b", "entry-b");
 
     const input = {
-      workspaceId: "ws-1",
       newEntryId: "new-entry-x",
       recreatedAt: "2026-08-08T10:00:00Z",
       recreatedBy: "user-1",
@@ -194,11 +207,12 @@ describe("double-adoption guard", () => {
     };
     const runA = beginReconcileFixture(db, {
       recoverableEntryId: "re-a",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-re-a",
     });
     expect(adopt(db, {
       id: "re-a",
+      scope: TEST_SCOPE,
       expectedAttemptId: "attempt-re-a",
       expectedReconcileRunId: runA,
       ...input,
@@ -209,16 +223,16 @@ describe("double-adoption guard", () => {
     try {
       const runB = beginReconcileFixture(db, {
         recoverableEntryId: "re-b",
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         expectedAttemptId: "attempt-re-b",
       });
-      adopt(db, { id: "re-b", expectedAttemptId: "attempt-re-b", expectedReconcileRunId: runB, ...input });
+      adopt(db, { id: "re-b", scope: TEST_SCOPE, expectedAttemptId: "attempt-re-b", expectedReconcileRunId: runB, ...input });
     } catch (err) {
       thrown = err;
     }
     expect(String((thrown as { code?: string })?.code)).toMatch(/^SQLITE_CONSTRAINT/);
 
-    const rowB = getById(db, "ws-1", "re-b");
+    const rowB = getById(db, TEST_SCOPE, "re-b");
     expect(rowB?.lifecycleState).toBe("AMBIGUOUS");
     expect(rowB?.newEntryId).toBeNull();
     expect(attempts.getById(db, "attempt-re-b")?.outcome).toBe("AMBIGUOUS");
@@ -226,16 +240,18 @@ describe("double-adoption guard", () => {
 
   it("allows the same new_entry_id in a different workspace", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     ambiguousRow(db, "re-a", "entry-a");
-    ambiguousRow(db, "re-other", "entry-a", "ws-2");
+    ambiguousRow(db, "re-other", "entry-a", OTHER_SCOPE);
 
     const common = { recreatedAt: "2026-08-08T10:00:00Z", recreatedBy: "user-1", diffs: [] };
-    const runA = beginReconcileFixture(db, { recoverableEntryId: "re-a", workspaceId: "ws-1", expectedAttemptId: "attempt-re-a" });
-    const runOther = beginReconcileFixture(db, { recoverableEntryId: "re-other", workspaceId: "ws-2", expectedAttemptId: "attempt-re-other" });
+    const runA = beginReconcileFixture(db, { recoverableEntryId: "re-a", scope: TEST_SCOPE, expectedAttemptId: "attempt-re-a" });
+    const runOther = beginReconcileFixture(db, { recoverableEntryId: "re-other", scope: OTHER_SCOPE, expectedAttemptId: "attempt-re-other" });
     expect(
       adopt(db, {
         id: "re-a",
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         expectedAttemptId: "attempt-re-a",
         expectedReconcileRunId: runA,
         newEntryId: "new-entry-x",
@@ -246,7 +262,7 @@ describe("double-adoption guard", () => {
     expect(
       adopt(db, {
         id: "re-other",
-        workspaceId: "ws-2",
+        scope: OTHER_SCOPE,
         expectedAttemptId: "attempt-re-other",
         expectedReconcileRunId: runOther,
         newEntryId: "new-entry-x",
@@ -262,9 +278,9 @@ describe("double-adoption guard", () => {
 // rows this product exists for, and neither appears in any current options list.
 describe("UT-L02 name filters match the names stored at deletion time", () => {
   function seed(db: ReturnType<typeof openDatabase>, id: string, overrides: Partial<DeletedTimeEntry>): void {
-    ingestDeletedEntry(db, {
+    ingestEntry(db, {
       id,
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: id,
       ownerId: overrides.ownerId ?? "user-1",
       detectedAt: "2026-08-08T09:00:00Z",
@@ -273,11 +289,13 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
   }
 
   function ids(db: ReturnType<typeof openDatabase>, filters: Parameters<typeof list>[2]): string[] {
-    return list(db, "ws-1", filters).rows.map((r) => r.id);
+    return list(db, TEST_SCOPE, filters).rows.map((r) => r.id);
   }
 
   it("matches a substring of either name, and folds ASCII case", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seed(db, "re-a", { ownerName: "Ada Lovelace", projectName: "Analytical Engine" });
     seed(db, "re-b", { ownerName: "Grace Hopper", projectName: "COBOL" });
 
@@ -293,6 +311,8 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
   // the case a reader would expect to work.
   it("does NOT fold non-ASCII case — the documented limit of SQLite's LIKE", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seed(db, "re-a", { ownerName: "Ötzi Iceman" });
     expect(ids(db, { ownerName: "Ötzi" })).toEqual(["re-a"]);
     expect(ids(db, { ownerName: "ötzi" })).toEqual([]);
@@ -300,6 +320,8 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
 
   it("treats SQLite's own wildcards as literal text, so a name containing % or _ is searchable", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seed(db, "re-pct", { projectName: "Q3 100% Margin" });
     seed(db, "re-us", { projectName: "back_office" });
     seed(db, "re-bs", { projectName: "path\\to\\thing" });
@@ -316,6 +338,8 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
 
   it("a project-less row never matches a project-name filter, and an unnamed owner never matches a user filter", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     // `projectName: null` is a manual entry with no project; `ownerName: ""` is what the webhook
     // normalizer stores when the payload carries no user name (src/ingest/deleted-entry.ts).
     seed(db, "re-none", { projectName: null, ownerName: "" });
@@ -330,6 +354,8 @@ describe("UT-L02 name filters match the names stored at deletion time", () => {
 
   it("combines with the id filters rather than replacing them (both narrow)", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seed(db, "re-a", { ownerId: "user-1", ownerName: "Ada Lovelace" });
     seed(db, "re-b", { ownerId: "user-2", ownerName: "Ada Byron" });
 
@@ -351,9 +377,9 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
       ["re-failed", "FAILED"],
       ["re-dismissed", "DISMISSED"],
     ] as const) {
-      ingestDeletedEntry(db, {
+      ingestEntry(db, {
         id,
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         sourceEntryId: id,
         ownerId: "user-1",
         detectedAt: "2026-08-08T09:00:00Z",
@@ -364,11 +390,13 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
   }
 
   function ids(db: ReturnType<typeof openDatabase>, filters: Parameters<typeof list>[2]): string[] {
-    return list(db, "ws-1", filters).rows.map((r) => r.id).sort();
+    return list(db, TEST_SCOPE, filters).rows.map((r) => r.id).sort();
   }
 
   it("keeps each filter's behaviour on its own", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seedStates(db);
     // Default: dismissed rows are hidden, everything else shows.
     expect(ids(db, {})).toEqual(["re-failed", "re-idle"]);
@@ -380,6 +408,8 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
 
   it("answers a contradictory pair with the dismissed rows, never with an empty list", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seedStates(db);
     // `dismissed` wins: reaching a category the default hides is its only purpose. The point of
     // the assertion is the non-emptiness — an empty result here would be indistinguishable from
@@ -390,6 +420,8 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
 
   it("dismissed:false is not a filter — it leaves the default hiding in place", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     seedStates(db);
     expect(ids(db, { dismissed: false })).toEqual(["re-failed", "re-idle"]);
     expect(ids(db, { status: "FAILED", dismissed: false })).toEqual(["re-failed"]);
@@ -399,38 +431,40 @@ describe("UT-L03 status and dismissed resolve to one lifecycle state, never a co
 describe("list ordering", () => {
   it("uses id as a deterministic descending tie-breaker without widening the page", () => {
     const db = openDatabase(":memory:");
+    seedInstallation(db);
+    seedInstallation(db, OTHER_SCOPE);
     for (const id of ["re-a", "re-b", "re-c"]) {
-      ingestDeletedEntry(db, {
+      ingestEntry(db, {
         id,
-        workspaceId: "ws-1",
+        scope: TEST_SCOPE,
         sourceEntryId: `source-${id}`,
         ownerId: "user-1",
         detectedAt: "2026-08-08T09:00:00.000Z",
         source: source({ entryId: `source-${id}` }),
       });
     }
-    ingestDeletedEntry(db, {
+    ingestEntry(db, {
       id: "re-foreign-owner",
-      workspaceId: "ws-1",
+      scope: TEST_SCOPE,
       sourceEntryId: "source-foreign-owner",
       ownerId: "user-2",
       detectedAt: "2026-08-08T09:00:00.000Z",
       source: source({ entryId: "source-foreign-owner", ownerId: "user-2" }),
     });
-    ingestDeletedEntry(db, {
+    ingestEntry(db, {
       id: "re-foreign-workspace",
-      workspaceId: "ws-2",
+      scope: OTHER_SCOPE,
       sourceEntryId: "source-foreign-workspace",
       ownerId: "user-1",
       detectedAt: "2026-08-08T09:00:00.000Z",
       source: source({ entryId: "source-foreign-workspace", workspaceId: "ws-2" }),
     });
 
-    expect(list(db, "ws-1", { ownerId: "user-1" }).rows.map((row) => row.id)).toEqual(["re-c", "re-b", "re-a"]);
-    const first = list(db, "ws-1", { ownerId: "user-1", limit: 2 });
-    const second = list(db, "ws-1", { ownerId: "user-1", limit: 2 });
+    expect(list(db, TEST_SCOPE, { ownerId: "user-1" }).rows.map((row) => row.id)).toEqual(["re-c", "re-b", "re-a"]);
+    const first = list(db, TEST_SCOPE, { ownerId: "user-1", limit: 2 });
+    const second = list(db, TEST_SCOPE, { ownerId: "user-1", limit: 2 });
     expect(first.rows.map((row) => row.id)).toEqual(["re-c", "re-b"]);
     expect(second).toEqual(first);
-    expect(first.truncated).toBe(true);
+    expect(first.nextCursor).not.toBeNull();
   });
 });

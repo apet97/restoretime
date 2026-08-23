@@ -38,10 +38,6 @@ export function statusPresentation(row: Pick<ListRow, "lifecycleState" | "prefli
   }
 }
 
-export function statusLabel(row: Pick<ListRow, "lifecycleState" | "preflightSummary">): string {
-  return statusPresentation(row).label;
-}
-
 /** docs/10 §5: Complete / Adjusted / Partial. IMPOSSIBLE never reaches the confirm view (a plan
  * with blockers has no confirm action), so it renders defensively rather than throwing. */
 export function fidelityLabel(fidelity: Fidelity): string {

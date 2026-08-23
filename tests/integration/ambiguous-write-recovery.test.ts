@@ -14,8 +14,11 @@ import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import { attemptRecreation } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const WORKSPACE_ID = "ws-1";
+const ADDON_ID = "addon-install-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const USER_ID = "user-1";
 
 const SOURCE: DeletedTimeEntry = {
@@ -94,7 +97,7 @@ function runAttempt(
     db,
     client,
     entryId,
-    workspaceId: WORKSPACE_ID,
+    scope: SCOPE,
     planId: "plan-1",
     plannedRequest: PLANNED,
     claimToken,
@@ -106,7 +109,9 @@ let dir = "";
 
 function freshDb() {
   dir = mkdtempSync(join(tmpdir(), "restoretime-ambiguous-write-"));
-  return openDatabase(join(dir, "restoretime.sqlite"));
+  const db = openDatabase(join(dir, "restoretime.sqlite"));
+  seedInstallation(db, SCOPE);
+  return db;
 }
 
 afterEach(() => {
@@ -115,9 +120,9 @@ afterEach(() => {
 });
 
 function seed(db: ReturnType<typeof freshDb>) {
-  const entry = entries.ingestDeletedEntry(db, {
+  const entry = ingestEntry(db, {
     id: "recoverable-1",
-    workspaceId: WORKSPACE_ID,
+    scope: SCOPE,
     sourceEntryId: SOURCE.entryId,
     ownerId: USER_ID,
     detectedAt: "2026-08-08T09:00:00Z",
@@ -148,7 +153,7 @@ describe("expired recreation attempts", () => {
     const firstToken = "attempt-that-may-have-sent-create";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: firstToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -165,7 +170,7 @@ describe("expired recreation attempts", () => {
     const secondToken = "attempt-that-must-not-send-create";
     const reclaimed = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: secondToken,
       now: new Date("2026-08-08T09:02:01Z"),
     });
@@ -177,7 +182,7 @@ describe("expired recreation attempts", () => {
 
     expect(reclaimed).toBeUndefined();
     expect(createCalls).toBe(0);
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(db, SCOPE, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
     expect(attempts.getById(db, firstToken)?.outcome).toBe("AMBIGUOUS");
     db.close();
   });
@@ -188,7 +193,7 @@ describe("expired recreation attempts", () => {
     const firstToken = "expired-before-attempt";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: firstToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -196,7 +201,7 @@ describe("expired recreation attempts", () => {
     const secondToken = "current-claim";
     const reclaimed = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: secondToken,
       now: new Date("2026-08-08T09:02:01Z"),
     });
@@ -227,14 +232,14 @@ describe("expired recreation attempts", () => {
     const staleToken = "expired-without-attempt";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: staleToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
 
     const recovered = entries.recoverExpiredClaim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       now: new Date("2026-08-08T09:02:01Z"),
     });
 
@@ -260,7 +265,7 @@ describe("expired recreation attempts", () => {
     const claimToken = "legacy-half-committed-success";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -288,13 +293,13 @@ describe("expired recreation attempts", () => {
 
     const retry = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "forbidden-retry",
       now: new Date("2026-08-08T09:02:01Z"),
     });
 
     expect(retry).toBeUndefined();
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)).toMatchObject({
+    expect(entries.getById(db, SCOPE, entry.id)).toMatchObject({
       lifecycleState: "RECREATED",
       newEntryId: "definitively-created-entry",
       recreatedAt: "2026-08-08T09:01:02Z",
@@ -315,7 +320,7 @@ describe("expired recreation attempts", () => {
     const failedToken = "definitively-failed-attempt";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: failedToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -342,17 +347,17 @@ describe("expired recreation attempts", () => {
 
     const recoveryClaim = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "recovery-check",
       now: new Date("2026-08-08T09:02:01Z"),
     });
     expect(recoveryClaim).toBeUndefined();
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("FAILED");
+    expect(entries.getById(db, SCOPE, entry.id)?.lifecycleState).toBe("FAILED");
     expect(attempts.getById(db, failedToken)).toMatchObject({ baseline: null, reconcile: null });
 
     const retry = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "fresh-retry",
       now: new Date("2026-08-08T09:02:02Z"),
     });
@@ -366,7 +371,7 @@ describe("expired recreation attempts", () => {
     const claimToken = "ambiguous-attempt";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -377,16 +382,16 @@ describe("expired recreation attempts", () => {
       startedAt: "2026-08-08T09:01:01Z",
       baseline: [],
     });
-    entries.setAmbiguous(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken });
+    entries.setAmbiguous(db, { id: entry.id, scope: SCOPE, claimToken });
     const reconcileRunId = beginReconcileFixture(db, {
       recoverableEntryId: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       expectedAttemptId: claimToken,
     });
 
     const adopted = entries.adopt(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       expectedAttemptId: claimToken,
       expectedReconcileRunId: reconcileRunId,
       newEntryId: "adopted-entry",
@@ -413,7 +418,7 @@ describe("expired recreation attempts", () => {
     const claimToken = "database-failure-after-create";
     entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken,
       now: new Date("2026-08-08T09:01:00Z"),
     });
@@ -431,18 +436,18 @@ describe("expired recreation attempts", () => {
 
     expect(createCalls).toBe(1);
     expect(attempts.getById(db, claimToken)).toMatchObject({ outcome: null, finishedAt: null });
-    const afterFailure = entries.getById(db, WORKSPACE_ID, entry.id);
+    const afterFailure = entries.getById(db, SCOPE, entry.id);
     expect(afterFailure?.lifecycleState).toBe("RECREATING");
 
     const retry = entries.claim(db, {
       id: entry.id,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "forbidden-retry",
       now: new Date(new Date(afterFailure!.claimExpiresAt!).getTime() + 1),
     });
     expect(retry).toBeUndefined();
     expect(attempts.getById(db, claimToken)?.outcome).toBe("AMBIGUOUS");
-    expect(entries.getById(db, WORKSPACE_ID, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(db, SCOPE, entry.id)?.lifecycleState).toBe("AMBIGUOUS");
     db.close();
   });
 });

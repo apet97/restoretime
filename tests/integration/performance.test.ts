@@ -32,9 +32,12 @@ import type { DeletedTimeEntry, LifecycleState } from "../../src/domain/entry.js
 const ADDON_KEY = "restoretime-perf";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 
 const TOTAL_ROWS = 5000;
+// Mirrors the server's page cap (src/api/routes.ts LIST_PAGE_SIZE).
+const LIST_PAGE_SIZE = 50;
 const ACTIONABLE_ROWS = 50;
 const DISTINCT_PROJECTS = 5; // ACTIONABLE_ROWS / DISTINCT_PROJECTS = 10 rows per project
 const ROWS_PER_PROJECT = ACTIONABLE_ROWS / DISTINCT_PROJECTS;
@@ -116,14 +119,15 @@ interface SeedRow {
 function seedRows(server: AppServer): void {
   const insert = server.db.prepare(
     `INSERT INTO recoverable_entries
-       (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state, new_entry_id)
-     VALUES (@id, @workspaceId, @sourceEntryId, @ownerId, @detectedAt, @sourceJson, @lifecycleState, @newEntryId)`,
+       (id, workspace_id, addon_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state, new_entry_id)
+     VALUES (@id, @workspaceId, @addonId, @sourceEntryId, @ownerId, @detectedAt, @sourceJson, @lifecycleState, @newEntryId)`,
   );
   const run = server.db.transaction((rows: SeedRow[]) => {
     for (const row of rows) {
       insert.run({
         id: row.id,
-        workspaceId: WORKSPACE_ID,
+        workspaceId: SCOPE.workspaceId,
+        addonId: SCOPE.addonId,
         sourceEntryId: row.sourceEntryId,
         ownerId: OWNER_ID,
         detectedAt: row.detectedAt,
@@ -206,13 +210,13 @@ describe("Performance sanity: 5000 seeded rows, no N+1, documented p95 budget", 
     const response = await server.addon.handle({ method: "GET", path: "/api/entries", query: new URLSearchParams(), headers: { authorization: `Bearer ${token}` } });
 
     expect(response.status).toBe(200);
-    const body = response.body as { entries: unknown[]; truncated: boolean; limit: number };
+    const body = response.body as { entries: unknown[]; nextCursor: string | null };
     // The endpoint is bounded: 5000 rows in the table, one page out, and it says so. This is the
     // point of the bound — every returned row costs a preflight with its own Clockify lookups, so
     // returning all 5000 would have made list traffic scale with the backlog.
-    expect(body.entries).toHaveLength(body.limit);
-    expect(body.truncated).toBe(true);
-    expect(body.limit).toBeLessThan(TOTAL_ROWS);
+    expect(body.entries).toHaveLength(LIST_PAGE_SIZE);
+    
+    expect(body.nextCursor).not.toBeNull();
     // The page is the actionable rows (seeded newest), so the N+1 assertions below still measure
     // real preflight lookups rather than a page of never-preflighted RECREATED filler.
     expect(body.entries).toHaveLength(ACTIONABLE_ROWS);

@@ -15,15 +15,17 @@ import {
   signTestToken,
   type ClockifyTestKeys,
 } from "@apet97/clockify-addon-sdk/testing";
+import type { ClockifyInstallationStore } from "@apet97/clockify-addon-sdk/clockify";
 import { createServer, type AppServer } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
 import { METRIC_NAMES } from "../../src/metrics.js";
-import * as attempts from "../../src/store/attempts.js";
 import { insertAttemptFixture } from "../support/attempt-fixture.js";
+import { setReconcileFixture } from "../support/reconcile-fixture.js";
 
 const ADDON_KEY = "restoretime-metrics";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 const OTHER_USER_ID = "user-2";
 
@@ -122,7 +124,23 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
   it("one scripted flow touches every documented counter, and nothing else", async () => {
     dir = mkdtempSync(join(tmpdir(), "restoretime-metrics-"));
     const keys: ClockifyTestKeys = await generateTestKeys();
-    const server: AppServer = await createServer(testConfig(), { publicKey: keys.publicKey });
+    // The store keeps serving the last context it loaded, even after the row is deleted. That is
+    // what an in-flight webhook verification holds: it read and decrypted the add-on token before
+    // the uninstall committed. It lets the flow reach the fenced-write counter deterministically,
+    // with no timing. The barrier version of the same race is
+    // tests/integration/webhook-uninstall-race.test.ts.
+    let heldContext: Awaited<ReturnType<ClockifyInstallationStore["load"]>> = null;
+    const server: AppServer = await createServer(testConfig(), {
+      publicKey: keys.publicKey,
+      wrapInstallationStore: (store) => ({
+        ...store,
+        async load(workspaceId, addonId) {
+          const loaded = await store.load(workspaceId, addonId);
+          if (loaded) heldContext = loaded;
+          return loaded ?? heldContext;
+        },
+      }),
+    });
 
     const installToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
     const webhookToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID });
@@ -230,10 +248,10 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
         const path = pathOf(input);
         const method = methodOf(input, init);
         if (method === "POST" && path.endsWith("/time-entries")) {
-          return jsonResponse({ id: "new-entry-ok", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "metrics-ok", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } }, 201);
+          return jsonResponse({ id: "new-entry-ok", scope: SCOPE, userId: OWNER_ID, description: "metrics-ok", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } }, 201);
         }
         if (method === "GET" && path.includes("/time-entries/new-entry-ok")) {
-          return jsonResponse({ id: "new-entry-ok", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "metrics-ok", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } });
+          return jsonResponse({ id: "new-entry-ok", scope: SCOPE, userId: OWNER_ID, description: "metrics-ok", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } });
         }
         return baseClockify(input, init);
       }) as typeof fetch,
@@ -278,10 +296,10 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
         if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) {
           listForUserCalls++;
           if (listForUserCalls === 1) return jsonResponse([]); // baseline: nothing existed yet
-          return jsonResponse([{ id: "new-entry-amb", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "metrics-amb", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } }]);
+          return jsonResponse([{ id: "new-entry-amb", scope: SCOPE, userId: OWNER_ID, description: "metrics-amb", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } }]);
         }
         if (method === "GET" && path.includes("/time-entries/new-entry-amb")) {
-          return jsonResponse({ id: "new-entry-amb", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "metrics-amb", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } });
+          return jsonResponse({ id: "new-entry-amb", scope: SCOPE, userId: OWNER_ID, description: "metrics-amb", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: "2026-08-08T10:00:00Z", end: "2026-08-08T11:00:00Z" } });
         }
         return baseClockify(input, init);
       }) as typeof fetch,
@@ -363,11 +381,12 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
     // the setup that gets a row into the bounded-window state is synthetic. -----------------------
     server.db
       .prepare(
-        `INSERT INTO recoverable_entries (id, workspace_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
-         VALUES ('re-notcreated', ?, 'entry-notcreated', ?, '2026-08-08T09:00:00.000Z', ?, 'AMBIGUOUS')`,
+        `INSERT INTO recoverable_entries (id, workspace_id, addon_id, source_entry_id, owner_id, detected_at, source_json, lifecycle_state)
+         VALUES ('re-notcreated', ?, ?, 'entry-notcreated', ?, '2026-08-08T09:00:00.000Z', ?, 'AMBIGUOUS')`,
       )
       .run(
         WORKSPACE_ID,
+        ADDON_ID,
         OWNER_ID,
         JSON.stringify({
           workspaceId: WORKSPACE_ID,
@@ -391,7 +410,7 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
         }),
       );
     insertAttemptFixture(server.db, { id: "att-notcreated", planId: planOk.id, recoverableEntryId: "re-notcreated", startedAt: "2026-08-08T09:01:00.000Z", baseline: [] });
-    attempts.updateReconcile(server.db, "att-notcreated", {
+    setReconcileFixture(server.db, "att-notcreated", {
       checkedAt: new Date().toISOString(),
       firstEligibleCheckAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
       checks: 3,
@@ -412,6 +431,23 @@ describe("Metrics: the emitted name set equals docs/14's list exactly", () => {
     const otherToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID, user: OTHER_USER_ID, workspaceRole: "member" });
     const denied = await server.addon.handle({ method: "GET", path: "/api/entries/detail", query: new URLSearchParams({ id: rowIdFor(server, "entry-ok") }), headers: { authorization: `Bearer ${otherToken}` } });
     expect(denied.status).toBe(404);
+
+    // --- Fenced write: a verified delivery whose installation is already gone. -------------------
+    await server.addon.handle(
+      createTestLifecycleRequest(
+        await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: ADDON_ID }),
+        { workspaceId: WORKSPACE_ID, addonId: ADDON_ID, asUser: OWNER_ID },
+        { path: "/lifecycle/deleted" },
+      ),
+    );
+    const afterUninstall = await server.addon.handle(
+      createTestWebhookRequest(webhookToken, "TIME_ENTRY_DELETED", deletedEntryBody({ id: "entry-after-uninstall", description: "metrics-after-uninstall" }), { path: "/webhooks/time-entry-deleted" }),
+    );
+    // Acknowledged — a retry could not succeed — but nothing persisted.
+    expect(afterUninstall.status).toBe(204);
+    expect(
+      server.db.prepare("SELECT COUNT(*) AS n FROM recoverable_entries").get() as { n: number },
+    ).toEqual({ n: 0 });
 
     // --- The assertion. ------------------------------------------------------------------------
     const emitted = extractMetricNames(lines);

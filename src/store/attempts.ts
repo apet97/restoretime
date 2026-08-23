@@ -4,6 +4,7 @@
 import type Database from "better-sqlite3";
 import type {
   AttemptOutcome,
+  InstallationScope,
   ReconcileSummary,
   RecreationAttempt,
   VerificationDiff,
@@ -185,7 +186,9 @@ export function beginReconcile(
   db: Database.Database,
   input: {
     recoverableEntryId: string;
-    workspaceId: string;
+    /** The installation generation that owns the entry — the join below re-checks it, so a
+     * reconcile can never start against another generation's row. */
+    scope: InstallationScope;
     expectedAttemptId: string;
     checkedAt: string;
     runId: string;
@@ -195,18 +198,18 @@ export function beginReconcile(
   },
 ): BeginReconcileResult {
   const begin = db.transaction((): BeginReconcileResult => {
-    const row = db.prepare<[string, string, string], Pick<AttemptRow, "reconcile_json">>(
+    const row = db.prepare<[string, string, string, string], Pick<AttemptRow, "reconcile_json">>(
       `SELECT a.reconcile_json
        FROM recreation_attempts a
        JOIN recoverable_entries e ON e.id=a.recoverable_entry_id
-       WHERE a.id=? AND a.recoverable_entry_id=? AND e.workspace_id=?
+       WHERE a.id=? AND a.recoverable_entry_id=? AND e.workspace_id=? AND e.addon_id=?
          AND e.lifecycle_state='AMBIGUOUS'
          AND a.id = (
            SELECT id FROM recreation_attempts
            WHERE recoverable_entry_id=a.recoverable_entry_id
            ORDER BY rowid DESC LIMIT 1
          )`,
-    ).get(input.expectedAttemptId, input.recoverableEntryId, input.workspaceId);
+    ).get(input.expectedAttemptId, input.recoverableEntryId, input.scope.workspaceId, input.scope.addonId);
     if (!row) return { kind: "changed" };
 
     const stored = parseStoredReconcile(row.reconcile_json);
@@ -334,13 +337,6 @@ export function clearTransientEvidenceForEntry(db: Database.Database, recoverabl
   db.prepare(
     "UPDATE recreation_attempts SET baseline_json=NULL, reconcile_json=NULL WHERE recoverable_entry_id=?",
   ).run(recoverableEntryId);
-}
-
-export function updateReconcile(db: Database.Database, id: string, reconcile: ReconcileSummary): void {
-  db.prepare("UPDATE recreation_attempts SET reconcile_json = ? WHERE id = ?").run(
-    JSON.stringify(reconcile),
-    id,
-  );
 }
 
 export function getById(db: Database.Database, id: string): RecreationAttempt | undefined {

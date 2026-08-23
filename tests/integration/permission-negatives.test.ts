@@ -16,12 +16,14 @@ import type { AppConfig } from "../../src/config.js";
 import * as entries from "../../src/store/entries.js";
 import * as plans from "../../src/store/plans.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const ADDON_KEY = "restoretime-permneg";
 const OTHER_ADDON_KEY = "someone-elses-addon";
 const WORKSPACE_ID = "ws-1";
 const OTHER_WORKSPACE_ID = "ws-2";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1"; // entry owner, plain member
 const OTHER_MEMBER_ID = "user-2"; // a different member — never had access
 const DEMOTED_ADMIN_ID = "admin-1"; // created a plan as admin, then role dropped to member
@@ -70,10 +72,13 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "restoretime-permneg-"));
   keys = await generateTestKeys();
   server = await createServer(testConfig(), { publicKey: keys.publicKey });
+  seedInstallation(server.db, SCOPE);
+  // The cross-workspace negatives ingest into a second tenant, which needs its own installation.
+  seedInstallation(server.db, { workspaceId: OTHER_WORKSPACE_ID, addonId: ADDON_ID });
 
-  const { entry } = entries.ingestDeletedEntry(server.db, {
+  const { entry } = ingestEntry(server.db, {
     id: "re-1",
-    workspaceId: WORKSPACE_ID,
+    scope: SCOPE,
     sourceEntryId: "entry-a",
     ownerId: OWNER_ID,
     detectedAt: "2026-08-08T09:00:00Z",
@@ -122,7 +127,7 @@ async function tokenFor(opts: { workspaceId?: string; user?: string; role?: stri
  * that consumed the plan before the access check would leave the entry untouched while a forged
  * request burned another user's plan. Snapshot the plan status and the attempt count too. */
 function snapshotRow() {
-  const entry = entries.getById(server.db, WORKSPACE_ID, entryId);
+  const entry = entries.getById(server.db, SCOPE, entryId);
   const planStatuses = server.db
     .prepare("SELECT id, status FROM recreation_plans WHERE recoverable_entry_id = ? ORDER BY id")
     .all(entryId);
@@ -172,9 +177,9 @@ const ROUTES: readonly RouteSpec[] = [
 
 describe("detail lineage authorization", () => {
   it("hides another member's lineage while preserving same-owner and admin access", async () => {
-    const foreignParent = entries.ingestDeletedEntry(server.db, {
+    const foreignParent = ingestEntry(server.db, {
       id: "foreign-parent",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "foreign-source",
       ownerId: OTHER_MEMBER_ID,
       detectedAt: "2026-08-08T08:00:00Z",
@@ -213,9 +218,9 @@ describe("detail lineage authorization", () => {
       entries: Array<{ id: string; parentRecoverableId: string | null }>;
     }).entries.find((row) => row.id === entryId)?.parentRecoverableId).toBeNull();
 
-    const ownParent = entries.ingestDeletedEntry(server.db, {
+    const ownParent = ingestEntry(server.db, {
       id: "own-parent",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "own-source",
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T08:30:00Z",
@@ -371,9 +376,9 @@ describe("permission negatives sweep: forged/cross-workspace viewer -> 404 with 
   });
 
   it("a valid local plan plus a stale foreign plan fails closed without revealing or executing either", async () => {
-    const localEntry = entries.ingestDeletedEntry(server.db, {
+    const localEntry = ingestEntry(server.db, {
       id: "local-bulk-entry",
-      workspaceId: OTHER_WORKSPACE_ID,
+      scope: { workspaceId: OTHER_WORKSPACE_ID, addonId: ADDON_ID },
       sourceEntryId: "local-bulk-source",
       ownerId: "someone",
       detectedAt: "2026-08-08T09:00:00Z",
@@ -418,7 +423,7 @@ describe("permission negatives sweep: forged/cross-workspace viewer -> 404 with 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "not found" });
     expect(clockifyCalls).toBe(0);
-    expect(entries.getById(server.db, OTHER_WORKSPACE_ID, localEntry.id)?.lifecycleState).toBe("IDLE");
+    expect(entries.getById(server.db, { workspaceId: OTHER_WORKSPACE_ID, addonId: ADDON_ID }, localEntry.id)?.lifecycleState).toBe("IDLE");
     expect(plans.getById(server.db, localPlan.id)?.status).toBe("ACTIVE");
     expect(res.body).not.toHaveProperty("currentPlans");
   });
@@ -445,9 +450,9 @@ describe("permission negatives sweep: forged/other user (neither owner nor admin
   });
 
   it("an own plan does not reveal whether an unrelated entry id exists", async () => {
-    const ownEntry = entries.ingestDeletedEntry(server.db, {
+    const ownEntry = ingestEntry(server.db, {
       id: "re-other-member",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "entry-other-member",
       ownerId: OTHER_MEMBER_ID,
       detectedAt: "2026-08-08T09:01:00Z",

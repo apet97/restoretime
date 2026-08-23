@@ -12,7 +12,7 @@ const {
   mode = "claim-idle",
   dbPath,
   entryId,
-  workspaceId,
+  scope,
   claimToken,
   attemptId,
   nowIso,
@@ -40,11 +40,11 @@ function claimIdle() {
     .prepare(
       `UPDATE recoverable_entries
        SET lifecycle_state='RECREATING', claim_token=:token, claim_expires_at=:now_plus_60s
-       WHERE id=:id AND workspace_id=:ws
+       WHERE id=:id AND workspace_id=:ws AND addon_id=:addon
          AND lifecycle_state='IDLE'
        RETURNING *`,
     )
-    .get({ id: entryId, ws: workspaceId, token: claimToken, now_plus_60s: nowPlus60s });
+    .get({ id: entryId, ws: scope.workspaceId, addon: scope.addonId, token: claimToken, now_plus_60s: nowPlus60s });
 
   db.close();
   return row;
@@ -56,8 +56,8 @@ function snapshot(db) {
             a.outcome AS attemptOutcome
      FROM recoverable_entries e
      LEFT JOIN recreation_attempts a ON a.id=@attemptId
-     WHERE e.id=@entryId AND e.workspace_id=@workspaceId`,
-  ).get({ attemptId, entryId, workspaceId });
+     WHERE e.id=@entryId AND e.workspace_id=@workspaceId AND e.addon_id=@addonId`,
+  ).get({ attemptId, entryId, workspaceId: scope.workspaceId, addonId: scope.addonId });
 }
 
 if (mode === "observe-started-attempt") {

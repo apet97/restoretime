@@ -11,15 +11,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../../src/store/db.js";
-import { ingestDeletedEntry, getById } from "../../src/store/entries.js";
+import { getById } from "../../src/store/entries.js";
 import { runReconcile } from "../../src/clockify/recreate.js";
 import type { PlannedRequest } from "../../src/domain/entry.js";
 import { buildClockifyClient } from "../../src/clockify/client.js";
 import { fetchWorkspaceState, PreflightTruncatedError } from "../../src/clockify/preflight-data.js";
 import type { DeletedTimeEntry } from "../../src/domain/entry.js";
 import { beginReconcileFixture } from "../support/reconcile-fixture.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const WORKSPACE_ID = "ws-1";
+const ADDON_ID = "addon-install-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -38,7 +41,7 @@ function stubFetchWithUnboundedTags(): typeof fetch {
         id: `tag-${page}-${i}`,
         name: `Tag ${page}-${i}`,
         archived: false,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
       }));
       return jsonResponse(items);
     }
@@ -152,9 +155,10 @@ describe("IT-14 page bound reached (reconcile)", () => {
     const dir = mkdtempSync(join(tmpdir(), "restoretime-reconcile-bound-"));
     try {
       const db = openDatabase(join(dir, "restoretime.sqlite"));
-      const { entry } = ingestDeletedEntry(db, {
+      seedInstallation(db, SCOPE);
+      const { entry } = ingestEntry(db, {
         id: "re-1",
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         sourceEntryId: "entry-a",
         ownerId: "user-1",
         detectedAt: "2026-08-08T09:00:00Z",
@@ -181,7 +185,7 @@ describe("IT-14 page bound reached (reconcile)", () => {
       );
       const reconcileRunId = beginReconcileFixture(db, {
         recoverableEntryId: entry.id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         expectedAttemptId: "attempt-bound",
       });
 
@@ -189,7 +193,7 @@ describe("IT-14 page bound reached (reconcile)", () => {
         db,
         client,
         entryId: entry.id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         userId: "user-1",
         plannedRequest: PLANNED,
         baseline: [],
@@ -200,7 +204,7 @@ describe("IT-14 page bound reached (reconcile)", () => {
       });
 
       expect(result.kind).toBe("truncated");
-      const after = getById(db, WORKSPACE_ID, entry.id);
+      const after = getById(db, SCOPE, entry.id);
       expect(after?.lifecycleState).toBe("AMBIGUOUS");
       expect(after?.newEntryId).toBeNull();
       db.close();

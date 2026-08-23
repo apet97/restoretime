@@ -316,8 +316,8 @@ describe("component E2E: list -> detail -> resolution -> confirm -> success", ()
       const path = pathOf(input);
       const method = methodOf(input, init);
       if (method === "GET" && path.endsWith("/projects/gone-project")) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
-      if (method === "GET" && path.endsWith("/projects/proj-2")) return jsonResponse({ id: "proj-2", name: "Customer API", archived: false });
-      if (method === "GET" && path.endsWith("/projects")) return jsonResponse([{ id: "proj-2", name: "Customer API", archived: false }]);
+      if (method === "GET" && path.endsWith("/projects/proj-2")) return jsonResponse({ id: "proj-2", name: "Customer API", archived: false, public: true, memberships: [] });
+      if (method === "GET" && path.endsWith("/projects")) return jsonResponse([{ id: "proj-2", name: "Customer API", archived: false, public: true, memberships: [] }]);
       if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]); // baseline: empty
       if (method === "POST" && path.endsWith("/time-entries")) {
         return jsonResponse(
@@ -937,9 +937,9 @@ describe("admin list filters by name", () => {
       if (path.endsWith("/users")) userListCalls++;
       if (path.endsWith("/projects")) projectListCalls++;
       // Clockify as it is now: only "Billing" survives, so "Legacy API" cannot come from here.
-      if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Billing", archived: false }]);
+      if (path.endsWith("/projects")) return jsonResponse([{ id: "proj-live", name: "Billing", archived: false, public: true, memberships: [] }]);
       if (path.includes("/projects/proj-gone")) return jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
-      if (path.includes("/projects/proj-live")) return jsonResponse({ id: "proj-live", name: "Billing", archived: false });
+      if (path.includes("/projects/proj-live")) return jsonResponse({ id: "proj-live", name: "Billing", archived: false, public: true, memberships: [] });
       return baseClockifyStub()(input, init);
     }) as typeof fetch;
     vi.stubGlobal("fetch", makeFetchImpl(server, clockify));

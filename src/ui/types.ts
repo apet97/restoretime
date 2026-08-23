@@ -70,9 +70,9 @@ export interface ListResponse {
   /** The installation's Clockify token was rejected (401 code 4017, docs/03 §6). Server fact:
    * the remedy is a reinstall, and the notice must say so. */
   readonly broken: boolean;
-  /** Older rows matched the filters but were not returned (server bound, not a UI choice). */
-  readonly truncated: boolean;
-  readonly limit: number;
+  /** Opaque continuation token for the next page, or `null` on the last page. Sent back verbatim
+   * as `cursor`; the browser never inspects or builds one. */
+  readonly nextCursor: string | null;
 }
 
 export interface DetailResponse {

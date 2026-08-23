@@ -23,10 +23,12 @@ import * as attempts from "../../src/store/attempts.js";
 import * as plans from "../../src/store/plans.js";
 import { attemptRecreation } from "../../src/clockify/recreate.js";
 import type { DeletedTimeEntry, PlannedRequest } from "../../src/domain/entry.js";
+import { ingestEntry, seedInstallation } from "../support/installation-fixture.js";
 
 const ADDON_KEY = "restoretime-leasedrill";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 
 let dir: string;
@@ -158,7 +160,7 @@ describe("IT-12 lease/fencing drill: a crashed started attempt becomes AMBIGUOUS
     expect(recreateResponse.status).toBe(502);
     delete process.env.RT_TEST_CRASH_MID_ATTEMPT;
 
-    const afterCrash = entries.getById(server.db, WORKSPACE_ID, entryId);
+    const afterCrash = entries.getById(server.db, SCOPE, entryId);
     expect(afterCrash?.lifecycleState).toBe("RECREATING");
     expect(afterCrash?.claimToken).toBeTruthy();
     const deadToken = afterCrash!.claimToken!;
@@ -168,12 +170,12 @@ describe("IT-12 lease/fencing drill: a crashed started attempt becomes AMBIGUOUS
     // the crash must not have silently released it.
     const tooSoon = entries.claim(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: "attempt-too-soon",
       now: new Date(deadClaimExpiresAt.getTime() - 30_000),
     });
     expect(tooSoon).toBeUndefined();
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.claimToken).toBe(deadToken);
+    expect(entries.getById(server.db, SCOPE, entryId)?.claimToken).toBe(deadToken);
 
     // Make the lease expired for the real wall clock, then use the route the UI refreshes. No
     // second recreate call is available for a RECREATING row, so detail must perform recovery.
@@ -189,7 +191,7 @@ describe("IT-12 lease/fencing drill: a crashed started attempt becomes AMBIGUOUS
     expect(detailResponse.status).toBe(200);
     expect((detailResponse.body as { entry: { lifecycleState: string } }).entry.lifecycleState)
       .toBe("AMBIGUOUS");
-    const recovered = entries.getById(server.db, WORKSPACE_ID, entryId);
+    const recovered = entries.getById(server.db, SCOPE, entryId);
     expect(recovered?.lifecycleState).toBe("AMBIGUOUS");
     expect(recovered?.claimToken).toBeNull();
     expect(attempts.getById(server.db, deadToken)?.outcome).toBe("AMBIGUOUS");
@@ -198,21 +200,22 @@ describe("IT-12 lease/fencing drill: a crashed started attempt becomes AMBIGUOUS
     // and tries to report a result, must be refused: it no longer owns the row.
     const staleWrite = entries.setRecreated(server.db, {
       id: entryId,
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       claimToken: deadToken,
       newEntryId: "ghost-entry-from-dead-attempt",
       recreatedAt: new Date().toISOString(),
       recreatedBy: OWNER_ID,
     });
     expect(staleWrite).toBeUndefined();
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.newEntryId).toBeNull();
-    expect(entries.getById(server.db, WORKSPACE_ID, entryId)?.lifecycleState).toBe("AMBIGUOUS");
+    expect(entries.getById(server.db, SCOPE, entryId)?.newEntryId).toBeNull();
+    expect(entries.getById(server.db, SCOPE, entryId)?.lifecycleState).toBe("AMBIGUOUS");
   });
 });
 
 describe("the crash flag itself is inert outside NODE_ENV=test", () => {
   it("with RT_TEST_CRASH_MID_ATTEMPT=1 but NODE_ENV stubbed to a non-test value, attemptRecreation completes normally", async () => {
     const db = openDatabase(join(dir, "guard.sqlite"));
+    seedInstallation(db, SCOPE);
     const source: DeletedTimeEntry = {
       workspaceId: WORKSPACE_ID,
       entryId: "entry-a",
@@ -233,9 +236,9 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       tags: [],
       customFieldValues: [],
     };
-    const entry = entries.ingestDeletedEntry(db, {
+    const entry = ingestEntry(db, {
       id: "re-1",
-      workspaceId: WORKSPACE_ID,
+      scope: SCOPE,
       sourceEntryId: "entry-a",
       ownerId: OWNER_ID,
       detectedAt: "2026-08-08T09:00:00Z",
@@ -257,7 +260,7 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       actionRequired: [],
       fidelity: "FULL",
     });
-    entries.claim(db, { id: entry.id, workspaceId: WORKSPACE_ID, claimToken: "tok-guard", now: new Date("2026-08-08T09:01:00Z") });
+    entries.claim(db, { id: entry.id, scope: SCOPE, claimToken: "tok-guard", now: new Date("2026-08-08T09:01:00Z") });
 
     const fetchStub: typeof fetch = async (input, init) => {
       const path = pathOf(input);
@@ -265,12 +268,12 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
       if (method === "GET" && path.endsWith("/time-entries") && path.includes("/user/")) return jsonResponse([]);
       if (method === "POST" && path.endsWith("/time-entries")) {
         return jsonResponse(
-          { id: "new-entry-1", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "d", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: source.start, end: "2026-08-08T11:00:00Z" } },
+          { id: "new-entry-1", scope: SCOPE, userId: OWNER_ID, description: "d", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: source.start, end: "2026-08-08T11:00:00Z" } },
           201,
         );
       }
       if (method === "GET" && path.includes("/time-entries/new-entry-1")) {
-        return jsonResponse({ id: "new-entry-1", workspaceId: WORKSPACE_ID, userId: OWNER_ID, description: "d", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: source.start, end: "2026-08-08T11:00:00Z" } });
+        return jsonResponse({ id: "new-entry-1", scope: SCOPE, userId: OWNER_ID, description: "d", billable: true, tagIds: [], type: "REGULAR", timeInterval: { start: source.start, end: "2026-08-08T11:00:00Z" } });
       }
       return jsonResponse({ message: "unstubbed" }, 404);
     };
@@ -283,7 +286,7 @@ describe("the crash flag itself is inert outside NODE_ENV=test", () => {
         db,
         client,
         entryId: entry.id,
-        workspaceId: WORKSPACE_ID,
+        scope: SCOPE,
         planId: "plan-guard",
         plannedRequest: planned,
         claimToken: "tok-guard",

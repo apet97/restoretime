@@ -11,7 +11,11 @@ import type { BulkPreflightRow, ListResponse, ListRow } from "../types.js";
 
 type ListFilterState = UiSessionState["list"];
 
-async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListResponse> {
+async function fetchList(
+  ctx: Ctx,
+  filters: ListFilterState,
+  cursor?: string,
+): Promise<ListResponse> {
   const query: Record<string, string> = {};
   if (ctx.isAdminRole && filters.userName) query.userName = filters.userName;
   if (filters.projectName) query.projectName = filters.projectName;
@@ -20,6 +24,7 @@ async function fetchList(ctx: Ctx, filters: ListFilterState): Promise<ListRespon
   if (ctx.isAdminRole && filters.status) query.status = filters.status;
   if (filters.search) query.search = filters.search;
   if (filters.dismissed) query.dismissed = "true";
+  if (cursor) query.cursor = cursor;
   return (await ctx.api.get("/api/entries", query)) as ListResponse;
 }
 
@@ -35,17 +40,29 @@ function clearSelection(ctx: Ctx): void {
   ctx.announce("Selection cleared.");
 }
 
+/** Every filter change starts a fresh page sequence: a cursor names a position in one ordered
+ * result set, so carrying it across a filter change would skip rows rather than continue. */
 function load(ctx: Ctx, filters: ListFilterState): void {
   void withLoading(
     ctx,
     () => fetchList(ctx, filters),
-    (data) => renderLoaded(ctx, filters, data),
+    (data) => renderLoaded(ctx, filters, data, []),
     "Loading deleted time entries…",
     "Reload list",
   );
 }
 
-function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): void {
+/**
+ * `loaded` holds the pages already fetched. Load more appends the next page and re-renders the
+ * whole view rather than splicing rows in, which keeps one rendering path for the list. Bulk
+ * selection survives because it lives in `ctx.session.selectedEntryIds`, keyed by row id.
+ */
+function renderLoaded(
+  ctx: Ctx,
+  filters: ListFilterState,
+  data: ListResponse,
+  loaded: readonly ListRow[],
+): void {
   const heading = el("h2", {}, "Deleted time entries");
   const nodes: (Node | string)[] = [
     el("p", { class: "rt-page-intro" }, "RestoreTime recreates deleted time entries as new Clockify entries. Deleted-entry history stays unchanged."),
@@ -89,7 +106,7 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
     if (selectionSummary) selectionSummary.textContent = `${count} ${count === 1 ? "entry" : "entries"} selected (maximum 50).`;
   }
 
-  const rows = data.entries;
+  const rows = [...loaded, ...data.entries];
   const rowList = rows.length > 0 ? el("ul", {}, ...rows.map((row) => renderRow(ctx, filters, row, actionsUnavailable, syncReviewButton))) : null;
 
   if (ctx.isAdminRole && filters.bulkMode) {
@@ -126,10 +143,31 @@ function renderLoaded(ctx: Ctx, filters: ListFilterState, data: ListResponse): v
 
   if (rowList) {
     nodes.push(rowList);
-    // Say so when the server withheld older rows, rather than letting a full page read as "all".
-    if (data.truncated) {
+    // Older rows are reached by continuing this page sequence. Narrowing the filters is a way to
+    // search, not a way to paginate, so it must not be the only route to row 51.
+    const cursor = data.nextCursor;
+    if (cursor !== null) {
+      const errorRegionForMore = el("div", { class: "rt-inline-error", "aria-label": "Load more error" });
+      const moreButton = el("button", { type: "button" }, "Load more");
+      bindBusyAction({
+        ctx,
+        button: moreButton,
+        busyLabel: "Loading more…",
+        action: () => fetchList(ctx, filters, cursor),
+        onSuccess: (next) => renderLoaded(ctx, filters, next, rows),
+        onError: (err) =>
+          renderApiError({
+            region: errorRegionForMore,
+            err,
+            context: "",
+            action: () => load(ctx, filters),
+            actionLabel: "Reload list",
+          }),
+      });
       nodes.push(
-        el("p", { class: "rt-list-note" }, `Showing the ${data.limit} most recently detected entries. Use the filters above to find older ones.`),
+        el("p", { class: "rt-list-note", role: "status" }, `Showing ${rows.length} entries.`),
+        moreButton,
+        errorRegionForMore,
       );
     }
   } else {

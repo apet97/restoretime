@@ -218,7 +218,7 @@ function loadOwnEntry(
   if (typeof entryId !== "string" || entryId.length === 0) {
     return { error: errorJson(400, "entryId is required") };
   }
-  const row = entries.getById(deps.db, viewer.workspaceId, entryId);
+  const row = entries.getById(deps.db, viewer, entryId);
   const access = checkEntryAccess(row, viewer, deniedIsForbidden);
   if (access.kind === "not-found") {
     emitMetric(deps.logger, "authz_denied", { reason: "not-found" });
@@ -243,7 +243,7 @@ function entryForViewer(
   entry: RecoverableEntry,
 ): RecoverableEntry {
   if (entry.parentRecoverableId === null) return entry;
-  const parent = entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId);
+  const parent = entries.getById(deps.db, viewer, entry.parentRecoverableId);
   return parent && canRead(parent, viewer)
     ? entry
     : { ...entry, parentRecoverableId: null };
@@ -275,13 +275,88 @@ function emitPreflightMetrics(logger: Logger, result: { readonly blockers: reado
   if (result.actionRequired.length > 0) emitMetric(logger, "preflight_action_required", { count: result.actionRequired.length });
 }
 
+// --- Viewer project access (docs/09) -----------------------------------------------------
+
+/**
+ * The projects this viewer may use as a recreation target.
+ *
+ * Every Clockify call this add-on makes carries the installation's add-on token, because the
+ * platform issues no user-scoped credential: the `INSTALLED` payload's `authToken` is the only one
+ * that exists (docs/09 "Credential authority"). That token can reach projects the viewer cannot,
+ * so any project the *viewer chooses* has to be checked here — otherwise a normal member could
+ * steer a privileged write into a private project, and read every private project's name out of
+ * the picker.
+ *
+ * Accessibility is read from the project list the picker already fetches: Clockify returns
+ * `public` and `memberships` on each row, and the `access` query filter is not honored by the API
+ * (probed on the developer environment 2026-08-23 — it returns every project either way), so
+ * filtering here rather than in the request is both correct and free.
+ *
+ * Deliberately not applied to a deleted entry's *original* project: recreating your own entry into
+ * the project it was deleted from is what this product does, and Clockify already let that user
+ * log time there. Only an explicit re-targeting choice is constrained.
+ */
+async function viewerAccessibleProjectIds(
+  client: ReturnType<typeof buildClockifyClient>,
+  workspaceId: string,
+  viewer: Viewer,
+): Promise<ReadonlySet<string>> {
+  const projects = await collectPaged(client.projects.list.bind(client.projects), { workspaceId });
+  const accessible = new Set<string>();
+  for (const project of projects) {
+    if (project.public || project.memberships?.some((m) => m.userId === viewer.userId)) {
+      accessible.add(project.id);
+    }
+  }
+  return accessible;
+}
+
+const INACCESSIBLE_PROJECT_MESSAGE =
+  "You do not have access to that project in Clockify. Nothing was created. Choose a project you can see, or ask a workspace admin to recreate this entry.";
+
 // --- GET /api/entries ------------------------------------------------------------------
 
-/** How many rows one list render may return. Every row costs a preflight with its own Clockify
- * lookups (see the `summaries` fan-out below), so this bounds real API traffic, not just payload
- * size. A workspace that deletes heavily reached 127 rows within a day of testing. Older rows stay
- * reachable through the filters. */
+/** How many rows one list page may return, and the hard server-side cap on a caller-supplied
+ * `limit`. Every row costs a preflight with its own Clockify lookups (see the `summaries` fan-out
+ * below), so this bounds real API traffic, not just payload size. Older rows are reached with
+ * `cursor`, not by narrowing filters. */
 const LIST_PAGE_SIZE = 50;
+
+/** Opaque continuation token for `GET /api/entries`.
+ *
+ * It carries only the order keys of the last row of a page. It is deliberately unsigned: the
+ * server applies the installation, viewer, and filter clauses before the cursor predicate, so a
+ * forged cursor can only seek *within* a scope the caller already has — it can never widen one.
+ * `v` exists so a future order change rejects old cursors instead of silently skipping rows.
+ */
+const CURSOR_VERSION = 1;
+
+function encodeCursor(cursor: entries.ListCursor): string {
+  return Buffer.from(
+    JSON.stringify({ v: CURSOR_VERSION, d: cursor.detectedAt, i: cursor.id }),
+    "utf8",
+  ).toString("base64url");
+}
+
+function decodeCursor(raw: string): entries.ListCursor | undefined {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+    if (!isPlainObject(parsed) || parsed.v !== CURSOR_VERSION) return undefined;
+    if (!isNonEmptyString(parsed.d) || !isNonEmptyString(parsed.i)) return undefined;
+    return { detectedAt: parsed.d, id: parsed.i };
+  } catch {
+    return undefined;
+  }
+}
+
+/** `limit` is caller-supplied, so it is validated rather than trusted: a non-integer, a zero, or a
+ * value above the page cap is a bad request, not something to silently clamp. */
+function parseLimit(raw: string | null): number | undefined {
+  if (raw === null) return LIST_PAGE_SIZE;
+  if (!/^\d+$/.test(raw)) return undefined;
+  const limit = Number.parseInt(raw, 10);
+  return limit >= 1 && limit <= LIST_PAGE_SIZE ? limit : undefined;
+}
 
 async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLSearchParams) {
   const adminUserId = isAdmin(viewer) ? query.get("userId") : null;
@@ -307,6 +382,16 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     return errorJson(400, "from must not be after to");
   }
 
+  const limit = parseLimit(query.get("limit"));
+  if (limit === undefined) {
+    return errorJson(400, `limit must be an integer between 1 and ${LIST_PAGE_SIZE}`);
+  }
+  const rawCursor = query.get("cursor");
+  const after = rawCursor === null ? undefined : decodeCursor(rawCursor);
+  if (rawCursor !== null && after === undefined) {
+    return errorJson(400, "cursor is not a valid continuation token; reload the list");
+  }
+
   const filters: entries.ListFilters = {
     // non-admin: never widen the workspace scope — always the viewer's own entries.
     ...(!isAdmin(viewer) ? { ownerId: viewer.userId } : {}),
@@ -321,7 +406,11 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     ...(query.get("dismissed") === "true" ? { dismissed: true } : {}),
   };
 
-  const { rows, truncated } = entries.list(deps.db, viewer.workspaceId, { ...filters, limit: LIST_PAGE_SIZE });
+  const { rows, nextCursor } = entries.list(deps.db, viewer, {
+    ...filters,
+    limit,
+    ...(after !== undefined ? { after } : {}),
+  });
 
   let shared: SharedWorkspaceData | undefined;
   let clockifyUnavailable = false;
@@ -378,8 +467,9 @@ async function handleListEntries(deps: ApiRouteDeps, viewer: Viewer, query: URLS
     // notice. Read after the fetch above so a rejection observed by this very request already
     // reports `broken: true`.
     broken: isInstallationBroken(deps.db, viewer.workspaceId, viewer.addonId),
-    truncated,
-    limit: LIST_PAGE_SIZE,
+    // `null` is "this is the last page", observed from a real extra row rather than inferred from
+    // a full one. The component sends it back verbatim to continue (docs/03 `GET /api/entries`).
+    nextCursor: nextCursor === null ? null : encodeCursor(nextCursor),
   });
 }
 
@@ -397,7 +487,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   if (entry.lifecycleState === "RECREATING") {
     entry = entries.recoverExpiredClaim(deps.db, {
       id: entry.id,
-      workspaceId: viewer.workspaceId,
+      scope: viewer,
       now: new Date(),
     }) ?? entry;
   }
@@ -421,7 +511,7 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
       if (clientResult && plan) {
         try {
           await runOneReconcile(deps, clientResult.client, entry, latestAttempt, plan, viewer.userId);
-          entry = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
+          entry = entries.getById(deps.db, viewer, entry.id) ?? entry;
         } catch (err) {
           if (isAddonTokenInvalid(err)) {
             markInstallationBrokenOnAddonTokenFailure(deps, viewer, clientResult.installation.installedAt)();
@@ -436,10 +526,10 @@ async function handleDetail(deps: ApiRouteDeps, viewer: Viewer, query: URLSearch
   const plan = plans.getActiveForEntry(deps.db, entry.id) ?? plans.listForEntry(deps.db, entry.id)[0] ?? null;
   const attemptRows = attempts.listForEntry(deps.db, entry.id);
   const parentCandidate = entry.parentRecoverableId
-    ? entries.getById(deps.db, viewer.workspaceId, entry.parentRecoverableId)
+    ? entries.getById(deps.db, viewer, entry.parentRecoverableId)
     : undefined;
   const childCandidate = entry.newEntryId
-    ? entries.findByNewEntryId(deps.db, viewer.workspaceId, entry.newEntryId)
+    ? entries.findByNewEntryId(deps.db, viewer, entry.newEntryId)
     : undefined;
   const parent = parentCandidate && canRead(parentCandidate, viewer)
     ? entryForViewer(deps, viewer, parentCandidate)
@@ -518,6 +608,21 @@ async function handlePreflight(deps: ApiRouteDeps, viewer: Viewer, body: unknown
 
   let result;
   try {
+    // Before any plan exists: a non-admin may not re-target a recreation into a project they
+    // cannot reach with their own Clockify permissions (docs/09 "Credential authority"). Admins
+    // already hold workspace-wide authority, so the extra read is skipped for them.
+    if (!isAdmin(viewer) && (choices.projectId != null || choices.taskId != null)) {
+      const accessible = await viewerAccessibleProjectIds(
+        clientResult.client,
+        viewer.workspaceId,
+        viewer,
+      );
+      const target = choices.projectId ?? entry.source.projectId;
+      if (target === null || target === undefined || !accessible.has(target)) {
+        emitMetric(deps.logger, "authz_denied", { reason: "project-not-accessible" });
+        return errorJson(403, INACCESSIBLE_PROJECT_MESSAGE);
+      }
+    }
     const state = await fetchWorkspaceState(clientResult.client, viewer.workspaceId, entry.source, choices);
     result = runPreflight({ source: entry.source, viewer, choices, workspace: state, now: new Date() });
   } catch (err) {
@@ -660,7 +765,7 @@ async function confirmPlan(
       if (err instanceof plans.PlanEntryNotActionableError) {
         return {
           kind: "not-actionable",
-          entry: entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry,
+          entry: entries.getById(deps.db, viewer, entry.id) ?? entry,
         };
       }
       throw err;
@@ -675,7 +780,7 @@ async function confirmPlan(
   const claimToken = randomUUID();
   const claimResult = entries.claimForActivePlan(deps.db, {
     id: entry.id,
-    workspaceId: viewer.workspaceId,
+    scope: viewer,
     planId: plan.id,
     claimToken,
     now: new Date(),
@@ -684,25 +789,39 @@ async function confirmPlan(
     return { kind: "stale", plan: plans.getActiveForEntry(deps.db, entry.id) ?? null };
   }
   if (claimResult.kind === "unavailable") {
-    const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
+    const current = entries.getById(deps.db, viewer, entry.id);
     return { kind: "already-claimed", entry: current ?? entry };
   }
   const release = () =>
     entries.releaseClaim(deps.db, {
       id: entry.id,
-      workspaceId: viewer.workspaceId,
+      scope: viewer,
       claimToken,
       previousState: priorState,
     });
 
   let result;
   emitMetric(deps.logger, "recreate_attempt", { entryId: entry.id });
+  // Non-secret attribution for a privileged write (docs/12 "Audit"). Every Clockify call runs with
+  // the installation's add-on token — the only credential the platform issues — so the record has
+  // to name who asked for it and whose entry it was, which are different people whenever an admin
+  // recreates for someone else.
+  deps.logger.info("recreation authorized", {
+    actorUserId: viewer.userId,
+    sourceOwnerId: entry.ownerId,
+    mode: viewer.userId === entry.ownerId ? "SELF" : "ADMIN",
+    workspaceId: viewer.workspaceId,
+    addonId: viewer.addonId,
+    entryId: entry.id,
+    planId: plan.id,
+    attemptId: claimToken,
+  });
   try {
     result = await attemptRecreation({
       db: deps.db,
       client: clientResult.client,
       entryId: entry.id,
-      workspaceId: viewer.workspaceId,
+      scope: viewer,
       planId: plan.id,
       plannedRequest: plan.plannedRequest,
       claimToken,
@@ -738,7 +857,7 @@ async function confirmPlan(
       // Another process recovered or replaced this claim while the baseline read was in flight.
       // Do not release: the old token no longer owns the row, and the current state is the result
       // the caller needs to see. The pre-write fence proves this request sent no create.
-      const current = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
+      const current = entries.getById(deps.db, viewer, entry.id) ?? entry;
       return { kind: "prewrite-changed", entry: current };
     }
     // Any other error happens after the durable attempt starts. That stored state can also remain
@@ -759,7 +878,7 @@ async function confirmPlan(
   // lost may already have committed; the first check happens now, not on the next detail view.
   if (result.outcome === "AMBIGUOUS") {
     const attempt = attempts.latestForEntry(deps.db, entry.id);
-    const current = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? entry;
+    const current = entries.getById(deps.db, viewer, entry.id) ?? entry;
     if (attempt) {
       try {
         await runOneReconcile(deps, clientResult.client, current, attempt, plan, viewer.userId);
@@ -768,7 +887,7 @@ async function confirmPlan(
         deps.onError?.(err, { route: "recreate.reconcile" });
       }
     }
-    const after = entries.getById(deps.db, viewer.workspaceId, entry.id) ?? current;
+    const after = entries.getById(deps.db, viewer, entry.id) ?? current;
     if (after.lifecycleState === "RECREATED" && after.newEntryId !== null) {
       const finalAttempt = attempts.latestForEntry(deps.db, entry.id);
       return {
@@ -924,7 +1043,7 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
   const bulkProjectTaskCache = createProjectTaskCache();
   const results: unknown[] = [];
   for (const id of ids) {
-    const row = entries.getById(deps.db, viewer.workspaceId, id);
+    const row = entries.getById(deps.db, viewer, id);
     if (!row) {
       results.push({ entryId: id, status: "not-found" });
       continue;
@@ -968,7 +1087,7 @@ async function handleBulkPreflight(deps: ApiRouteDeps, viewer: Viewer, body: unk
         return errorJson(503, NO_CLIENT_MESSAGE);
       }
       if (err instanceof plans.PlanEntryNotActionableError) {
-        const current = entries.getById(deps.db, viewer.workspaceId, id);
+        const current = entries.getById(deps.db, viewer, id);
         results.push(current
           ? { entryId: id, status: "not-actionable", source: current.source }
           : { entryId: id, status: "not-found" });
@@ -1035,7 +1154,7 @@ async function handleBulkRecreate(deps: ApiRouteDeps, viewer: Viewer, body: unkn
   const requested = planIds.map((planId) => {
     const plan = plans.getById(deps.db, planId);
     const entry = plan
-      ? entries.getById(deps.db, viewer.workspaceId, plan.recoverableEntryId)
+      ? entries.getById(deps.db, viewer, plan.recoverableEntryId)
       : undefined;
     return { planId, plan, entry };
   });
@@ -1104,7 +1223,7 @@ async function runOneReconcile(
   const startedAt = new Date().toISOString();
   const begin = attempts.beginReconcile(deps.db, {
     recoverableEntryId: entry.id,
-    workspaceId: entry.workspaceId,
+    scope: entry,
     expectedAttemptId: attempt.id,
     checkedAt: startedAt,
     runId,
@@ -1120,7 +1239,7 @@ async function runOneReconcile(
       db: deps.db,
       client,
       entryId: entry.id,
-      workspaceId: entry.workspaceId,
+      scope: entry,
       userId: entry.ownerId,
       plannedRequest: plan.plannedRequest,
       baseline: attempt.baseline ?? [],
@@ -1198,7 +1317,7 @@ async function handleReconcile(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   if (result.kind === "changed") {
     return errorJson(409, "the entry or recreation attempt changed; check the entry again");
   }
-  const current = entries.getById(deps.db, viewer.workspaceId, entry.id);
+  const current = entries.getById(deps.db, viewer, entry.id);
   return json(200, { result, entry: current ?? entry });
 }
 
@@ -1218,7 +1337,7 @@ async function handleMarkNotCreated(deps: ApiRouteDeps, viewer: Viewer, body: un
     if (!markNotCreatedAllowed(deps.db, attempts.latestForEntry(deps.db, entry.id))) {
       return { kind: "not-allowed" } as const;
     }
-    const updated = entries.markNotCreated(deps.db, viewer.workspaceId, entry.id);
+    const updated = entries.markNotCreated(deps.db, viewer, entry.id);
     return updated
       ? { kind: "updated", entry: updated } as const
       : { kind: "changed" } as const;
@@ -1263,7 +1382,7 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
   const resolutionRunId = randomUUID();
   const lock = attempts.beginReconcile(deps.db, {
     recoverableEntryId: entry.id,
-    workspaceId: viewer.workspaceId,
+    scope: viewer,
     expectedAttemptId: latestAttempt.id,
     checkedAt: new Date().toISOString(),
     runId: resolutionRunId,
@@ -1311,7 +1430,7 @@ async function handleResolveAmbiguous(deps: ApiRouteDeps, viewer: Viewer, body: 
     try {
       const adopted = entries.adopt(deps.db, {
         id: entry.id,
-        workspaceId: viewer.workspaceId,
+        scope: viewer,
         expectedAttemptId: latestAttempt.id,
         expectedReconcileRunId: resolutionRunId,
         newEntryId,
@@ -1339,7 +1458,7 @@ async function handleDismiss(deps: ApiRouteDeps, viewer: Viewer, body: unknown) 
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const loaded = loadOwnEntry(deps, viewer, body.entryId, true);
   if ("error" in loaded) return loaded.error;
-  const updated = entries.dismiss(deps.db, viewer.workspaceId, loaded.entry.id);
+  const updated = entries.dismiss(deps.db, viewer, loaded.entry.id);
   if (!updated) return errorJson(409, "entry cannot be dismissed from its current state");
   return json(204, null);
 }
@@ -1348,7 +1467,7 @@ async function handleUndismiss(deps: ApiRouteDeps, viewer: Viewer, body: unknown
   if (!isPlainObject(body)) return errorJson(400, "invalid body");
   const loaded = loadOwnEntry(deps, viewer, body.entryId, true);
   if ("error" in loaded) return loaded.error;
-  const updated = entries.undismiss(deps.db, viewer.workspaceId, loaded.entry.id);
+  const updated = entries.undismiss(deps.db, viewer, loaded.entry.id);
   if (!updated) return errorJson(409, "entry is not dismissed");
   return json(204, null);
 }
@@ -1371,7 +1490,13 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
     // as bounded SDK reads; `collectPaged` raises rather than returning a partial result.
     if (kind === "projects") {
       const items = await collectPaged(client.projects.list.bind(client.projects), { workspaceId: viewer.workspaceId });
-      return json(200, { items: items.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });
+      // This picker feeds `choices.projectId`, so it shows a non-admin exactly the projects that
+      // choice may name — no more. Listing every project would disclose the names and ids of
+      // private projects the viewer is not a member of (docs/09 "Credential authority").
+      const visible = isAdmin(viewer)
+        ? items
+        : items.filter((p) => p.public || p.memberships?.some((m) => m.userId === viewer.userId));
+      return json(200, { items: visible.map((p) => ({ id: p.id, name: p.name, archived: p.archived })) });
     }
     if (kind === "users") {
       // `status: "ALL"` on purpose: a deactivated member still owns deleted entries, and their
@@ -1391,6 +1516,15 @@ async function handleOptions(deps: ApiRouteDeps, viewer: Viewer, query: URLSearc
     if (kind === "tasks") {
       const projectId = query.get("projectId");
       if (!projectId) return errorJson(400, "projectId is required for kind=tasks");
+      // 404, not 403: to a viewer without access, a project they cannot see must not be
+      // distinguishable from one that does not exist (docs/09 "no existence leak").
+      if (!isAdmin(viewer)) {
+        const accessible = await viewerAccessibleProjectIds(client, viewer.workspaceId, viewer);
+        if (!accessible.has(projectId)) {
+          emitMetric(deps.logger, "authz_denied", { reason: "project-not-accessible" });
+          return errorJson(404, "not found");
+        }
+      }
       const items = await collectPaged(client.tasks.list.bind(client.tasks), { workspaceId: viewer.workspaceId, projectId });
       return json(200, {
         items: items.filter((task) => task.status === "ACTIVE").map((task) => ({ id: task.id, name: task.name, status: task.status })),

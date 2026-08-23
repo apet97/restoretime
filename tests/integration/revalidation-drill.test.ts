@@ -24,6 +24,7 @@ import * as attempts from "../../src/store/attempts.js";
 const ADDON_KEY = "restoretime-revalidation";
 const WORKSPACE_ID = "ws-1";
 const ADDON_ID = "addon-1";
+const SCOPE = { workspaceId: WORKSPACE_ID, addonId: ADDON_ID };
 const OWNER_ID = "user-1";
 
 let dir: string;
@@ -128,7 +129,7 @@ describe("Revalidation drill: a dependency removed between plan and confirm", ()
         if (method === "GET" && path.endsWith("/custom-fields")) return jsonResponse([]);
         if (method === "GET" && path.endsWith("/projects/proj-1")) {
           return projectStillExists
-            ? jsonResponse({ id: "proj-1", name: "Project One", archived: false })
+            ? jsonResponse({ id: "proj-1", name: "Project One", archived: false, public: true, memberships: [] })
             : jsonResponse({ message: "Project doesn't belong to Workspace", code: 501 }, 400);
         }
         return jsonResponse({ message: "unstubbed — a create call here would mean the mutation was issued despite STALE" }, 404);
@@ -181,7 +182,7 @@ describe("Revalidation drill: a dependency removed between plan and confirm", ()
 
     // 3. No side effect landed anywhere a create would have left one: the row was never claimed
     // (still IDLE), and no attempt row exists for it at all.
-    const row = entries.getById(server.db, WORKSPACE_ID, entryId);
+    const row = entries.getById(server.db, SCOPE, entryId);
     expect(row?.lifecycleState).toBe("IDLE");
     expect(row?.claimToken).toBeNull();
     expect(attempts.listForEntry(server.db, entryId)).toHaveLength(0);

@@ -40,10 +40,24 @@ export const LIFECYCLE_STATES = [
 
 export type LifecycleState = (typeof LIFECYCLE_STATES)[number];
 
+/**
+ * One installation lifetime. Clockify issues a fresh `addonId` for every install of an add-on into
+ * a workspace, so `workspaceId` alone identifies the tenant while the pair identifies the
+ * generation that owns a row. Every product-data read and write is scoped by this, never by
+ * `workspaceId` alone (docs/08). `Viewer` (src/platform/verify.ts) satisfies it structurally, so a
+ * route passes the viewer straight through.
+ */
+export interface InstallationScope {
+  readonly workspaceId: string;
+  readonly addonId: string;
+}
+
 /** One row per deleted entry: the source plus the recovery lifecycle (docs/06). */
 export interface RecoverableEntry {
   readonly id: string;
   readonly workspaceId: string;
+  /** The installation generation that captured this entry — see {@link InstallationScope}. */
+  readonly addonId: string;
   readonly sourceEntryId: string;
   readonly ownerId: string;
   readonly detectedAt: string;

@@ -1,7 +1,7 @@
 // Metrics (docs/14 "Metrics"). No metrics library (implementation/DEPENDENCIES.md is closed) —
 // a `metric:`-prefixed structured log line, through the same logger every other log line uses, is
 // the whole mechanism ("Counter/gauge log lines... any scraper can parse them"). Exactly the
-// thirteen names docs/14 lists; nothing else — a test asserts the emitted name set equals this list.
+// fourteen names docs/14 lists; nothing else — a test asserts the emitted name set equals this list.
 
 import type { Logger } from "./log.js";
 
@@ -9,6 +9,9 @@ export const METRIC_NAMES = [
   "webhook_received",
   "webhook_rejected",
   "webhook_duplicate",
+  // A verified delivery that the generation fence refused because its installation was
+  // uninstalled mid-verification (store/entries.ts `IngestOutcome`). Never counted as created.
+  "webhook_after_uninstall",
   "recoverable_created",
   "preflight_blockers",
   "preflight_action_required",

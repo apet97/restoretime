@@ -202,6 +202,31 @@ describe("the project picker shows a member only what they may target", () => {
   });
 });
 
+describe("a rejected add-on token still reaches the reinstall notice", () => {
+  it("marks the installation broken when the access read is refused, not a bare 500", async () => {
+    // The access check used to run through the same paginated walk the picker uses, inside the
+    // handler's own try/catch. Moving it to a single read must not move it out of that catch:
+    // a 401/4017 has to keep mapping to `broken_at` and the reinstall message (docs/03 §6, IT-08).
+    vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const path = new URL(url).pathname;
+      if ((init?.method ?? "GET").toUpperCase() !== "GET") { writes += 1; return jsonResponse({ id: "new-entry" }); }
+      if (path.includes(`/projects/${JOINED_PROJECT}`)) {
+        return jsonResponse({ message: "Add-on token is invalid", code: 4017 }, 401);
+      }
+      return clockifyStub()(input, init);
+    });
+
+    const response = await preflight("member", { projectId: JOINED_PROJECT });
+    expect(response.status).toBe(503);
+    expect((response.body as { error: string }).error).toContain("Reinstall the addon");
+    expect(
+      server.db.prepare("SELECT broken_at FROM installations WHERE workspace_id = ?").get(WORKSPACE_ID),
+    ).not.toEqual({ broken_at: null });
+    expect(writes).toBe(0);
+  });
+});
+
 describe("a member cannot re-target a recreation into a project they cannot open", () => {
   it("refuses the choice before a plan exists, and sends no write", async () => {
     const response = await preflight("member", { projectId: PRIVATE_PROJECT });

@@ -652,7 +652,7 @@ section ul {
   flex: 0 0 auto;
 }
 
-/* The entry's own date and time. Tabular figures keep the times aligned between rows. */
+/* The entry's own date and time. Tabular figures stop the digits jittering in width. */
 .rt-when {
   font-variant-numeric: tabular-nums;
 }

@@ -14,15 +14,15 @@ describe("openDatabase migrations", () => {
     dir = undefined;
   });
 
-  it("a fresh in-memory database reaches user_version=4", () => {
+  it("a fresh in-memory database reaches user_version=5", () => {
     const db = openDatabase(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(4);
+    expect(db.pragma("user_version", { simple: true })).toBe(5);
     const tables = db
       .prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('installations', 'recoverable_entries', 'recreation_plans', 'recreation_attempts')",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('installations', 'retired_installations', 'recoverable_entries', 'recreation_plans', 'recreation_attempts')",
       )
       .all();
-    expect(tables).toHaveLength(4);
+    expect(tables).toHaveLength(5);
     const presentation = db.prepare("PRAGMA table_info(recreation_plans)").all() as Array<{
       name: string;
       notnull: number;
@@ -36,7 +36,7 @@ describe("openDatabase migrations", () => {
     const dbPath = join(dir, "restoretime.sqlite");
 
     const first = openDatabase(dbPath);
-    expect(first.pragma("user_version", { simple: true })).toBe(4);
+    expect(first.pragma("user_version", { simple: true })).toBe(5);
     first
       .prepare(
         `INSERT INTO installations
@@ -47,7 +47,7 @@ describe("openDatabase migrations", () => {
     first.close();
 
     const second = openDatabase(dbPath);
-    expect(second.pragma("user_version", { simple: true })).toBe(4);
+    expect(second.pragma("user_version", { simple: true })).toBe(5);
     const row = second
       .prepare("SELECT * FROM installations WHERE workspace_id = ? AND addon_id = ?")
       .get("ws-1", "addon-1");
@@ -82,13 +82,18 @@ describe("openDatabase migrations", () => {
     legacy.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(4);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(5);
     // The surviving row belongs to the newest generation; the superseded installation is gone.
     expect(migrated.prepare("SELECT id, addon_id FROM recoverable_entries ORDER BY id").all()).toEqual([
       { id: "entry-kept", addon_id: "addon-new" },
     ]);
     expect(migrated.prepare("SELECT addon_id FROM installations ORDER BY addon_id").all()).toEqual([
       { addon_id: "addon-new" },
+    ]);
+    // The superseded generation is recorded, so a replayed INSTALLED for it can never be read as
+    // proof that the survivor is obsolete.
+    expect(migrated.prepare("SELECT addon_id FROM retired_installations").all()).toEqual([
+      { addon_id: "addon-old" },
     ]);
     expect(migrated.pragma("integrity_check", { simple: true })).toBe("ok");
     expect(migrated.pragma("foreign_key_check")).toEqual([]);
@@ -145,7 +150,7 @@ describe("openDatabase migrations", () => {
     legacy.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(4);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(5);
     expect(migrated.prepare(
       "SELECT id, presentation_json FROM recreation_plans ORDER BY id",
     ).all()).toEqual([

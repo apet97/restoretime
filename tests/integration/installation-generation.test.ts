@@ -179,6 +179,42 @@ describe("a lifecycle event may only mutate the generation it names", () => {
     expect(await server.installations.load(WORKSPACE_ID, "addon-b")).not.toBeNull();
   });
 
+  it("ignores a replayed INSTALLED for a retired generation instead of purging the current one", async () => {
+    // Lifecycle tokens carry no expiry, so this event can arrive at any time — and it always looks
+    // newest, because `installed_at` is stamped at processing time. Acting on it would destroy the
+    // current generation's data: the stale-DELETED defect arriving through the other event.
+    const tokenA = await install("addon-a");
+    await deliver(tokenA, "entry-old");
+    const tokenB = await install("addon-b");
+    await deliver(tokenB, "entry-new");
+    expect(rowsByGeneration()).toEqual([{ addon_id: "addon-b", n: 1 }]);
+
+    const replayToken = await signTestToken(keys.privateKey, ADDON_KEY, { workspaceId: WORKSPACE_ID, addonId: "addon-a" });
+    const response = await server.addon.handle(
+      createTestLifecycleRequest(
+        replayToken,
+        buildInstalledPayload({ workspaceId: WORKSPACE_ID, addonId: "addon-a", apiUrl: "https://developer.clockify.me/api" }),
+        { path: "/lifecycle/installed" },
+      ),
+    );
+    expect(response.status).toBe(204);
+
+    // B keeps its installation and its data.
+    expect(rowsByGeneration()).toEqual([{ addon_id: "addon-b", n: 1 }]);
+    expect(await listIds("addon-b")).toEqual(["entry-new"]);
+    expect(await server.installations.load(WORKSPACE_ID, "addon-b")).not.toBeNull();
+  });
+
+  it("still installs a retired generation, so a workspace is never left unable to install", async () => {
+    // The replay guard removes only the destructive half. If Clockify ever did reuse an add-on id,
+    // refusing the install outright would brick the add-on for that workspace.
+    const tokenA = await install("addon-a");
+    await deliver(tokenA, "entry-old");
+    await install("addon-b");
+    await install("addon-a");
+    expect(await server.installations.load(WORKSPACE_ID, "addon-a")).not.toBeNull();
+  });
+
   it("does not let a viewer from one generation address another generation's row", async () => {
     const tokenA = await install("addon-a");
     await deliver(tokenA, "entry-old");

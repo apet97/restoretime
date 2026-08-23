@@ -20,6 +20,29 @@ import type { InstallationScope } from "../domain/entry.js";
  * purged (they can only be leftovers from that same generation), but nothing else is touched. */
 export type UninstallResult = "deleted" | "stale";
 
+/** Records a generation as retired, in the caller's transaction. Idempotent: a second DELETED for
+ * the same generation, or a supersede of one already recorded, changes nothing. */
+function retire(db: Database.Database, workspaceId: string, addonId: string): void {
+  db.prepare(
+    "INSERT OR IGNORE INTO retired_installations (workspace_id, addon_id, retired_at) VALUES (?, ?, ?)",
+  ).run(workspaceId, addonId, new Date().toISOString());
+}
+
+/**
+ * Whether this generation has already been retired here.
+ *
+ * Lifecycle tokens carry no expiry, so a delayed or replayed INSTALLED for a long-gone generation
+ * can arrive at any time and cannot be ordered against the current one. Treating such an event as
+ * proof that the *current* generation is obsolete would destroy live data — the mirror of a stale
+ * DELETED. The installation itself is still saved when this returns true; only the destructive
+ * half is skipped, so a workspace can never be left unable to install.
+ */
+export function isRetiredInstallation(db: Database.Database, scope: InstallationScope): boolean {
+  return db
+    .prepare("SELECT 1 FROM retired_installations WHERE workspace_id = ? AND addon_id = ?")
+    .get(scope.workspaceId, scope.addonId) !== undefined;
+}
+
 /** DELETED lifecycle. Purges exactly the addressed generation, in one transaction. */
 export function uninstallInstallation(
   db: Database.Database,
@@ -29,6 +52,7 @@ export function uninstallInstallation(
     const existing = db
       .prepare("SELECT 1 FROM installations WHERE workspace_id = ? AND addon_id = ?")
       .get(ws, addon);
+    retire(db, ws, addon);
     db.prepare("DELETE FROM recoverable_entries WHERE workspace_id = ? AND addon_id = ?").run(ws, addon);
     db.prepare("DELETE FROM installations WHERE workspace_id = ? AND addon_id = ?").run(ws, addon);
     return existing ? "deleted" : "stale";
@@ -49,13 +73,21 @@ export interface SupersedeResult {
  * event ever reached this app. Without this, a missed DELETED leaves the old generation's deleted
  * entries in storage forever, unreachable through every route yet still retaining user data.
  *
- * Call this only with a verified INSTALLED identity, after the new installation row is saved.
+ * Call this only with a verified INSTALLED identity that {@link isRetiredInstallation} rejects,
+ * after the new installation row is saved. A replayed INSTALLED for an already-retired generation
+ * is not evidence that anything else is obsolete.
  */
 export function supersedeOtherInstallations(
   db: Database.Database,
   scope: InstallationScope,
 ): SupersedeResult {
   const run = db.transaction((ws: string, addon: string): SupersedeResult => {
+    const superseded = db
+      .prepare<[string, string], { addon_id: string }>(
+        "SELECT addon_id FROM installations WHERE workspace_id = ? AND addon_id <> ?",
+      )
+      .all(ws, addon);
+    for (const row of superseded) retire(db, ws, row.addon_id);
     const entries = db
       .prepare("DELETE FROM recoverable_entries WHERE workspace_id = ? AND addon_id <> ?")
       .run(ws, addon).changes;

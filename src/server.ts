@@ -25,7 +25,7 @@ import { createNodeHttpAddonServer } from "@apet97/clockify-addon-sdk/adapters/n
 import { loadConfig, type AppConfig } from "./config.js";
 import { createLogger, type Logger } from "./log.js";
 import { openDatabase } from "./store/db.js";
-import { supersedeOtherInstallations, uninstallInstallation } from "./store/cascade.js";
+import { isRetiredInstallation, supersedeOtherInstallations, uninstallInstallation } from "./store/cascade.js";
 import {
   clearInstallationBroken,
   createSqliteInstallationStore,
@@ -148,8 +148,16 @@ export async function createServer(
       // A new addonId for this workspace is a new installation generation, which proves the
       // previous one was removed in Clockify — a missed DELETED must not leave its deleted-entry
       // data behind, unreachable but retained (store/cascade.ts).
-      const superseded = supersedeOtherInstallations(db, claims);
-      logger.info("installation installed", {
+      //
+      // Unless this generation was already retired here. Lifecycle tokens carry no expiry, so a
+      // replayed INSTALLED for a long-gone generation can arrive at any time and always looks
+      // newest; acting on it would purge the current generation's data. The row above is still
+      // saved either way, so a workspace can never be left unable to install.
+      const replayed = isRetiredInstallation(db, claims);
+      const superseded = replayed
+        ? { installations: 0, entries: 0 }
+        : supersedeOtherInstallations(db, claims);
+      logger.info(replayed ? "replayed installation ignored for cleanup" : "installation installed", {
         workspaceId: claims.workspaceId,
         addonId: claims.addonId,
         supersededInstallations: superseded.installations,

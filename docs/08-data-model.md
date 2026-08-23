@@ -135,6 +135,15 @@ Constraints:
   generation there — Clockify allows one installation of an add-on per workspace at a time, so a
   new identity proves the previous one was removed. Its rows are purged in the same transaction,
   which is what stops a missed `DELETED` from retaining deleted-entry data indefinitely.
+- `retired_installations` records every generation this app has retired, by uninstall or by
+  supersede. Lifecycle tokens carry no expiry (the SDK's lifecycle verifier defaults
+  `requireExpiration` to false, because Clockify's lifecycle authToken has no `exp`), so a delayed
+  or replayed `INSTALLED` for a long-gone generation can arrive at any later time — and it always
+  looks newest, because `installed_at` is stamped at processing time and the payload carries no
+  timestamp of its own. Acting on such an event would purge the *current* generation's data: the
+  stale-`DELETED` defect arriving through the other lifecycle event. A retired generation is
+  therefore still installed when its event replays, but never supersedes anything. Only the
+  destructive half is skipped, so a workspace can never be left unable to install.
 - Webhook ingestion is fenced on the installation row: the insert is a single
   `INSERT ... SELECT ... WHERE EXISTS (...)`, so a delivery whose verification began before an
   uninstall and finished after it writes nothing. It is acknowledged (a retry cannot succeed) and

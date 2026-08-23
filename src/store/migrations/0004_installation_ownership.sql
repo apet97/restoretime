@@ -31,19 +31,8 @@ WHERE addon_id = '';
 -- would only retain deleted-entry data after an uninstall. Plans and attempts cascade.
 DELETE FROM recoverable_entries WHERE addon_id = '';
 
--- Collapse generations whose DELETED event never arrived, on the same reasoning the
--- supersede-on-INSTALLED path uses: a newer generation for the workspace proves the older one was
--- removed in Clockify. Their entries were just attributed to the surviving generation above.
-DELETE FROM installations
-WHERE EXISTS (
-  SELECT 1
-  FROM installations newer
-  WHERE newer.workspace_id = installations.workspace_id
-    AND (
-      newer.installed_at > installations.installed_at
-      OR (newer.installed_at = installations.installed_at AND newer.addon_id > installations.addon_id)
-    )
-);
+-- Superseded generations are collapsed by 0005, which can record them as retired in the same
+-- transaction. Doing it here would lose the identities the replay guard needs.
 
 -- Both replaced indexes led with `workspace_id` alone, which no query uses any more.
 DROP INDEX recoverable_entries_owner_idx;

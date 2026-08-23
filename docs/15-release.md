@@ -1,8 +1,80 @@
-# 15 — Release process and RC.14 receipt
+# 15 — Release process and RC receipts
 
-This document records `v1.0.0-rc.14` for developer-environment evaluation. It does not deploy to
-Clockify production and it does not submit the add-on to the Marketplace. Do not use a successful
-RC.14 run as proof for either boundary.
+This document records `v1.0.0-rc.14` and `v1.0.0-rc.15` for developer-environment evaluation. It
+does not deploy to Clockify production and it does not submit the add-on to the Marketplace. Do
+not use a successful RC run as proof for either boundary.
+
+## RC.15 release receipt
+
+RC.15 applies only to `fdbb89b58cdca759ca988f9ab1dda3ac3020e694`, the `main` tip at session start
+on 2026-08-23. [Main CI run 32660184242](https://github.com/apet97/restoretime/actions/runs/32660184242)
+passed for that commit, and `origin/main` resolved to it at declaration. There is no candidate
+PR: the operator's 2026-08-23 authorization (recorded in docs/16 "Operator authorization for
+RC.15") directed a direct-to-main workflow for this candidate and permanently waived branch
+protection and enforced release-candidate CI beyond ordinary CI. The annotated `v1.0.0-rc.15`
+tag peels to the exact candidate, and GitHub published it as a prerelease.
+
+The developer deployment is `13bb1ee7-b690-47e6-b3bc-63aebbff643b` on the existing Railway
+project `bf8d46ae-5661-4fa1-9998-813e45bba253`, environment `3303ec5b-b554-4e96-b69e-32a020dd2ba9`,
+service `a9e02dc6-aa34-41f2-9d5e-36b8ad82bee6`, replacing `cd4808d6-9e99-4fa2-8be2-e9eb7f3fc414`.
+Its instance is `c293712f-0015-46c6-ab74-6c3d985ec044`. Its image digest is
+`sha256:bfe346c69b2ac256aa22bddff5a51219a63a5e110965f539dcf788509d86f9eb` — identical to the
+three prior evaluation deployments, as expected: the application-source fingerprint
+`d14273d42e7b932ae2320c5edec3648c1a84a0360c5f5b6fc41013d17f6f4642` is unchanged since `e3a920d`
+(every later commit is docs-only for the fingerprint inputs). `railway up` ran from a fresh
+clone detached at the exact candidate with `RESTORETIME_CANDIDATE_ID` set before the deploy;
+inside the container that variable reads the exact candidate commit, PID 1 runs
+`node dist/server.js` as UID/GID 1000, `/healthz`, `/manifest`, `/icon.svg`, `/static/app.js`,
+and `/static/app.css` are served, and `/component` and `/api/entries` answer 401
+unauthenticated.
+
+Candidate-bound local gates ran from that same fresh clone (receipt `local-gates-fdbb89b.md` in
+`restoretime-fdbb89b-evidence/` outside the repository): Node 22 typecheck, lint, 502 offline
+tests in 49 files, 111 E2E tests in 12 files, root and install-capture npm audits (0
+vulnerabilities each), the reachable-ref gitleaks scan (`--log-opts=--all --redact=100` under a
+300-second bound; 83 non-merge commits of 102 reachable refs, no leaks, exit 0), the local
+Docker health and `SIGTERM` gate (`{"status":"ok","db":"ok"}`, `HEALTHCHECK` healthy, `SIGTERM`
+exit 0 in 0.19 s, no `-wal`/`-shm` residue, `integrity_check` `ok`, `user_version` 5, baked
+fingerprint equal to `sourceFingerprintFromGit`), and the migration and rollback drill in its
+current shape (3 → 5 → rollback; the seeded row survived migration attributed to its
+installation's `addon_id`, `foreign_key_check` empty, the preserved pre-migration backup
+sha256-unchanged, and the prior image the fingerprint-verified `restoretime:rc14-2d5e7fb`
+stand-in — the recorded substitution step 3 permits while the rc.14 Railway digest stays
+unpullable).
+
+`npm run test:live:release` passed **three times** against the deployed candidate: 13 files and
+45 tests, exit 0, zero skips and zero blocked rows, plus the separate cleanup suite each time.
+LV-01B and LV-02B receipts in `restoretime-fdbb89b-evidence/` name this exact candidate,
+deployment `13bb1ee7`, instance `c293712f`, and installation `6a8a55823e328737e6b9556c` — no
+reinstall happened, so the generation the rc.14-era receipts proved is the one still live.
+LV-02B names LV-02A's printed source ID `6a8b4c3b3e328737e6b96be3`, pinned to this deployment's
+only `webhook_received`/`recoverable_created` log pair by the persisted row's `detected_at`
+falling between the pair's millisecond timestamps. LV-01B carries the authenticated iframe
+render with a component JWT naming this `addonId`, the active sidebar item with this
+deployment's `/icon.svg`, the developer CSP (`frame-ancestors https://developer.clockify.me`,
+`connect-src 'self'`), and a measured cache-bypassing top-level load with zero console errors,
+zero CSP errors, and seven of seven requests answered 200 — the zeros proven real by a control
+`console.error` recorded and cleared in the same buffer before the measured load.
+
+Cleanup: the suite's teardown removed its Clockify probes, and the separate operator step then
+cleared the 31 captured probe rows from the deployed volume
+(`deployed-db-probe-cleanup-output.txt`), after which the deployed database matched the pre-run
+baseline line-for-line (`deployed-db-baseline-pre-run.txt` vs `deployed-db-post-run.txt`,
+`diff` clean): the developer generation holds only its single pre-existing recreated row, the
+other workspace's installation and 4 rows are untouched, `recreation_plans` 4 and
+`recreation_attempts` 3 as before, `integrity_check` `ok`, `user_version` 5. The final
+workspace scan covered all 10 users including deactivated ones, every page, active and archived
+tags, and every custom field: zero `RT-PROBE-` artifacts and zero read failures, reported
+explicitly.
+
+Permanently waived by the operator for RC.15 and future candidates (docs/16 "Operator
+authorization for RC.15" is the record): Railway platform backup, PITR, and isolated-restore
+proof — **NOT PROVEN — permanently waived by operator** — plus branch protection, enforced
+release-candidate CI beyond ordinary CI, and Marketplace submission. Dependency major upgrades
+stay deliberately skipped. No paid plan was purchased or enabled. These waivers do not prove
+production, Marketplace, stable-release, or disaster-recovery readiness. The later
+documentation receipt commit is not the RC.15 application candidate. Do not redeploy or retag
+RC.15 because this documentation moves after publication.
 
 ## Repository
 
@@ -181,6 +253,10 @@ Later on 2026-08-23 the drill (in its current 3 → 5 shape), the reachable-ref 
 local Docker health and `SIGTERM` gates ran locally on the docs tip `8acb620` (fingerprint equal to
 this candidate's); see docs/16 "Next-candidate gates" and the `local-gates-8acb620.md` receipt. The
 other skips above stand.
+
+On 2026-08-23, deployment `13bb1ee7-b690-47e6-b3bc-63aebbff643b` replaced `cd4808d6-9e99-4fa2-8be2-e9eb7f3fc414`.
+It is not an evaluation deployment: it is the RC.15 candidate deployment, and its receipts are
+in "RC.15 release receipt" above.
 
 ## CI gates (every PR)
 

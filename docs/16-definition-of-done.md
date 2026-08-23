@@ -7,8 +7,10 @@ below is historical unless the item names the exact current candidate. Worktree 
 Two changes have shipped to `main` since `v1.0.0-rc.14` and neither is a release candidate: the
 installation-generation boundary (pull request 42) and the defect sweep and component design pass
 (pull request 43). Their contracts are checked in "Contracts" below and their developer-deployment
-evidence is in docs/15. The "Next-candidate gates" section still governs the next candidate; a
-merged pull request and an evaluation deployment do not satisfy it.
+evidence is in docs/15. On 2026-08-23 the operator declared `v1.0.0-rc.15` on
+`fdbb89b58cdca759ca988f9ab1dda3ac3020e694` and the candidate-bound gates ran against that exact
+commit; the "Next-candidate gates" section below records which boxes that run checked, and the
+RC.15 receipt is in docs/15.
 
 PASS-05 and `evidence/live-release-run.md` contain historical candidate evidence. The current tree
 uses `@apet97/clockify-addon-sdk` 1.3.0, `clockify-sdk-ts-115` 5.1.0, and `better-sqlite3` 13.0.3.
@@ -200,7 +202,33 @@ evidence.
       disaster-recovery readiness remain unproven. The later documentation receipt commit is not
       the RC.14 application candidate.
 
+- [x] `v1.0.0-rc.15` is a published developer prerelease. Its annotated tag peels to
+      `fdbb89b58cdca759ca988f9ab1dda3ac3020e694`. Every candidate-bound gate below ran against
+      that exact commit: Node 22 typecheck, lint, 502 offline tests, 111 E2E tests, both npm
+      audits, the reachable-ref secret scan, the local Docker health and `SIGTERM` gate, the
+      migration and rollback drill, three green `npm run test:live:release` runs (13 files, 45
+      tests, zero skips each), valid LV-01B and LV-02B receipts, and a clean final workspace and
+      deployed-database state (docs/15 "RC.15 release receipt";
+      `restoretime-fdbb89b-evidence/`). Railway platform backup, PITR, and isolated restore are
+      **NOT PROVEN — permanently waived by operator** ("Operator authorization for RC.15"
+      below). Production, Marketplace, stable-release, and disaster-recovery readiness remain
+      unproven. The later documentation receipt commit is not the RC.15 application candidate.
+
 ## Next-candidate gates
+
+### Operator authorization for RC.15 (2026-08-23)
+
+The operator's 2026-08-23 session prompt is the authorization record for RC.15. It authorizes:
+developer-only deployment to the existing Railway project; the `v1.0.0-rc.15` prerelease tag on
+the exact `main` tip `fdbb89b58cdca759ca988f9ab1dda3ac3020e694`; a direct-to-main workflow with
+no candidate PR; and deletion of every branch except `main`. It permanently waives — for RC.15
+and future candidates — Railway platform backup / PITR / isolated-restore proof, branch
+protection, enforced release-candidate CI beyond ordinary CI, and Marketplace submission, each
+recorded as **NOT PROVEN — permanently waived by operator**. Dependency major upgrades stay
+deliberately skipped. No paid plan may be purchased or enabled. This permanent waiver is an
+operator decision that supersedes the candidate-only waiver framing the earlier boxes in this
+section used; it does not prove production disaster-recovery readiness and does not authorize a
+Railway plan upgrade.
 
 None of these boxes is checked by the work on `main` since `v1.0.0-rc.14`: `d29f53d` and `1743857`
 are documentation and a test-harness fix on an **evaluation** deployment, not a release candidate,
@@ -241,22 +269,41 @@ Full commands and results are in the evidence receipt `local-gates-8acb620.md`:
 These runs happened on the evaluation track. Under this section's own rule they do not check the
 candidate-bound boxes below; a next candidate re-runs them against its exact commit.
 
-- [ ] The exact next candidate passes Node 22 typecheck, lint, offline tests, `npm run test:e2e`,
+- [x] The exact next candidate passes Node 22 typecheck, lint, offline tests, `npm run test:e2e`,
       both npm audits, redacted reachable-ref secret scanning, and the local Docker health and
       `SIGTERM` gates. Record candidate-bound receipts. Local evidence does not prove a deployed
-      candidate or a Clockify developer installation.
-- [ ] The exact next candidate has valid LV-01B and LV-02B receipts. LV-02B names the source ID
+      candidate or a Clockify developer installation. **Checked for RC.15** on
+      `fdbb89b58cdca759ca988f9ab1dda3ac3020e694`: typecheck, lint, 502 offline tests, 111 E2E
+      tests, both audits 0 vulnerabilities, gitleaks 83 non-merge commits no leaks exit 0,
+      Docker gate healthy with `SIGTERM` exit 0 in 0.19 s
+      (`restoretime-fdbb89b-evidence/local-gates-fdbb89b.md`).
+- [x] The exact next candidate has valid LV-01B and LV-02B receipts. LV-02B names the source ID
       printed by the separate LV-02A trigger. `npm run test:live:release` passes with zero skips.
-- [ ] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
-- [ ] The exact next candidate has a local migration and rollback drill from the prior deployed
+      **Checked for RC.15**: three green runs, 13 files and 45 tests each, exit 0, zero skips;
+      LV-02B names trigger source `6a8b4c3b3e328737e6b96be3`; both receipts name the candidate,
+      deployment `13bb1ee7`, instance `c293712f`, and installation `6a8a5582…`
+      (`restoretime-fdbb89b-evidence/`).
+- [x] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
+      **Checked for RC.15**: all 10 users including deactivated, every page, active and archived
+      tags, every custom field — zero `RT-PROBE-` artifacts, zero read failures reported
+      explicitly; the deployed database matched its pre-run baseline after the operator probe-row
+      cleanup (`workspace-clean-scan.txt`, `deployed-db-post-run.txt`).
+- [x] The exact next candidate has a local migration and rollback drill from the prior deployed
       image's schema version to the current one (currently 3 → 5; docs/15 step 3 names the
       procedure). The drill stops the candidate, restores a copy of the preserved pre-migration
       backup, starts the recorded prior image, and verifies the seeded row.
-      `PRAGMA integrity_check` returns `ok`.
-- [ ] Before a later candidate, prove Railway platform backup/PITR and isolated Railway platform
-      restore, or obtain an explicit candidate-only waiver. The RC.14 waiver applies only to
-      RC.14. It does not prove production disaster-recovery readiness or authorize a Railway plan
-      upgrade.
-- [ ] Before a later candidate is published, the operator records an authorization for its exact
+      `PRAGMA integrity_check` returns `ok`. **Checked for RC.15**: the full 3 → 5 → rollback
+      drill ran on the candidate image built from a clean clone, with the fingerprint-verified
+      rc.14 stand-in as the recorded prior-image substitution and the preserved backup
+      sha256-unchanged (`local-gates-fdbb89b.md` Gate 4).
+- [x] Before a later candidate, prove Railway platform backup/PITR and isolated Railway platform
+      restore, or obtain an explicit waiver. Resolved for RC.15 and future candidates by the
+      operator's permanent waiver above: **NOT PROVEN — permanently waived by operator**. This
+      records a decision, not proof — it does not prove production disaster-recovery readiness
+      and does not authorize a Railway plan upgrade.
+- [x] Before a later candidate is published, the operator records an authorization for its exact
       scope, developer-only deployment, release tag, reachable-ref Gitleaks bound, and backup and
       restore decision. Do not reuse the RC.14 authorization, deployment proof, or waiver.
+      **Checked for RC.15**: "Operator authorization for RC.15 (2026-08-23)" above is that
+      record. Its waivers are permanent by the operator's explicit decision; a future candidate
+      still needs its own gate runs against its exact commit.

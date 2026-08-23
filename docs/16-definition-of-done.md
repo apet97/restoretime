@@ -216,8 +216,30 @@ and a gate met on an evaluation deployment does not transfer to a later candidat
   failures.
 - Node 22 typecheck, lint, 502 offline tests, 111 E2E tests, and both npm audits passed.
 
-Still not run on any commit since `v1.0.0-rc.14`: reachable-ref secret scanning, the local Docker
-health and `SIGTERM` gates, and the version-2 migration and rollback drill.
+On 2026-08-23 the three remaining local gates ran on the `main` tip
+`8acb6208b282586a3fe2cb85690f6281b77f8cfc` (fingerprint
+`d14273d4…` — identical to the deployed candidate `1743857`; the trailing commits are docs-only).
+Full commands and results are in the evidence receipt `local-gates-8acb620.md`:
+
+- Reachable-ref secret scan: `gitleaks git --log-opts=--all --redact=100` under a 300-second
+  bound scanned the 82 non-merge commits of all 101 reachable commits and found no leaks, exit 0.
+  The gitignored `.env.live` is outside a history scan by construction and was not scanned.
+- Local Docker health and `SIGTERM` gate, on the image built from a clean checkout of that
+  commit (baked fingerprint equal to `sourceFingerprintFromGit`): `/healthz` returned
+  `{"status":"ok","db":"ok"}`, the Dockerfile `HEALTHCHECK` reported healthy, and `SIGTERM`
+  produced exit 0 in 0.27 s with no `-wal`/`-shm` residue; `integrity_check` `ok`,
+  `user_version` 5 on a fresh database.
+- Migration and rollback drill in its current shape (version 3 → 5 → rollback): the rc.14-source
+  image minted a version-3 database and stamped `user_version` 3 itself; one seeded row survived
+  migration to `user_version` 5 with `addon_id` attributed by 0004, `integrity_check` `ok` and
+  `foreign_key_check` empty; the preserved version-3 backup was restored and the prior image
+  booted healthy on it at `user_version` 3 with the seeded row. The recorded rc.14 Railway
+  digest is not pullable from a developer machine, so the prior image was the local build of the
+  exact rc.14 commit whose baked source fingerprint equals the rc.14 receipt's — a recorded
+  substitution, not by-digest compliance.
+
+These runs happened on the evaluation track. Under this section's own rule they do not check the
+candidate-bound boxes below; a next candidate re-runs them against its exact commit.
 
 - [ ] The exact next candidate passes Node 22 typecheck, lint, offline tests, `npm run test:e2e`,
       both npm audits, redacted reachable-ref secret scanning, and the local Docker health and
@@ -226,9 +248,11 @@ health and `SIGTERM` gates, and the version-2 migration and rollback drill.
 - [ ] The exact next candidate has valid LV-01B and LV-02B receipts. LV-02B names the source ID
       printed by the separate LV-02A trigger. `npm run test:live:release` passes with zero skips.
 - [ ] The release cleanup scan covers current and deactivated users and finds zero active `RT-PROBE-` entries.
-- [ ] The exact next candidate has a local version-2 migration and rollback drill. The drill stops
-      the candidate, restores a copy of the preserved version-2 backup, starts the recorded prior
-      image, and verifies the seeded row. `PRAGMA integrity_check` returns `ok`.
+- [ ] The exact next candidate has a local migration and rollback drill from the prior deployed
+      image's schema version to the current one (currently 3 → 5; docs/15 step 3 names the
+      procedure). The drill stops the candidate, restores a copy of the preserved pre-migration
+      backup, starts the recorded prior image, and verifies the seeded row.
+      `PRAGMA integrity_check` returns `ok`.
 - [ ] Before a later candidate, prove Railway platform backup/PITR and isolated Railway platform
       restore, or obtain an explicit candidate-only waiver. The RC.14 waiver applies only to
       RC.14. It does not prove production disaster-recovery readiness or authorize a Railway plan

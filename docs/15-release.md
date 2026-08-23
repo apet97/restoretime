@@ -123,9 +123,11 @@ release candidate.
 All three deployments carry image digest
 `sha256:bfe346c69b2ac256aa22bddff5a51219a63a5e110965f539dcf788509d86f9eb`, and
 `sourceFingerprintFromGit` returns
-`d14273d42e7b932ae2320c5edec3648c1a84a0360c5f5b6fc41013d17f6f4642` for `e3a920d`, `d29f53d`, and
-`1743857` alike. Nothing under `src/` or the other fingerprint inputs changed across the three: the
-two commits since `e3a920d` are documentation and one test-harness fix.
+`d14273d42e7b932ae2320c5edec3648c1a84a0360c5f5b6fc41013d17f6f4642` for `e3a920d`, `d29f53d`,
+`1743857`, `f98bb4f`, `1a832d4`, and `8acb620` alike. Nothing under `src/` or the other
+fingerprint inputs changed across those commits — everything after `e3a920d` is documentation
+plus one test-harness fix (the commits after `1743857` touch only `README.md`,
+`docs/15-release.md`, and `docs/16-definition-of-done.md`).
 
 **`tests/live/` had not run since `(workspace_id, addon_id)` became the ownership key, and it did
 not pass on the first attempt.** LV-03 through LV-10 failed before reaching Clockify: `liveScope`
@@ -172,9 +174,13 @@ deployed add-on to capture — correctly, since that capture is the product work
 a separate operator step, scripted in `deployed-db-probe-cleanup.mjs` alongside the receipts.
 
 Not proved by this run, and deliberately so: Railway backup, point-in-time recovery, and isolated
-restore; a version-2 migration and rollback drill; reachable-ref secret scanning; the local Docker
+restore; a migration and rollback drill; reachable-ref secret scanning; the local Docker
 health and `SIGTERM` gates; branch protection and enforced release-candidate CI; and anything on
 production or the Marketplace. This deployment carries no production or Marketplace readiness claim.
+Later on 2026-08-23 the drill (in its current 3 → 5 shape), the reachable-ref secret scan, and the
+local Docker health and `SIGTERM` gates ran locally on the docs tip `8acb620` (fingerprint equal to
+this candidate's); see docs/16 "Next-candidate gates" and the `local-gates-8acb620.md` receipt. The
+other skips above stand.
 
 ## CI gates (every PR)
 
@@ -220,16 +226,23 @@ A later candidate must have its own operator authorization and infrastructure-ga
    The image scan must fail on a secret or on a high or critical finding when the vendor provides
    a fixed version. Record vendor-unfixed findings and their status. Stop if the application can
    reach the affected function or if the finding exceeds the accepted release risk.
-   For the local migration and rollback drill, create a temporary version-2 database with
-   migrations `0001` and `0002`, and seed one known row. Verify the seed and require
-   `PRAGMA integrity_check` to return `ok`. Preserve one unchanged backup. Start the candidate on
-   a copy of that database. Require migration to version 3, the seeded row, and
-   `PRAGMA integrity_check` to return `ok`. Stop the candidate. Confirm that no process holds the
-   drill database or volume. Restore a copy of the preserved version-2 backup into that same drill
-   database or volume. Start the recorded prior image by its immutable digest. Require health and
-   the seeded row. Require `PRAGMA user_version` to return `2` and `PRAGMA integrity_check` to
-   return `ok`. Keep the preserved backup unchanged. Delete only the temporary drill containers,
-   database copies, and volumes after all results are recorded.
+   For the local migration and rollback drill, create a temporary database at the prior
+   deployed image's schema version — boot that image on an empty volume so its own migration
+   runner stamps the version (currently `user_version` 3, migrations `0001`–`0003`) — and seed
+   one known row. Verify the seed and require `PRAGMA integrity_check` to return `ok`. Preserve
+   one unchanged backup. Start the candidate on a copy of that database. Require migration to
+   the current schema version (`user_version` 5, through migrations `0004` and `0005`), the
+   seeded row still present and attributed to its installation's `addon_id`,
+   `PRAGMA integrity_check` to return `ok`, and `PRAGMA foreign_key_check` to return no rows.
+   Stop the candidate. Confirm that no process holds the drill database or volume. Restore a
+   copy of the preserved pre-migration backup into that same drill database or volume. Start the
+   recorded prior image by its immutable digest; when that digest lives only in Railway's
+   internal registry and cannot be pulled, a local build of the same commit whose baked
+   `/app/.restoretime-source-fingerprint` equals the recorded prior fingerprint may stand in,
+   recorded as a substitution. Require health and the seeded row. Require `PRAGMA user_version`
+   to return the prior version (currently `3`) and `PRAGMA integrity_check` to return `ok`. Keep
+   the preserved backup unchanged. Delete only the temporary drill containers, database copies,
+   and volumes after all results are recorded.
 4. Create a new Railway project named `restoretime`. In it, create an environment named
    `restoretime` and a service named `restoretime`. This is not the production project. Deploy the
    repository `Dockerfile` from the exact merged commit with `railway up`, and record the resulting
@@ -281,8 +294,8 @@ A later candidate must have its own operator authorization and infrastructure-ga
    isolated replacement volume in the same project and environment, boot the recorded candidate
    digest against it, and verify `/healthz`, the expected schema version, and one authenticated
    component load. Retain the prior volume as the rollback target. This proves the candidate backup
-   can be restored; it does not by itself prove that an older image can read a version-3 database.
-   Record the separate local version-2 migration and rollback drill from step 3. A fresh Railway
+   can be restored; it does not by itself prove that an older image can read the migrated
+   database. Record the separate local migration and rollback drill from step 3. A fresh Railway
    project has no prior remote database to use for that drill.
    For RC.13, the operator authorization above waives this step as a blocking gate. Record it as
    `NOT PROVEN — explicitly waived for RC.13`. Do not mark it as passed or claim that
